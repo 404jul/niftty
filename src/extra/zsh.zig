@@ -25,16 +25,16 @@ fn comptimeGenerateZshCompletions() []const u8 {
 
 fn writeZshCompletions(writer: *std.Io.Writer) !void {
     try writer.writeAll(
-        \\#compdef ghostty
+        \\#compdef niftty
         \\
         \\_fonts () {
-        \\  local font_list=$(ghostty +list-fonts | grep -Z '^[A-Z]')
+        \\  local font_list=$(niftty +list-fonts | grep -Z '^[A-Z]')
         \\  local fonts=(${(f)font_list})
         \\  _describe -t fonts 'fonts' fonts
         \\}
         \\
         \\_themes() {
-        \\  local theme_list=$(ghostty +list-themes | sed -E 's/^(.*) \(.*$/\1/')
+        \\  local theme_list=$(niftty +list-themes | sed -E 's/^(.*) \(.*$/\1/')
         \\  local themes=(${(f)theme_list})
         \\  _describe -t themes 'themes' themes
         \\}
@@ -110,7 +110,7 @@ fn writeZshCompletions(writer: *std.Io.Writer) !void {
     try writer.writeAll("\n}\n\n");
 
     try writer.writeAll(
-        \\_ghostty() {
+        \\_niftty() {
         \\  typeset -A opt_args
         \\  local context state line
         \\  local opt=('-e' '--help' '--version')
@@ -225,7 +225,7 @@ fn writeZshCompletions(writer: *std.Io.Writer) !void {
         \\  esac
         \\}
         \\
-        \\_ghostty "$@"
+        \\_niftty "$@"
         \\
     );
 }

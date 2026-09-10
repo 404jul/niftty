@@ -2,6 +2,7 @@
 .*.swp
 .swp
 *.log
+*.profraw
 .DS_Store
 .vscode/
 .direnv/

@@ -2401,8 +2401,8 @@ extension Ghostty.SurfaceView {
         return remote.path
     }
 
-    /// Whether the given PID has an active `ghostty +ssh` session. Session
-    /// files always live under `~/.local/state/ghostty/ssh-sessions`
+    /// Whether the given PID has an active `niftty +ssh` session. Session
+    /// files always live under `~/.local/state/niftty/ssh-sessions`
     /// regardless of XDG_STATE_HOME: this runs in the app's environment,
     /// which cannot observe shell rc exports like XDG_STATE_HOME, so the
     /// path must match what `+ssh` computes from HOME in the shell.
@@ -2416,7 +2416,7 @@ extension Ghostty.SurfaceView {
             return
         }
         guard let executable = Bundle.main.executableURL else {
-            showSSHUploadFailure("Ghostty executable is unavailable")
+            showSSHUploadFailure("Niftty executable is unavailable")
             return
         }
 

@@ -99,7 +99,7 @@ enum SSHSessionStore {
         var errorDescription: String? {
             switch self {
             case .executableUnavailable:
-                "Ghostty executable is unavailable"
+                "Niftty executable is unavailable"
             case .commandFailed(let message):
                 message
             }

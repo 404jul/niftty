@@ -38,7 +38,7 @@ fn writeBashCompletions(writer: *std.Io.Writer) !void {
     const pad5 = pad4 ++ pad1;
 
     try writer.writeAll(
-        \\_ghostty() {
+        \\_niftty() {
         \\
         \\  # compat: mapfile -t COMPREPLY < <( "$@" )
         \\  _compreply() {
@@ -57,13 +57,13 @@ fn writeBashCompletions(writer: *std.Io.Writer) !void {
         \\  _fonts() {
         \\    local IFS=$'\n'
         \\    COMPREPLY=()
-        \\    while read -r line; do COMPREPLY+=("$line"); done < <( compgen -P '"' -S '"' -W "$($ghostty +list-fonts | grep '^[A-Z]' )" -- "$cur")
+        \\    while read -r line; do COMPREPLY+=("$line"); done < <( compgen -P '"' -S '"' -W "$($niftty +list-fonts | grep '^[A-Z]' )" -- "$cur")
         \\  }
         \\
         \\  _themes() {
         \\    local IFS=$'\n'
         \\    COMPREPLY=()
-        \\    while read -r line; do COMPREPLY+=("$line"); done < <( compgen -P '"' -S '"' -W "$($ghostty +list-themes | sed -E 's/^(.*) \(.*$/\1/')" -- "$cur")
+        \\    while read -r line; do COMPREPLY+=("$line"); done < <( compgen -P '"' -S '"' -W "$($niftty +list-themes | sed -E 's/^(.*) \(.*$/\1/')" -- "$cur")
         \\  }
         \\
         \\  _files() {
@@ -280,7 +280,7 @@ fn writeBashCompletions(writer: *std.Io.Writer) !void {
     try writer.writeAll(
         \\
         \\  local cur=""; local prev=""; local prevWasEq=false; COMPREPLY=()
-        \\  local ghostty="$1"
+        \\  local niftty="$1"
         \\
         \\  # script assumes default COMP_WORDBREAKS of roughly $' \t\n"\'><=;|&(:'
         \\  # if = is missing this script will degrade to matching on keys only.
@@ -331,7 +331,7 @@ fn writeBashCompletions(writer: *std.Io.Writer) !void {
         \\  return 0
         \\}
         \\
-        \\complete -o nospace -o bashdefault -F _ghostty ghostty
+        \\complete -o nospace -o bashdefault -F _niftty niftty
         \\
     );
 }
