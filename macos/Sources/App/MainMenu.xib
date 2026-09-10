@@ -94,7 +94,7 @@
                                 </connections>
                             </menuItem>
                             <menuItem isSeparatorItem="YES" id="VOq-y0-SEH"/>
-                            <menuItem title="Preferences…" keyEquivalent="," id="BOF-NM-1cW">
+                            <menuItem title="Settings…" keyEquivalent="," id="BOF-NM-1cW">
                                 <connections>
                                     <action selector="openConfig:" target="bbz-4X-AYv" id="X65-fg-iWU"/>
                                 </connections>

@@ -150,6 +150,7 @@ class AppDelegate: NSObject,
 
     /// Manages updates
     let updateController = UpdateController()
+    private lazy var settingsController = SettingsController(appDelegate: self)
     var updateViewModel: UpdateViewModel {
         updateController.viewModel
     }
@@ -174,7 +175,7 @@ class AppDelegate: NSObject,
 
     override init() {
 #if DEBUG
-        ghostty = Ghostty.App(configPath: ProcessInfo.processInfo.environment["GHOSTTY_CONFIG_PATH"])
+        ghostty = Ghostty.App(configPath: ProcessInfo.processInfo.environment["NIFFTY_CONFIG_PATH"])
 #else
         ghostty = Ghostty.App()
 #endif
@@ -189,7 +190,7 @@ class AppDelegate: NSObject,
         #if DEBUG
         if
             let suite = UserDefaults.ghosttySuite,
-            let clear = ProcessInfo.processInfo.environment["GHOSTTY_CLEAR_USER_DEFAULTS"],
+            let clear = ProcessInfo.processInfo.environment["NIFFTY_CLEAR_USER_DEFAULTS"],
             (clear as NSString).boolValue {
             UserDefaults.ghostty.removePersistentDomain(forName: suite)
         }
@@ -930,6 +931,10 @@ class AppDelegate: NSObject,
         return nil
     }
 
+    func openSettings() {
+        settingsController.show()
+    }
+
     // MARK: - Global State
 
     func setSecureInput(_ mode: Ghostty.SetSecureInput) {
@@ -951,7 +956,7 @@ class AppDelegate: NSObject,
     // MARK: - IB Actions
 
     @IBAction func openConfig(_ sender: Any?) {
-        ghostty.openConfig()
+        openSettings()
     }
 
     @IBAction func reloadConfig(_ sender: Any?) {

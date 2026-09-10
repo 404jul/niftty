@@ -16,8 +16,8 @@
     ],
     "environmentVariableEntries" : [
       {
-        "key" : "GHOSTTY_CONFIG_PATH",
-        "value" : "\/tmp\/Ghostty\/testing_config.ghostty"
+        "key" : "NIFFTY_CONFIG_PATH",
+        "value" : "\/tmp\/Niftty\/testing_config.niftty"
       }
     ],
     "performanceAntipatternCheckerEnabled" : true,

@@ -8,6 +8,7 @@ protocol GhosttyAppDelegate: AnyObject {
     /// Called when a callback needs access to a specific surface. This should return nil
     /// when the surface is no longer valid.
     func findSurface(forUUID uuid: UUID) -> Ghostty.SurfaceView?
+    func openSettings()
 }
 
 extension Ghostty {
@@ -128,9 +129,17 @@ extension Ghostty {
         }
 
         func openConfig() {
-            let str = configPath ?? Ghostty.AllocatedString(ghostty_config_open_path()).string
-            guard !str.isEmpty else { return }
-            let fileURL = URL(fileURLWithPath: str).absoluteString
+            delegate?.openSettings()
+        }
+
+        var configFilePath: String {
+            configPath ?? Ghostty.AllocatedString(ghostty_config_open_path()).string
+        }
+
+        func openConfigFile() {
+            let path = configFilePath
+            guard !path.isEmpty else { return }
+            let fileURL = URL(fileURLWithPath: path).absoluteString
             var action = ghostty_action_open_url_s()
             action.kind = GHOSTTY_ACTION_OPEN_URL_KIND_TEXT
             fileURL.withCString { cStr in

@@ -83,7 +83,7 @@
 		A586167B2B7703CC009BDB1D /* fish */ = {isa = PBXFileReference; lastKnownFileType = folder; name = fish; path = "../zig-out/share/fish"; sourceTree = "<group>"; };
 		A5985CE52C33060F00C57AD3 /* man */ = {isa = PBXFileReference; lastKnownFileType = folder; name = man; path = "../zig-out/share/man"; sourceTree = "<group>"; };
 		A5A1F8842A489D6800D1E8BC /* terminfo */ = {isa = PBXFileReference; lastKnownFileType = folder; name = terminfo; path = "../zig-out/share/terminfo"; sourceTree = "<group>"; };
-		A5B30531299BEAAA0047F10C /* Ghostty.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Ghostty.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A5B30531299BEAAA0047F10C /* Niftty.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Niftty.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A5B30538299BEAAB0047F10C /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		A5B3053D299BEAAB0047F10C /* Ghostty.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Ghostty.entitlements; sourceTree = "<group>"; };
 		A5D495A1299BEC7E00DD1313 /* GhosttyKit.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = GhosttyKit.xcframework; sourceTree = "<group>"; };
@@ -197,7 +197,7 @@
 		A5B30532299BEAAA0047F10C /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				A5B30531299BEAAA0047F10C /* Ghostty.app */,
+				A5B30531299BEAAA0047F10C /* Niftty.app */,
 				A54F45F32E1F047A0046BD5C /* GhosttyTests.xctest */,
 				810ACC9F2E9D3301004F8F92 /* GhosttyUITests.xctest */,
 				8193244D2F24E6C000A9ED8F /* DockTilePlugin.plugin */,
@@ -305,7 +305,7 @@
 				A51BFC262B30F1B800E92F16 /* Sparkle */,
 			);
 			productName = Ghostty;
-			productReference = A5B30531299BEAAA0047F10C /* Ghostty.app */;
+			productReference = A5B30531299BEAAA0047F10C /* Niftty.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -548,7 +548,7 @@
 				DEVELOPMENT_TEAM = "";
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
-				EXECUTABLE_NAME = ghostty;
+				EXECUTABLE_NAME = niftty;
 				GCC_OPTIMIZATION_LEVEL = fast;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "Ghostty-Info.plist";
@@ -581,6 +581,7 @@
 				"OTHER_LDFLAGS[arch=*]" = "-lstdc++";
 				PRODUCT_BUNDLE_IDENTIFIER = com.niftty.app;
 				PRODUCT_NAME = Niftty;
+				PRODUCT_MODULE_NAME = Ghostty;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_OBJC_BRIDGING_HEADER = "Sources/App/ghostty-bridging-header.h";
 				SWIFT_VERSION = 5.0;
@@ -598,7 +599,7 @@
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.mitchellh.GhosttyUITests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.niftty.app.ui-tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
@@ -621,7 +622,7 @@
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.mitchellh.GhosttyUITests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.niftty.app.ui-tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "";
@@ -644,7 +645,7 @@
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.mitchellh.GhosttyUITests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.niftty.app.ui-tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "";
@@ -755,7 +756,7 @@
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 15.5;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.mitchellh.GhosttyTests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.niftty.app.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
@@ -763,7 +764,7 @@
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Ghostty.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ghostty";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Niftty.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/niftty";
 			};
 			name = Debug;
 		};
@@ -779,14 +780,14 @@
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 15.5;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.mitchellh.GhosttyTests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.niftty.app.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Ghostty.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ghostty";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Niftty.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/niftty";
 			};
 			name = Release;
 		};
@@ -802,14 +803,14 @@
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MACOSX_DEPLOYMENT_TARGET = 15.5;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.mitchellh.GhosttyTests;
+				PRODUCT_BUNDLE_IDENTIFIER = com.niftty.app.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = NO;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = NO;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Ghostty.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/ghostty";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Niftty.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/niftty";
 			};
 			name = ReleaseLocal;
 		};
@@ -947,7 +948,7 @@
 				DEVELOPMENT_TEAM = "";
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
-				EXECUTABLE_NAME = ghostty;
+				EXECUTABLE_NAME = niftty;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "Ghostty-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "Niftty[DEBUG]";
@@ -978,6 +979,7 @@
 				"OTHER_LDFLAGS[arch=*]" = "-lstdc++";
 				PRODUCT_BUNDLE_IDENTIFIER = com.niftty.app.debug;
 				PRODUCT_NAME = Niftty;
+				PRODUCT_MODULE_NAME = Ghostty;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_OBJC_BRIDGING_HEADER = "Sources/App/ghostty-bridging-header.h";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -1001,7 +1003,7 @@
 				DEVELOPMENT_TEAM = "";
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
-				EXECUTABLE_NAME = ghostty;
+				EXECUTABLE_NAME = niftty;
 				GCC_OPTIMIZATION_LEVEL = fast;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "Ghostty-Info.plist";
@@ -1033,6 +1035,7 @@
 				"OTHER_LDFLAGS[arch=*]" = "-lstdc++";
 				PRODUCT_BUNDLE_IDENTIFIER = com.niftty.app;
 				PRODUCT_NAME = Niftty;
+				PRODUCT_MODULE_NAME = Ghostty;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_OBJC_BRIDGING_HEADER = "Sources/App/ghostty-bridging-header.h";
 				SWIFT_VERSION = 5.0;

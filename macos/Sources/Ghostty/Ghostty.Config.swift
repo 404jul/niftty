@@ -2,6 +2,21 @@ import SwiftUI
 import GhosttyKit
 
 extension Ghostty {
+    struct ConfigEditorSetting: Decodable, Identifiable {
+        enum Kind: String, Decodable {
+            case boolean, `enum`, text
+        }
+
+        let name: String
+        let description: String
+        let value: String
+        let defaultValue: String
+        let kind: Kind
+        let options: [String]
+
+        var id: String { name }
+    }
+
     /// Maps to a `ghostty_config_t` and the various operations on that.
     class Config: ObservableObject {
         // The underlying C pointer to the Ghostty config structure. This
@@ -102,6 +117,14 @@ extension Ghostty {
             }
 
             return cfg
+        }
+
+        func editorSettings() throws -> [ConfigEditorSetting] {
+            guard let config else { return [] }
+            let json = AllocatedString(ghostty_config_editor_data(config)).string
+            return try JSONDecoder().decode(
+                [ConfigEditorSetting].self,
+                from: Data(json.utf8))
         }
 
         // MARK: - Keybindings
@@ -403,7 +426,7 @@ extension Ghostty {
         }
 
         var macosCustomIcon: String {
-            let defaultValue = NSString("~/.config/ghostty/Ghostty.icns").expandingTildeInPath
+            let defaultValue = NSString("~/.config/niftty/Niftty.icns").expandingTildeInPath
             guard let config = self.config else { return defaultValue }
             var v: UnsafePointer<Int8>?
             let key = "macos-custom-icon"

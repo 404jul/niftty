@@ -7,6 +7,8 @@ const String = @import("../main_c.zig").String;
 const Config = @import("Config.zig");
 const c_get = @import("c_get.zig");
 const edit = @import("edit.zig");
+const formatter = @import("formatter.zig");
+const help_strings = @import("help_strings");
 const Key = @import("key.zig").Key;
 
 const log = std.log.scoped(.config);
@@ -141,6 +143,112 @@ export fn ghostty_config_open_path() String {
     return .fromSlice(path);
 }
 
+/// Return the complete effective configuration as JSON for graphical editors.
+/// The returned string must be freed with ghostty_string_free.
+export fn ghostty_config_editor_data(self: *Config) String {
+    return configEditorData(self) catch |err| {
+        log.err("error generating config editor data err={}", .{err});
+        return .empty;
+    };
+}
+
+fn configEditorData(self: *Config) !String {
+    const alloc = global.alloc();
+    var defaults = try Config.default(alloc);
+    defer defaults.deinit();
+    try defaults.finalize();
+
+    var output: std.Io.Writer.Allocating = .init(alloc);
+    errdefer output.deinit();
+    var json: std.json.Stringify = .{ .writer = &output.writer };
+
+    try json.beginArray();
+    @setEvalBranchQuota(100_000);
+    inline for (@typeInfo(Config).@"struct".fields) |field| {
+        if (field.name[0] == '_') continue;
+
+        const current = try editorValue(
+            alloc,
+            field.type,
+            field.name,
+            @field(self, field.name),
+        );
+        defer alloc.free(current);
+        const default = try editorValue(
+            alloc,
+            field.type,
+            field.name,
+            @field(defaults, field.name),
+        );
+        defer alloc.free(default);
+
+        const Field = switch (@typeInfo(field.type)) {
+            .optional => |optional| optional.child,
+            else => field.type,
+        };
+
+        try json.beginObject();
+        try json.objectField("name");
+        try json.write(field.name);
+        try json.objectField("description");
+        try json.write(if (@hasDecl(help_strings.Config, field.name))
+            @field(help_strings.Config, field.name)
+        else
+            "");
+        try json.objectField("value");
+        try json.write(current);
+        try json.objectField("defaultValue");
+        try json.write(default);
+        try json.objectField("kind");
+        try json.write(switch (@typeInfo(Field)) {
+            .bool => "boolean",
+            .@"enum" => "enum",
+            else => "text",
+        });
+        try json.objectField("options");
+        try json.beginArray();
+        switch (@typeInfo(Field)) {
+            .bool => {
+                try json.write("true");
+                try json.write("false");
+            },
+            .@"enum" => |info| inline for (info.fields) |enum_field| {
+                try json.write(enum_field.name);
+            },
+            else => {},
+        }
+        try json.endArray();
+        try json.endObject();
+    }
+    try json.endArray();
+
+    return .fromSlice(try output.toOwnedSlice());
+}
+
+fn editorValue(
+    alloc: std.mem.Allocator,
+    comptime T: type,
+    name: []const u8,
+    value: T,
+) ![]u8 {
+    var formatted: std.Io.Writer.Allocating = .init(alloc);
+    defer formatted.deinit();
+    try formatter.formatEntry(T, name, value, &formatted.writer);
+
+    var result: std.Io.Writer.Allocating = .init(alloc);
+    errdefer result.deinit();
+    const prefix_len = name.len + " = ".len;
+    var lines = std.mem.splitScalar(u8, formatted.written(), '\n');
+    var first = true;
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        if (!first) try result.writer.writeByte('\n');
+        first = false;
+        try result.writer.writeAll(line[@min(prefix_len, line.len)..]);
+    }
+    return result.toOwnedSlice();
+}
+
 /// Sync with ghostty_diagnostic_s
 const Diagnostic = extern struct {
     message: [*:0]const u8 = "",
@@ -242,6 +350,30 @@ test "ghostty_config_get: struct cval conversion" {
     try testing.expectEqual(@as(u8, 12), out.r);
     try testing.expectEqual(@as(u8, 34), out.g);
     try testing.expectEqual(@as(u8, 56), out.b);
+}
+
+test "ghostty_config_editor_data includes effective values and enum options" {
+    const testing = std.testing;
+    var cfg = try Config.default(testing.allocator);
+    defer cfg.deinit();
+    cfg.maximize = true;
+
+    const data = ghostty_config_editor_data(&cfg);
+    defer data.deinit();
+    const json = data.ptr.?[0..data.len];
+
+    try testing.expect(std.mem.indexOf(u8, json,
+        \\{"name":"maximize","description":
+    ) != null);
+    try testing.expect(std.mem.indexOf(u8, json,
+        \\"value":"true","defaultValue":"false","kind":"boolean"
+    ) != null);
+    try testing.expect(std.mem.indexOf(u8, json,
+        \\"name":"window-theme"
+    ) != null);
+    try testing.expect(std.mem.indexOf(u8, json,
+        \\"options":["auto","system","light","dark","ghostty"]
+    ) != null);
 }
 
 test "ghostty_config_trigger: default keybind" {

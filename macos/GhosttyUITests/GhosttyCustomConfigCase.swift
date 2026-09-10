@@ -43,8 +43,8 @@ class GhosttyCustomConfigCase: XCTestCase {
     func ghosttyApplication(defaultsSuite: String = GhosttyCustomConfigCase.defaultsSuiteName) throws -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments.append(contentsOf: ["-ApplePersistenceIgnoreState", "YES"])
-        app.launchEnvironment["GHOSTTY_CONFIG_PATH"] = configFile.path
-        app.launchEnvironment["GHOSTTY_USER_DEFAULTS_SUITE"] = defaultsSuite
+        app.launchEnvironment["NIFFTY_CONFIG_PATH"] = configFile.path
+        app.launchEnvironment["NIFFTY_USER_DEFAULTS_SUITE"] = defaultsSuite
         return app
     }
 }

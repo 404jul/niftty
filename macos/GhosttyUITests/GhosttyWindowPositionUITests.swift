@@ -23,7 +23,7 @@ final class GhosttyWindowPositionUITests: GhosttyCustomConfigCase {
         // Suppress Restoration
         app.launchArguments += ["-NSQuitAlwaysKeepsWindows", "NO"]
         // Clean run
-        app.launchEnvironment["GHOSTTY_CLEAR_USER_DEFAULTS"] = "YES"
+        app.launchEnvironment["NIFFTY_CLEAR_USER_DEFAULTS"] = "YES"
 
         app.launch() // window in the center
 
@@ -85,7 +85,7 @@ final class GhosttyWindowPositionUITests: GhosttyCustomConfigCase {
         // Suppress Restoration
         app.launchArguments += ["-NSQuitAlwaysKeepsWindows", "NO"]
         // Clean run
-        app.launchEnvironment["GHOSTTY_CLEAR_USER_DEFAULTS"] = "YES"
+        app.launchEnvironment["NIFFTY_CLEAR_USER_DEFAULTS"] = "YES"
 
         app.launch() // window in the center
 
@@ -140,7 +140,7 @@ final class GhosttyWindowPositionUITests: GhosttyCustomConfigCase {
         // Suppress Restoration
         app.launchArguments += ["-NSQuitAlwaysKeepsWindows", "NO"]
         // Clean run
-        app.launchEnvironment["GHOSTTY_CLEAR_USER_DEFAULTS"] = "YES"
+        app.launchEnvironment["NIFFTY_CLEAR_USER_DEFAULTS"] = "YES"
 
         app.launch() // window in the center
 
@@ -295,7 +295,7 @@ final class GhosttyWindowPositionUITests: GhosttyCustomConfigCase {
         // Suppress Restoration
         app.launchArguments += ["-NSQuitAlwaysKeepsWindows", "NO"]
         // Clean run
-        app.launchEnvironment["GHOSTTY_CLEAR_USER_DEFAULTS"] = "YES"
+        app.launchEnvironment["NIFFTY_CLEAR_USER_DEFAULTS"] = "YES"
         app.launch()
 
         let window = app.windows.firstMatch
