@@ -130,6 +130,12 @@ pub const Message = union(enum) {
     /// The terminal has reported a change in the working directory.
     pwd_change: WriteReq,
 
+    /// The terminal has reported a working directory on a non-local host
+    /// (e.g. the remote side of an SSH session). This is reported separately
+    /// from `pwd_change` because remote paths must not feed local behaviors
+    /// such as working-directory inheritance for new tabs.
+    remote_pwd_change: WriteReq,
+
     /// The terminal encountered a bell character.
     ring_bell,
 

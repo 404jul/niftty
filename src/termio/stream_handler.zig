@@ -1513,6 +1513,13 @@ pub const StreamHandler = struct {
             },
         };
 
+        // We need the raw path, which might require unescaping. We try to
+        // avoid making any heap allocations by using the stack first.
+        var arena_alloc: std.heap.ArenaAllocator = .init(self.alloc);
+        var stack_alloc = std.heap.stackFallback(1024, arena_alloc.allocator());
+        defer arena_alloc.deinit();
+        const path = try uri.path.toRawMaybeAlloc(stack_alloc.get());
+
         // OSC 7 is a little sketchy because anyone can send any value from
         // any host (such an SSH session). The best practice terminals follow
         // is to valid the hostname to be local.
@@ -1525,16 +1532,20 @@ pub const StreamHandler = struct {
             },
         };
         if (!host_valid) {
-            log.warn("OSC 7 host ({s}) must be local", .{host.bytes});
+            // A non-local host is expected while an SSH session is active:
+            // the remote shell integration reports its own working directory.
+            // Surface it on the separate remote channel so SSH-aware features
+            // (e.g. drag-and-drop uploads) can use it, while keeping the
+            // local pwd untouched for title and directory-inheritance
+            // behavior.
+            log.debug("terminal remote pwd: {s}", .{path});
+            if (apprt.surface.Message.WriteReq.init(self.alloc, path)) |req| {
+                self.surfaceMessageWriter(.{ .remote_pwd_change = req });
+            } else |err| {
+                log.warn("error notifying surface of remote pwd change err={}", .{err});
+            }
             return;
         }
-
-        // We need the raw path, which might require unescaping. We try to
-        // avoid making any heap allocations by using the stack first.
-        var arena_alloc: std.heap.ArenaAllocator = .init(self.alloc);
-        var stack_alloc = std.heap.stackFallback(1024, arena_alloc.allocator());
-        defer arena_alloc.deinit();
-        const path = try uri.path.toRawMaybeAlloc(stack_alloc.get());
 
         log.debug("terminal pwd: {s}", .{path});
         try self.terminal.setPwd(path);

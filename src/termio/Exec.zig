@@ -571,6 +571,9 @@ pub const Config = struct {
     env_override: configpkg.RepeatableStringMap = .{},
     shell_integration: configpkg.Config.ShellIntegration = .detect,
     shell_integration_features: configpkg.Config.ShellIntegrationFeatures = .{},
+    ssh_auto_forward: bool = true,
+    ssh_auto_forward_notify: bool = true,
+    ssh_upload_verbose: bool = true,
     cursor_blink: ?bool = null,
     working_directory: ?[]const u8 = null,
     resources_dir: ?[]const u8,
@@ -773,6 +776,18 @@ const Subprocess = struct {
                 &env,
                 cfg.shell_integration_features,
                 cfg.cursor_blink orelse true,
+            );
+            try env.put(
+                "GHOSTTY_SSH_AUTO_FORWARD",
+                if (cfg.ssh_auto_forward) "1" else "0",
+            );
+            try env.put(
+                "GHOSTTY_SSH_AUTO_FORWARD_NOTIFY",
+                if (cfg.ssh_auto_forward_notify) "1" else "0",
+            );
+            try env.put(
+                "GHOSTTY_SSH_UPLOAD_VERBOSE",
+                if (cfg.ssh_upload_verbose) "1" else "0",
             );
 
             const force: ?shell_integration.Shell = switch (cfg.shell_integration) {

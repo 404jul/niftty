@@ -13,6 +13,20 @@ extension Ghostty {
         // changed with escape codes.
         @Published var pwd: String?
 
+
+        /// A remote working directory reported via OSC 7 by a shell on a
+        /// non-local host, bound to the foreground PID that was running when
+        /// it was reported. The PID binding prevents a stale directory from
+        /// an earlier SSH session (host A) from being used with a newer
+        /// session's connection (host B), where an upload would target — and
+        /// with `mv -f`, overwrite — the wrong destination.
+        struct RemotePwd: Equatable {
+            var path: String
+            var sessionPID: Int?
+        }
+
+        @Published var remotePwd: RemotePwd?
+
         // The cell size of this surface. This is set by the core when the
         // surface is first created and any time the cell size changes (i.e.
         // when the font size changes). This is used to allow windows to be
@@ -31,6 +45,22 @@ extension Ghostty {
 
         // The progress report (if any)
         @Published var progressReport: Action.ProgressReport?
+
+        struct SSHUploadProgress: Equatable {
+            var completedBytes: UInt64
+            var totalBytes: UInt64
+            var filename: String?
+            var message: String?
+            var isError: Bool = false
+
+            var fraction: Double {
+                guard totalBytes > 0 else { return 0 }
+                return min(Double(completedBytes) / Double(totalBytes), 1)
+            }
+        }
+
+        @Published var sshDropTargeted = false
+        @Published var sshUploadProgress: SSHUploadProgress?
 
         // The currently active key tables. Empty if no tables are active.
         @Published var keyTables: [String] = []

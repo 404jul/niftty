@@ -662,6 +662,9 @@ pub fn init(
             .env_override = config.env,
             .shell_integration = config.@"shell-integration",
             .shell_integration_features = config.@"shell-integration-features",
+            .ssh_auto_forward = config.@"ssh-auto-forward",
+            .ssh_auto_forward_notify = config.@"ssh-auto-forward-notify",
+            .ssh_upload_verbose = config.@"ssh-upload-verbose",
             .cursor_blink = config.@"cursor-style-blink",
             .working_directory = if (config.@"working-directory") |wd| wd.value() else null,
             .resources_dir = global.resourcesDir().host(),
@@ -1086,6 +1089,21 @@ pub fn handleMessage(self: *Surface, msg: Message) !void {
             _ = try self.rt_app.performAction(
                 .{ .surface = self },
                 .pwd,
+                .{ .pwd = str },
+            );
+        },
+
+        .remote_pwd_change => |w| {
+            defer w.deinit();
+
+            var stack = std.heap.stackFallback(256, self.alloc);
+            const alloc = stack.get();
+            const str = try alloc.dupeZ(u8, w.slice());
+            defer alloc.free(str);
+
+            _ = try self.rt_app.performAction(
+                .{ .surface = self },
+                .remote_pwd,
                 .{ .pwd = str },
             );
         },

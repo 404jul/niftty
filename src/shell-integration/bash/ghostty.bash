@@ -118,7 +118,7 @@ fi
 #
 # Wrap `ssh` with `ghostty +ssh` and translate the shell-integration
 # feature flags into command options.
-if [[ "$GHOSTTY_SHELL_FEATURES" == *ssh-* ]]; then
+if [[ -n "$GHOSTTY_BIN_DIR" ]]; then
   function ssh() {
     builtin local -a flags
     flags=()

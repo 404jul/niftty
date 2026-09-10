@@ -728,6 +728,19 @@ extension Ghostty {
             _ = ghostty_config_get(config, &v, key, UInt(key.lengthOfBytes(using: .utf8)))
             return v
         }
+
+        var sshUploadVerbose: Bool {
+            guard let config = self.config else { return true }
+            var value = true
+            let key = "ssh-upload-verbose"
+            _ = ghostty_config_get(
+                config,
+                &value,
+                key,
+                UInt(key.lengthOfBytes(using: .utf8))
+            )
+            return value
+        }
     }
 }
 

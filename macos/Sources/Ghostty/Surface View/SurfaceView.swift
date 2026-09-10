@@ -161,6 +161,20 @@ extension Ghostty {
                     }
                 }
 
+                if surfaceView.sshDropTargeted {
+                    SSHDropOverlay(remoteDirectory: surfaceView.remotePwd?.path)
+                    .transition(.opacity)
+                    .zIndex(2)
+                }
+
+                if let upload = surfaceView.sshUploadProgress {
+                    SSHUploadStatus(progress: upload)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                        .padding(12)
+                        .allowsHitTesting(false)
+                        .zIndex(3)
+                }
+
                 // Grab handle for dragging the window. We want this to appear at the very
                 // top Z-index os it isn't faded by the unfocused overlay.
                 SurfaceGrabHandle(
@@ -168,6 +182,84 @@ extension Ghostty {
                     dragHandle: ghostty.config.dragHandle,
                 )
             }
+        }
+    }
+
+    private struct SSHDropOverlay: View {
+        let remoteDirectory: String?
+
+        var body: some View {
+            ZStack {
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(.regularMaterial)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 16)
+                            .stroke(
+                                Color.accentColor,
+                                style: StrokeStyle(lineWidth: 3, dash: [9, 7])
+                            )
+                    }
+
+                VStack(spacing: 10) {
+                    Image(systemName: "arrow.up.doc.fill")
+                        .font(.system(size: 34))
+                    Text("Drop to upload")
+                        .font(.headline)
+                    if let remoteDirectory {
+                        Text(remoteDirectory)
+                            .font(.caption.monospaced())
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+                .foregroundStyle(.primary)
+                .padding()
+            }
+            .padding(18)
+            .allowsHitTesting(false)
+            .accessibilityLabel("Drop files to upload to the SSH session")
+        }
+    }
+
+    private struct SSHUploadStatus: View {
+        let progress: OSSurfaceView.SSHUploadProgress
+
+        var body: some View {
+            HStack(spacing: 10) {
+                if progress.isError {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                } else if progress.completedBytes < progress.totalBytes || progress.totalBytes == 0 {
+                    ProgressView(value: progress.fraction)
+                        .controlSize(.small)
+                        .frame(width: 70)
+                } else {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    if let filename = progress.filename {
+                        Text(filename)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    if let message = progress.message {
+                        Text(message)
+                            .lineLimit(2)
+                    } else if progress.totalBytes > 0 {
+                        Text(progress.completedBytes.formatted(.byteCount(style: .file)) +
+                             " of " + progress.totalBytes.formatted(.byteCount(style: .file)))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .font(.caption)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .frame(maxWidth: 360)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+            .shadow(radius: 5, y: 2)
         }
     }
 

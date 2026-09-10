@@ -6,6 +6,7 @@ const cli_args = @import("args.zig");
 const diagnostics = @import("diagnostics.zig");
 const Action = @import("ghostty.zig").Action;
 const DiskCache = @import("ssh_cache.zig").DiskCache;
+const ssh_session = @import("ssh_session.zig");
 const internal_os = @import("../os/main.zig");
 const terminfopkg = @import("../terminfo/main.zig");
 const global = @import("../global.zig");
@@ -18,6 +19,8 @@ const usage =
     \\Flags:
     \\  --forward-env[=bool]  Enable TERM / SendEnv forwarding. Default: true.
     \\  --terminfo[=bool]     Install Ghostty terminfo on first connect. Default: true.
+    \\  --auto-forward[=bool] Enable automatic local forwarding. Default: true.
+    \\  --forward-notify[=bool] Show automatic forwarding notifications. Default: true.
     \\  --cache[=bool]        Use the terminfo install cache. Default: true.
     \\  --ssh=<path>          Path to the ssh binary. Default: first `ssh` on PATH.
     \\  --verbose             Print +ssh status lines to stderr.
@@ -39,6 +42,12 @@ pub const Options = struct {
 
     /// When false, both cache read and write are bypassed.
     cache: bool = true,
+    /// Detect and locally forward remote development ports.
+    @"auto-forward": bool = true,
+
+    /// Notify when an automatic forward is created.
+    @"forward-notify": bool = true,
+
 
     /// The wrapped `ssh` binary.
     /// `/`-containing values are treated as paths; otherwise resolved via PATH.
@@ -108,9 +117,8 @@ pub const Options = struct {
 /// has no long flags, and `+ssh` defines no short flags, so there's
 /// nothing to collide.
 ///
-/// This is typically called via Ghostty's shell integration. When
-/// `shell-integration-features` includes `ssh-env` or `ssh-terminfo`,
-/// each shell defines an `ssh` function that runs:
+/// This is typically called by every supported Ghostty shell integration.
+/// Each shell defines an `ssh` function that runs:
 ///
 ///     ghostty +ssh <flags> -- "$@"
 ///
@@ -118,7 +126,8 @@ pub const Options = struct {
 /// `alias ssh='ghostty +ssh --'`) if you prefer not to use the shell
 /// integration.
 ///
-/// `+ssh` performs up to two pieces of setup before launching `ssh`:
+/// `+ssh` also keeps one connection-scoped control socket for uploads and
+/// performs up to three pieces of setup:
 ///
 ///   1. **Environment forwarding** (`--forward-env`). Sets `TERM` to
 ///      `xterm-256color` and requests `SendEnv` forwarding of
@@ -135,6 +144,11 @@ pub const Options = struct {
 ///      step. When terminfo is successfully installed or already cached,
 ///      `TERM` is set to `xterm-ghostty` instead of `xterm-256color`.
 ///
+///   3. **Port forwarding** (`--auto-forward`). Detects newly listening
+///      unprivileged TCP ports on the remote host and forwards them to
+///      loopback locally. The same port is preferred; if it is occupied,
+///      Ghostty chooses an available local port.
+///
 /// If `--terminfo` install fails (e.g. `tic` not available on the
 /// remote, filesystem permissions), a warning is logged and the
 /// connection continues with `TERM=xterm-256color`.
@@ -146,6 +160,12 @@ pub const Options = struct {
 ///
 ///   * `--terminfo=<bool>`: Enable automatic terminfo install on first
 ///     connection. Default: `true`.
+///
+///   * `--auto-forward=<bool>`: Enable automatic loopback-only forwarding
+///     of remote development ports. Default: `true`.
+///
+///   * `--forward-notify=<bool>`: Show a desktop notification when a
+///     forward is created. Independent of `--auto-forward`. Default: `true`.
 ///
 ///   * `--cache=<bool>`: Use the terminfo install cache. Default: `true`.
 ///     When `false`, both the cache read (skip-if-installed) and the
@@ -232,13 +252,14 @@ fn runInner(
         return 2;
     }
 
+    const destination = resolveDestination(alloc, opts.ssh, opts._ssh_args.items);
     const session: struct {
         term: []const u8,
         to_cache: ?struct { cache: DiskCache, dest: []const u8 } = null,
     } = session: {
         if (!opts.terminfo) break :session .{ .term = "xterm-256color" };
 
-        const dest = resolveDestination(alloc, opts.ssh, opts._ssh_args.items) orelse {
+        const dest = destination orelse {
             warnPrint(stderr, "could not resolve ssh destination; skipping terminfo install", .{});
             break :session .{ .term = "xterm-256color" };
         };
@@ -302,14 +323,33 @@ fn runInner(
             "-o", "SendEnv=TERM_PROGRAM_VERSION",
         };
     } else &.{};
+    const control_path = if (destination != null)
+        try allocControlSocketPath(alloc)
+    else
+        null;
+    const control_opts: []const []const u8 = if (control_path) |path| control: {
+        const path_opt = try std.fmt.allocPrint(alloc, "ControlPath={s}", .{path});
+        break :control &.{
+            "-o", "ControlMaster=yes",
+            "-o", "ControlPersist=no",
+            "-o", path_opt,
+        };
+    } else &.{};
     const argv = try std.mem.concat(alloc, []const u8, &.{
         &.{opts.ssh},
+        control_opts,
         env_opts,
         opts._ssh_args.items,
     });
     verbosePrint(opts, stderr, "exec: {f}", .{Joined{ .items = argv }});
 
-    const exit_code = childExec(argv) catch |err| {
+    const exit_code = runInteractiveSession(
+        gpa,
+        opts,
+        argv,
+        control_path,
+        destination,
+    ) catch |err| {
         try stderr.print("Error: failed to run {s}: {t}\n", .{ argv[0], err });
         return 1;
     };
@@ -469,6 +509,49 @@ fn parseDestination(alloc: Allocator, stdout: []const u8) ?[]const u8 {
     return std.fmt.allocPrint(alloc, "{s}@{s}", .{ user, host }) catch null;
 }
 
+/// Build a ControlPath short enough for macOS Unix sockets.
+/// Darwin `sockaddr_un.sun_path` is 104 bytes including NUL, and OpenSSH
+/// may append a connection hash (`'.' + ~16 bytes`). Keep the path under 80.
+/// Uses the same 16-byte random basename as other Ghostty temp paths so a
+/// `/tmp` fallback is not guessable.
+fn allocControlSocketPath(alloc: Allocator) ![]u8 {
+    const in_tmp = try internal_os.randomTmpPath(alloc, "gs-");
+    if (in_tmp.len <= 80) return in_tmp;
+    const base = std.fs.path.basename(in_tmp);
+    const fallback = try std.fmt.allocPrint(alloc, "/tmp/{s}", .{base});
+    alloc.free(in_tmp);
+    return fallback;
+}
+
+fn controlSocketPath(alloc: Allocator, tmp: []const u8, basename: []const u8) ![]u8 {
+    const in_tmp = try std.fmt.allocPrint(alloc, "{s}{c}{s}", .{
+        tmp,
+        std.fs.path.sep,
+        basename,
+    });
+    if (in_tmp.len <= 80) return in_tmp;
+    alloc.free(in_tmp);
+    return std.fmt.allocPrint(alloc, "/tmp/{s}", .{basename});
+}
+
+test "control socket path stays in TMPDIR when short" {
+    const testing = std.testing;
+    const path = try controlSocketPath(testing.allocator, "/tmp", "gs-AAAAAAAAAAAAAAAAAAAAAA");
+    defer testing.allocator.free(path);
+    try testing.expectEqualStrings("/tmp/gs-AAAAAAAAAAAAAAAAAAAAAA", path);
+    try testing.expect(path.len + 17 < 104);
+}
+
+test "control socket path falls back when TMPDIR is long" {
+    const testing = std.testing;
+    const tmp = "/var/folders/7b/c3cgby6d2kbcxq8_nnfny3w80000gn/T/very-long-tmpdir-component";
+    const path = try controlSocketPath(testing.allocator, tmp, "gs-AAAAAAAAAAAAAAAAAAAAAA");
+    defer testing.allocator.free(path);
+    try testing.expectEqualStrings("/tmp/gs-AAAAAAAAAAAAAAAAAAAAAA", path);
+    try testing.expect(path.len + 17 < 104);
+}
+
+
 /// Install Ghostty's terminfo on the remote host over a short-lived SSH
 /// ControlMaster connection. The master tears down with the client
 /// (`ControlPersist=no`) so no socket lingers.
@@ -482,11 +565,9 @@ fn installRemoteTerminfo(
     try terminfopkg.ghostty.encode(&buf.writer);
     const terminfo = buf.written();
 
-    // ControlPath is in TMPDIR with a short, random basename. ssh uses
-    // ControlPath as the bind address for a Unix domain socket; macOS
-    // limits sockaddr_un.sun_path to ~104 bytes, so keeping the path
-    // short leaves margin.
-    const control_path = try internal_os.randomTmpPath(alloc, "ghostty-ssh-");
+    // ControlPath is a Unix domain socket; macOS sockaddr_un.sun_path is
+    // 104 bytes including NUL, and OpenSSH may append a connection hash.
+    const control_path = try allocControlSocketPath(alloc);
     const control_path_opt = try std.fmt.allocPrint(
         alloc,
         "ControlPath={s}",
@@ -545,21 +626,262 @@ fn installRemoteTerminfo(
     checkExit(term, "terminfo install") catch return error.InstallFailed;
 }
 
-/// Returns `128 + signum` for signal-killed children, matching shell convention.
-fn childExec(argv: []const []const u8) !u8 {
+/// Run the user's interactive SSH process while publishing its multiplexing
+/// socket for uploads and, when enabled, monitoring remote listening ports.
+fn runInteractiveSession(
+    gpa: Allocator,
+    opts: *const Options,
+    argv: []const []const u8,
+    control_path: ?[]const u8,
+    destination: ?[]const u8,
+) !u8 {
     var child = try std.process.spawn(global.io(), .{
         .argv = argv,
         .stdin = .inherit,
         .stdout = .inherit,
         .stderr = .inherit,
     });
+    const auto_forward = opts.@"auto-forward" and envFlagEnabled(
+        "GHOSTTY_SSH_AUTO_FORWARD",
+    );
+    const forward_notify = opts.@"forward-notify" and envFlagEnabled(
+        "GHOSTTY_SSH_AUTO_FORWARD_NOTIFY",
+    );
+
+
+    const pid = ssh_session.currentPid();
+    if (control_path != null and destination != null) {
+        ssh_session.write(gpa, pid, .{
+            .control_path = control_path.?,
+            .destination = destination.?,
+            .ssh = opts.ssh,
+        }) catch |err| log.warn("unable to publish SSH session: {t}", .{err});
+    }
+    defer ssh_session.remove(gpa, pid);
+
+    var running = std.atomic.Value(bool).init(true);
+    const monitor = if (auto_forward and control_path != null and destination != null)
+        std.Thread.spawn(.{}, monitorRemotePorts, .{
+            opts.ssh,
+            control_path.?,
+            destination.?,
+            forward_notify,
+            &running,
+        }) catch null
+    else
+        null;
+    defer {
+        running.store(false, .release);
+        if (monitor) |thread| thread.join();
+    }
 
     const term = try child.wait(global.io());
+    return exitCode(term);
+}
+
+fn envFlagEnabled(name: []const u8) bool {
+    var environ = global.environMap() catch return true;
+    defer environ.deinit();
+    return !std.mem.eql(u8, environ.get(name) orelse return true, "0");
+}
+
+fn exitCode(term: std.process.Child.Term) u8 {
     return switch (term) {
         .exited => |rc| rc,
         .signal => |sig| @as(u8, 128) + @as(u8, @intCast(@min(@intFromEnum(sig), 127))),
         .stopped, .unknown => 1,
     };
+}
+
+const port_discovery_script =
+    \\if command -v ss >/dev/null 2>&1; then
+    \\  ss -H -ltn 2>/dev/null | awk '{n=split($4,a,/[.:]/); print a[n]}'
+    \\elif command -v lsof >/dev/null 2>&1; then
+    \\  lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | awk 'NR>1 {n=split($9,a,/[.:]/); print a[n]}'
+    \\elif command -v netstat >/dev/null 2>&1; then
+    \\  netstat -an -p tcp 2>/dev/null | awk '/LISTEN/ {n=split($4,a,/[.:]/); print a[n]}'
+    \\fi
+;
+
+fn monitorRemotePorts(
+    ssh: []const u8,
+    control_path: []const u8,
+    destination: []const u8,
+    notify: bool,
+    running: *std.atomic.Value(bool),
+) void {
+    const alloc = std.heap.page_allocator;
+    var forwarded: std.AutoHashMap(u16, u16) = .init(alloc);
+    defer forwarded.deinit();
+
+    // The master socket is created asynchronously by OpenSSH.
+    while (running.load(.acquire)) {
+        if (checkMaster(alloc, ssh, control_path, destination)) break;
+        std.Io.sleep(global.io(), .fromMilliseconds(100), .awake) catch return;
+    }
+
+    // Baseline the listeners that already exist when the session starts so
+    // only ports that begin listening during this session are forwarded.
+    // Without this, the first poll would forward every pre-existing
+    // listener on the remote host.
+    while (running.load(.acquire)) {
+        if (discoverPorts(alloc, ssh, control_path, destination)) |ports| {
+            defer if (ports.len > 0) alloc.free(ports);
+            for (ports) |remote_port| {
+                // A value of 0 marks "seen at baseline"; real entries map
+                // to the local port of the forward (currently unused).
+                forwarded.put(remote_port, 0) catch {};
+            }
+            break;
+        } else |_| {}
+        std.Io.sleep(global.io(), .fromMilliseconds(250), .awake) catch return;
+    }
+
+    while (running.load(.acquire)) {
+        const ports = discoverPorts(alloc, ssh, control_path, destination) catch &.{};
+        defer if (ports.len > 0) alloc.free(ports);
+        for (ports) |remote_port| {
+            if (forwarded.contains(remote_port)) continue;
+            const local_port = createForward(
+                alloc,
+                ssh,
+                control_path,
+                destination,
+                remote_port,
+            ) catch continue;
+            forwarded.put(remote_port, local_port) catch continue;
+            if (notify) notifyForward(remote_port, local_port);
+        }
+        std.Io.sleep(global.io(), .fromMilliseconds(750), .awake) catch return;
+    }
+}
+
+fn checkMaster(
+    alloc: Allocator,
+    ssh: []const u8,
+    control_path: []const u8,
+    destination: []const u8,
+) bool {
+    const result = std.process.run(alloc, global.io(), .{
+        .argv = &.{ ssh, "-S", control_path, "-O", "check", destination },
+    }) catch return false;
+    defer alloc.free(result.stdout);
+    defer alloc.free(result.stderr);
+    return exitCode(result.term) == 0;
+}
+
+fn discoverPorts(
+    alloc: Allocator,
+    ssh: []const u8,
+    control_path: []const u8,
+    destination: []const u8,
+) ![]u16 {
+    const result = try std.process.run(alloc, global.io(), .{
+        .argv = &.{ ssh, "-S", control_path, destination, port_discovery_script },
+    });
+    defer alloc.free(result.stdout);
+    defer alloc.free(result.stderr);
+    if (exitCode(result.term) != 0) return error.PortDiscoveryFailed;
+
+    var ports: std.ArrayList(u16) = .empty;
+    errdefer ports.deinit(alloc);
+    var lines = std.mem.tokenizeAny(u8, result.stdout, " \r\n");
+    while (lines.next()) |line| {
+        const port = std.fmt.parseUnsigned(u16, line, 10) catch continue;
+        if (!isForwardablePort(port)) continue;
+        if (std.mem.indexOfScalar(u16, ports.items, port) == null) {
+            try ports.append(alloc, port);
+        }
+    }
+    return ports.toOwnedSlice(alloc);
+}
+
+fn isForwardablePort(port: u16) bool {
+    return port >= 1024;
+}
+
+/// Last numeric field of a listen address. Handles Linux `ss` (`0.0.0.0:43210`),
+/// BSD `netstat` (`127.0.0.1.43210`, `*.43210`), and `lsof` (`*:43210`).
+fn portFromListenAddr(addr: []const u8) ?u16 {
+    const start = (std.mem.lastIndexOfAny(u8, addr, ".:") orelse return null) + 1;
+    const port = std.fmt.parseUnsigned(u16, addr[start..], 10) catch return null;
+    if (!isForwardablePort(port)) return null;
+    return port;
+}
+
+test "isForwardablePort: unprivileged including ephemeral" {
+    const testing = std.testing;
+    try testing.expect(!isForwardablePort(80));
+    try testing.expect(!isForwardablePort(1023));
+    try testing.expect(isForwardablePort(1024));
+    try testing.expect(isForwardablePort(43210));
+    try testing.expect(isForwardablePort(50000));
+    try testing.expect(isForwardablePort(65535));
+}
+
+test "portFromListenAddr: linux ss, bsd netstat, lsof" {
+    const testing = std.testing;
+    try testing.expectEqual(@as(?u16, 43210), portFromListenAddr("0.0.0.0:43210"));
+    try testing.expectEqual(@as(?u16, 43210), portFromListenAddr("*:43210"));
+    try testing.expectEqual(@as(?u16, 43210), portFromListenAddr("127.0.0.1.43210"));
+    try testing.expectEqual(@as(?u16, 43210), portFromListenAddr("*.43210"));
+    try testing.expectEqual(@as(?u16, 50000), portFromListenAddr("127.0.0.1:50000"));
+    try testing.expectEqual(@as(?u16, 43210), portFromListenAddr("[::]:43210"));
+    try testing.expectEqual(@as(?u16, null), portFromListenAddr("127.0.0.1:80"));
+}
+
+
+fn createForward(
+    alloc: Allocator,
+    ssh: []const u8,
+    control_path: []const u8,
+    destination: []const u8,
+    remote_port: u16,
+) !u16 {
+    if (try requestForward(alloc, ssh, control_path, destination, remote_port, remote_port)) {
+        return remote_port;
+    }
+
+    const address = try std.Io.net.IpAddress.parseIp4("127.0.0.1", 0);
+    var reservation = try address.listen(global.io(), .{});
+    const local_port = reservation.socket.address.getPort();
+    reservation.deinit(global.io());
+    if (!try requestForward(alloc, ssh, control_path, destination, local_port, remote_port)) {
+        return error.ForwardFailed;
+    }
+    return local_port;
+}
+
+fn requestForward(
+    alloc: Allocator,
+    ssh: []const u8,
+    control_path: []const u8,
+    destination: []const u8,
+    local_port: u16,
+    remote_port: u16,
+) !bool {
+    const spec = try std.fmt.allocPrint(
+        alloc,
+        "127.0.0.1:{d}:127.0.0.1:{d}",
+        .{ local_port, remote_port },
+    );
+    defer alloc.free(spec);
+    const result = try std.process.run(alloc, global.io(), .{
+        .argv = &.{ ssh, "-S", control_path, "-O", "forward", "-L", spec, destination },
+    });
+    defer alloc.free(result.stdout);
+    defer alloc.free(result.stderr);
+    return exitCode(result.term) == 0;
+}
+
+fn notifyForward(remote_port: u16, local_port: u16) void {
+    var buffer: [256]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buffer);
+    writer.print(
+        "\x1b]777;notify;SSH port forwarded;Remote port {d} is available at 127.0.0.1:{d}\x1b\\",
+        .{ remote_port, local_port },
+    ) catch return;
+    std.Io.File.stderr().writeStreamingAll(global.io(), writer.buffered()) catch {};
 }
 
 fn parseTestArgs(alloc: Allocator, opts: *Options, line: []const u8) !void {

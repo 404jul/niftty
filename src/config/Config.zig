@@ -2541,9 +2541,11 @@ keybind: Keybinds = .{},
 /// `primary` on Linux and `clipboard` on macOS, and `false` is an alias for
 /// `none`.
 ///
-/// The default value is `primary` on Linux and `none` otherwise.
+/// The default value is `primary` on Linux, `clipboard` on macOS, and
+/// `none` otherwise.
 @"copy-on-select": CopyOnSelect = switch (builtin.os.tag) {
     .linux => .primary,
+    .macos => .clipboard,
     else => .none,
 },
 
@@ -2984,6 +2986,26 @@ keybind: Keybinds = .{},
 /// terminfo on remote hosts and use `xterm-ghostty` as TERM, falling back to
 /// `xterm-256color` with environment variables if terminfo installation fails.
 @"shell-integration-features": ShellIntegrationFeatures = .{},
+
+/// Automatically forward TCP ports opened by remote development processes
+/// during SSH sessions launched through Ghostty's shell integration. Local
+/// listeners bind to loopback only. Disable this when explicit `ssh -L`
+/// management is preferred.
+///
+/// Available since: 1.4.0
+@"ssh-auto-forward": bool = true,
+
+/// Show a non-obstructive notification whenever Ghostty automatically forwards
+/// a remote port. Forwarding continues when this is disabled.
+///
+/// Available since: 1.4.0
+@"ssh-auto-forward-notify": bool = true,
+
+/// Show the current filename and aggregate progress while uploading files
+/// dropped onto an SSH terminal. Uploads continue when this is disabled.
+///
+/// Available since: 1.4.0
+@"ssh-upload-verbose": bool = true,
 
 /// Custom entries into the command palette.
 ///

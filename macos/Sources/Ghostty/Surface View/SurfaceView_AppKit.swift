@@ -204,6 +204,11 @@ extension Ghostty {
         // True when we've consumed a left mouse-down only to move focus and
         // should suppress the matching mouse-up from being reported.
         private var suppressNextLeftMouseUp: Bool = false
+        // Mouse-aware terminal applications receive ordinary clicks, while a drag
+        // becomes a local selection without requiring the user to hold Shift.
+        private var pendingCapturedLeftMouseDown: NSEvent?
+        private var selectingCapturedMouse = false
+
 
         // A small delay that is introduced before a title change to avoid flickers
         private var titleChangeTimer: Timer?
@@ -213,6 +218,9 @@ extension Ghostty {
 
         // Timer to remove progress report after 15 seconds
         private var progressReportTimer: Timer?
+        private var sshUploadProcess: Process?
+        private var sshUploadOutput = Data()
+
 
         // This is the title from the terminal. This is nil if we're currently using
         // the terminal title as the main title property. If the title is set manually
@@ -435,6 +443,9 @@ extension Ghostty {
 
             // Cancel progress report timer
             progressReportTimer?.invalidate()
+            if sshUploadProcess?.isRunning == true {
+                sshUploadProcess?.terminate()
+            }
         }
 
         override func endSearch() {
@@ -901,9 +912,19 @@ extension Ghostty {
         }
 
         override func mouseDown(with event: NSEvent) {
-            guard let surface = self.surface else { return }
-            let mods = Ghostty.ghosttyMods(event.modifierFlags)
-            ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT, mods)
+            guard let surfaceModel else { return }
+
+            selectingCapturedMouse = false
+            if surfaceModel.mouseCaptured && !event.modifierFlags.contains(.shift) {
+                if event.clickCount == 1 {
+                    pendingCapturedLeftMouseDown = event
+                    return
+                }
+
+                selectingCapturedMouse = true
+            }
+
+            sendLeftMouseButton(.press, event: event, selecting: selectingCapturedMouse)
         }
 
         override func mouseUp(with event: NSEvent) {
@@ -911,20 +932,45 @@ extension Ghostty {
             // suppress it so we don't emit a release without a press.
             if suppressNextLeftMouseUp {
                 suppressNextLeftMouseUp = false
+                pendingCapturedLeftMouseDown = nil
+                selectingCapturedMouse = false
                 return
             }
 
             // Always reset our pressure when the mouse goes up
-            prevPressureStage = 0
+            defer {
+                prevPressureStage = 0
+                pendingCapturedLeftMouseDown = nil
+                selectingCapturedMouse = false
+                if let surface {
+                    ghostty_surface_mouse_pressure(surface, 0, 0)
+                }
+            }
 
-            // If we have an active surface, report the event
-            guard let surface = self.surface else { return }
-            let mods = Ghostty.ghosttyMods(event.modifierFlags)
-            ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_LEFT, mods)
-
-            // Release pressure
-            ghostty_surface_mouse_pressure(surface, 0, 0)
+            if let pendingCapturedLeftMouseDown {
+                // No drag occurred. Deliver the original click to tmux/vim/etc.
+                sendLeftMouseButton(.press, event: pendingCapturedLeftMouseDown)
+            }
+            sendLeftMouseButton(.release, event: event, selecting: selectingCapturedMouse)
         }
+
+        private func sendLeftMouseButton(
+            _ action: Ghostty.Input.MouseState,
+            event: NSEvent,
+            selecting: Bool = false
+        ) {
+            guard let surfaceModel else { return }
+            var modifiers = event.modifierFlags
+            if selecting {
+                modifiers.insert(.shift)
+            }
+            surfaceModel.sendMouseButton(.init(
+                action: action,
+                button: .left,
+                mods: .init(nsFlags: modifiers)
+            ))
+        }
+
 
         override func otherMouseDown(with event: NSEvent) {
             guard let surface = self.surface else { return }
@@ -1019,16 +1065,24 @@ extension Ghostty {
         }
 
         override func mouseMoved(with event: NSEvent) {
+            sendMousePosition(event)
+        }
+
+        private func sendMousePosition(_ event: NSEvent, selecting: Bool = false) {
             let pos = self.convert(event.locationInWindow, from: nil)
             mouseLocationInSurface = pos
 
             guard let surfaceModel else { return }
+            var modifiers = event.modifierFlags
+            if selecting {
+                modifiers.insert(.shift)
+            }
 
             // Convert window position to view position. Note (0, 0) is bottom left.
             let mouseEvent = Ghostty.Input.MousePosEvent(
                 x: pos.x,
                 y: frame.height - pos.y,
-                mods: .init(nsFlags: event.modifierFlags)
+                mods: .init(nsFlags: modifiers)
             )
             surfaceModel.sendMousePos(mouseEvent)
 
@@ -1044,7 +1098,12 @@ extension Ghostty {
         }
 
         override func mouseDragged(with event: NSEvent) {
-            self.mouseMoved(with: event)
+            if let pendingCapturedLeftMouseDown {
+                self.pendingCapturedLeftMouseDown = nil
+                selectingCapturedMouse = true
+                sendLeftMouseButton(.press, event: pendingCapturedLeftMouseDown, selecting: true)
+            }
+            sendMousePosition(event, selecting: selectingCapturedMouse)
         }
 
         override func rightMouseDragged(with event: NSEvent) {
@@ -2281,31 +2340,193 @@ extension Ghostty.SurfaceView {
 
     override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
         guard let types = sender.draggingPasteboard.types else { return [] }
-
-        // If the dragging object contains none of our types then we return none.
-        // This shouldn't happen because AppKit should guarantee that we only
-        // receive types we registered for but its good to check.
-        if Set(types).isDisjoint(with: Self.dropTypes) {
-            return []
+        if types.contains(.fileURL), sshRemoteDirectory != nil,
+           let pid = surfaceModel?.foregroundPID, hasActiveSSHSession(pid: pid) {
+            sshDropTargeted = true
+            return .copy
         }
+        return Set(types).isDisjoint(with: Self.dropTypes) ? [] : .copy
+    }
 
-        // We use copy to get the proper icon
-        return .copy
+    override func draggingExited(_ sender: (any NSDraggingInfo)?) {
+        sshDropTargeted = false
     }
 
     override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
-        let pb = sender.draggingPasteboard
+        defer { sshDropTargeted = false }
+        let pasteboard = sender.draggingPasteboard
+        let fileURLs = (pasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) as? [URL]) ?? []
 
-        let content = pb.getOpinionatedStringContents()
-
-        if let content {
-            DispatchQueue.main.async {
-                self.surfaceModel?.sendText(content)
+        // A file drop on an active `ghostty +ssh` session uploads the files
+        // to the remote working directory. Local surfaces (no session) fall
+        // through to the text behavior below so they still paste the paths.
+        if !fileURLs.isEmpty,
+           let pid = surfaceModel?.foregroundPID,
+           hasActiveSSHSession(pid: pid) {
+            guard let remoteDirectory = sshRemoteDirectory else {
+                showSSHUploadFailure(
+                    "Remote working directory unknown — the remote host needs Ghostty shell integration"
+                )
+                return true
             }
+            startSSHUpload(
+                paths: fileURLs.map(\.path),
+                remoteDirectory: remoteDirectory,
+                pid: pid
+            )
             return true
         }
 
-        return false
+        guard let content = pasteboard.getOpinionatedStringContents() else { return false }
+        DispatchQueue.main.async {
+            self.surfaceModel?.sendText(content)
+        }
+        return true
+    }
+
+    /// The working directory reported via OSC 7 by the remote shell of an
+    /// active `ghostty +ssh` session. Core validates that the OSC 7 host is
+    /// non-local and delivers the decoded path (never a URL) separately
+    /// from the local `pwd`. The report is only usable when it came from
+    /// the session that is still in the foreground; otherwise it is stale
+    /// (e.g. left over from a previous SSH connection to another host).
+    private var sshRemoteDirectory: String? {
+        guard let remote = remotePwd,
+              let pid = surfaceModel?.foregroundPID,
+              remote.sessionPID == pid,
+              !remote.path.isEmpty else { return nil }
+        return remote.path
+    }
+
+    /// Whether the given PID has an active `ghostty +ssh` session. Session
+    /// files always live under `~/.local/state/ghostty/ssh-sessions`
+    /// regardless of XDG_STATE_HOME: this runs in the app's environment,
+    /// which cannot observe shell rc exports like XDG_STATE_HOME, so the
+    /// path must match what `+ssh` computes from HOME in the shell.
+    private func hasActiveSSHSession(pid: Int) -> Bool {
+        let state = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".local/state/ghostty/ssh-sessions", isDirectory: true)
+            .appendingPathComponent(String(pid))
+        return FileManager.default.fileExists(atPath: state.path)
+    }
+
+    private func startSSHUpload(paths: [String], remoteDirectory: String, pid: Int) {
+        guard sshUploadProcess?.isRunning != true else {
+            showSSHUploadFailure("An upload is already running")
+            return
+        }
+        guard let executable = Bundle.main.executableURL else {
+            showSSHUploadFailure("Ghostty executable is unavailable")
+            return
+        }
+
+        let verbose = (NSApp.delegate as? AppDelegate)?.ghostty.config.sshUploadVerbose ?? true
+        let process = Process()
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.executableURL = executable
+        process.arguments = [
+            "+ssh-upload",
+            "--pid=\(pid)",
+            "--remote-dir=\(remoteDirectory)",
+            "--verbose=\(verbose)",
+            "--",
+        ] + paths
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+        sshUploadOutput.removeAll(keepingCapacity: true)
+        sshUploadProcess = process
+        if verbose {
+            sshUploadProgress = .init(
+                completedBytes: 0,
+                totalBytes: 0,
+                filename: paths.first.map { URL(fileURLWithPath: $0).lastPathComponent },
+                message: "Preparing upload"
+            )
+        }
+
+        outputPipe.fileHandleForReading.readabilityHandler = { [weak self, weak process] handle in
+            let data = handle.availableData
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
+            DispatchQueue.main.async {
+                guard let self, let process, self.sshUploadProcess === process else { return }
+                self.consumeSSHUploadOutput(data)
+            }
+        }
+        process.terminationHandler = { [weak self, weak process] finished in
+            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            let error = String(data: errorData, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            DispatchQueue.main.async {
+                guard let self, let process, self.sshUploadProcess === process else { return }
+                outputPipe.fileHandleForReading.readabilityHandler = nil
+                self.sshUploadProcess = nil
+                if finished.terminationStatus == 0 {
+                    self.sshUploadProgress = verbose ? .init(
+                        completedBytes: self.sshUploadProgress?.totalBytes ?? 0,
+                        totalBytes: self.sshUploadProgress?.totalBytes ?? 0,
+                        filename: nil,
+                        message: "Upload complete"
+                    ) : nil
+                } else {
+                    self.showSSHUploadFailure(error?.isEmpty == false ? error! : "Upload failed")
+                }
+                self.clearSSHUploadStatusLater()
+            }
+        }
+
+        do {
+            try process.run()
+        } catch {
+            outputPipe.fileHandleForReading.readabilityHandler = nil
+            sshUploadProcess = nil
+            showSSHUploadFailure(error.localizedDescription)
+        }
+    }
+
+    private func consumeSSHUploadOutput(_ data: Data) {
+        sshUploadOutput.append(data)
+        while let newline = sshUploadOutput.firstIndex(of: 0x0A) {
+            let line = String(decoding: sshUploadOutput[..<newline], as: UTF8.self)
+            sshUploadOutput.removeSubrange(...newline)
+            let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
+            guard fields.count == 4, fields[0] == "P",
+                  let completed = UInt64(fields[1]),
+                  let total = UInt64(fields[2]),
+                  let nameData = Data(base64Encoded: String(fields[3])),
+                  let name = String(data: nameData, encoding: .utf8) else { continue }
+            sshUploadProgress = .init(
+                completedBytes: completed,
+                totalBytes: total,
+                filename: URL(fileURLWithPath: name).lastPathComponent,
+                message: nil
+            )
+        }
+    }
+
+    private func showSSHUploadFailure(_ message: String) {
+        sshUploadProgress = .init(
+            completedBytes: 0,
+            totalBytes: 0,
+            filename: nil,
+            message: message,
+            isError: true
+        )
+        clearSSHUploadStatusLater()
+    }
+
+    private func clearSSHUploadStatusLater() {
+        let expected = sshUploadProgress
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
+            guard self?.sshUploadProgress == expected else { return }
+            self?.sshUploadProgress = nil
+        }
     }
 }
 

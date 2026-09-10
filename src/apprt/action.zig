@@ -219,6 +219,10 @@ pub const Action = union(Key) {
     /// The current working directory has changed for the target terminal.
     pwd: Pwd,
 
+    /// A working directory on a non-local host was reported for the target
+    /// terminal (e.g. the remote side of an SSH session).
+    remote_pwd: Pwd,
+
     /// Set the mouse cursor shape.
     mouse_shape: terminal.MouseShape,
 
@@ -397,6 +401,7 @@ pub const Action = union(Key) {
         set_window_title,
         prompt_title,
         pwd,
+        remote_pwd,
         mouse_shape,
         mouse_visibility,
         mouse_over_link,

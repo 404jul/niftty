@@ -8,10 +8,6 @@ export module ghostty {
   # feature flags into command options.
   @complete external
   export def --wrapped ssh [...args] {
-    if not ((has_feature "ssh-env") or (has_feature "ssh-terminfo")) {
-      ^ssh ...$args
-      return
-    }
 
     let ghostty = ($env.GHOSTTY_BIN_DIR? | default "") | path join "ghostty"
     mut flags = []

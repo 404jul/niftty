@@ -745,6 +745,10 @@ pub const Application = extern struct {
 
             .pwd => Action.pwd(target, value),
 
+            // Remote (non-local host) working directories have no GTK
+            // consumer today; they exist for SSH-aware apprt features.
+            .remote_pwd => {},
+
             .present_terminal => return Action.presentTerminal(target),
 
             .progress_report => return Action.progressReport(target, value),

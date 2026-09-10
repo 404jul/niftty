@@ -663,6 +663,10 @@ extension Ghostty {
             case GHOSTTY_ACTION_PWD:
                 pwdChanged(app, target: target, v: action.action.pwd)
 
+            case GHOSTTY_ACTION_REMOTE_PWD:
+                remotePwdChanged(app, target: target, v: action.action.remote_pwd)
+
+
             case GHOSTTY_ACTION_OPEN_CONFIG:
                 openConfig(app)
 
@@ -1925,6 +1929,37 @@ extension Ghostty {
                 guard let surfaceView = self.surfaceView(from: surface) else { return }
                 guard let pwd = String(cString: v.pwd!, encoding: .utf8) else { return }
                 surfaceView.pwd = pwd
+                // A local working-directory report means the local shell is
+                // active again (e.g. an SSH session just exited), so any
+                // previously reported remote directory is stale.
+                surfaceView.remotePwd = nil
+
+            default:
+                assertionFailure()
+            }
+        }
+
+        private static func remotePwdChanged(
+            _ app: ghostty_app_t,
+            target: ghostty_target_s,
+            v: ghostty_action_pwd_s) {
+            switch target.tag {
+            case GHOSTTY_TARGET_APP:
+                Ghostty.logger.warning("remote pwd change does nothing with an app target")
+                return
+
+            case GHOSTTY_TARGET_SURFACE:
+                guard let surface = target.target.surface else { return }
+                guard let surfaceView = self.surfaceView(from: surface) else { return }
+                guard let pwd = String(cString: v.pwd!, encoding: .utf8) else { return }
+                // Read the raw C value rather than the @MainActor
+                // `foregroundPID` property: this handler is nonisolated.
+                let foregroundPid = ghostty_surface_foreground_pid(surface)
+                surfaceView.remotePwd = .init(
+                    path: pwd,
+                    sessionPID: foregroundPid != 0 ? Int(foregroundPid) : nil
+                )
+                Ghostty.logger.debug("remote pwd change: \(pwd)")
 
             default:
                 assertionFailure()
