@@ -62,6 +62,7 @@ extension Ghostty {
         @Published var sshDropTargeted = false
         @Published var sshUploadProgress: SSHUploadProgress?
 
+
         // The currently active key tables. Empty if no tables are active.
         @Published var keyTables: [String] = []
 

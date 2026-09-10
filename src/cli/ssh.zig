@@ -7,6 +7,7 @@ const diagnostics = @import("diagnostics.zig");
 const Action = @import("ghostty.zig").Action;
 const DiskCache = @import("ssh_cache.zig").DiskCache;
 const ssh_session = @import("ssh_session.zig");
+const ssh_tunnel = @import("ssh_tunnel.zig");
 const internal_os = @import("../os/main.zig");
 const terminfopkg = @import("../terminfo/main.zig");
 const global = @import("../global.zig");
@@ -47,7 +48,6 @@ pub const Options = struct {
 
     /// Notify when an automatic forward is created.
     @"forward-notify": bool = true,
-
 
     /// The wrapped `ssh` binary.
     /// `/`-containing values are treated as paths; otherwise resolved via PATH.
@@ -144,10 +144,13 @@ pub const Options = struct {
 ///      step. When terminfo is successfully installed or already cached,
 ///      `TERM` is set to `xterm-ghostty` instead of `xterm-256color`.
 ///
-///   3. **Port forwarding** (`--auto-forward`). Detects newly listening
-///      unprivileged TCP ports on the remote host and forwards them to
-///      loopback locally. The same port is preferred; if it is occupied,
-///      Ghostty chooses an available local port.
+///   3. **Port forwarding** (`--auto-forward`). Detects listening
+///      unprivileged TCP ports on loopback or all-interfaces on the
+///      remote host, including ports that were already open when the
+///      session started, and forwards them to loopback locally. The
+///      same port is preferred; if it is occupied, Ghostty chooses an
+///      available local port. On macOS, the SSH Ports overlay lists
+///      these tunnels and can add or close them.
 ///
 /// If `--terminfo` install fails (e.g. `tic` not available on the
 /// remote, filesystem permissions), a warning is logged and the
@@ -265,7 +268,7 @@ fn runInner(
         };
 
         const cache: ?DiskCache = if (opts.cache) cache: {
-            const path = DiskCache.defaultPath(alloc, "ghostty") catch |err| {
+            const path = DiskCache.defaultPath(alloc, "niftty") catch |err| {
                 warnPrint(stderr, "ghostty terminfo cache unavailable: {t}", .{err});
                 break :session .{ .term = "xterm-256color" };
             };
@@ -551,7 +554,6 @@ test "control socket path falls back when TMPDIR is long" {
     try testing.expect(path.len + 17 < 104);
 }
 
-
 /// Install Ghostty's terminfo on the remote host over a short-lived SSH
 /// ControlMaster connection. The master tears down with the client
 /// (`ControlPersist=no`) so no socket lingers.
@@ -648,7 +650,6 @@ fn runInteractiveSession(
         "GHOSTTY_SSH_AUTO_FORWARD_NOTIFY",
     );
 
-
     const pid = ssh_session.currentPid();
     if (control_path != null and destination != null) {
         ssh_session.write(gpa, pid, .{
@@ -666,6 +667,7 @@ fn runInteractiveSession(
             control_path.?,
             destination.?,
             forward_notify,
+            pid,
             &running,
         }) catch null
     else
@@ -695,11 +697,12 @@ fn exitCode(term: std.process.Child.Term) u8 {
 
 const port_discovery_script =
     \\if command -v ss >/dev/null 2>&1; then
-    \\  ss -H -ltn 2>/dev/null | awk '{n=split($4,a,/[.:]/); print a[n]}'
+    \\  ss -ltn 2>/dev/null | awk 'NR==1 && $1 ~ /State|Netid/ { next } { print $4 }'
     \\elif command -v lsof >/dev/null 2>&1; then
-    \\  lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | awk 'NR>1 {n=split($9,a,/[.:]/); print a[n]}'
+    \\  lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | awk 'NR>1 { print $9 }'
     \\elif command -v netstat >/dev/null 2>&1; then
-    \\  netstat -an -p tcp 2>/dev/null | awk '/LISTEN/ {n=split($4,a,/[.:]/); print a[n]}'
+    \\  netstat -lnt 2>/dev/null | awk '/LISTEN/ { print $4 }'
+    \\  netstat -an -p tcp 2>/dev/null | awk '/LISTEN/ { print $4 }'
     \\fi
 ;
 
@@ -708,11 +711,10 @@ fn monitorRemotePorts(
     control_path: []const u8,
     destination: []const u8,
     notify: bool,
+    pid: u64,
     running: *std.atomic.Value(bool),
 ) void {
     const alloc = std.heap.page_allocator;
-    var forwarded: std.AutoHashMap(u16, u16) = .init(alloc);
-    defer forwarded.deinit();
 
     // The master socket is created asynchronously by OpenSSH.
     while (running.load(.acquire)) {
@@ -720,36 +722,54 @@ fn monitorRemotePorts(
         std.Io.sleep(global.io(), .fromMilliseconds(100), .awake) catch return;
     }
 
-    // Baseline the listeners that already exist when the session starts so
-    // only ports that begin listening during this session are forwarded.
-    // Without this, the first poll would forward every pre-existing
-    // listener on the remote host.
     while (running.load(.acquire)) {
-        if (discoverPorts(alloc, ssh, control_path, destination)) |ports| {
-            defer if (ports.len > 0) alloc.free(ports);
-            for (ports) |remote_port| {
-                // A value of 0 marks "seen at baseline"; real entries map
-                // to the local port of the forward (currently unused).
-                forwarded.put(remote_port, 0) catch {};
-            }
-            break;
-        } else |_| {}
-        std.Io.sleep(global.io(), .fromMilliseconds(250), .awake) catch return;
-    }
-
-    while (running.load(.acquire)) {
-        const ports = discoverPorts(alloc, ssh, control_path, destination) catch &.{};
+        const ports = discoverPorts(alloc, ssh, control_path, destination) catch {
+            std.Io.sleep(global.io(), .fromMilliseconds(250), .awake) catch return;
+            continue;
+        };
         defer if (ports.len > 0) alloc.free(ports);
+
+        var ledger = ssh_tunnel.load(alloc, pid) catch ssh_tunnel.Ledger{ .alloc = alloc };
+        defer ledger.deinit();
+
         for (ports) |remote_port| {
-            if (forwarded.contains(remote_port)) continue;
-            const local_port = createForward(
+            if (ledger.hasRemote(remote_port) or ledger.ignores(remote_port)) continue;
+            if (ledger.tunnels.items.len >= ssh_tunnel.max_auto_forwards) break;
+            const local_port = ssh_tunnel.openLocal(
                 alloc,
                 ssh,
                 control_path,
                 destination,
                 remote_port,
+                null,
             ) catch continue;
-            forwarded.put(remote_port, local_port) catch continue;
+            ledger.add(
+                ssh_tunnel.loopback,
+                local_port,
+                ssh_tunnel.loopback,
+                remote_port,
+            ) catch {
+                _ = ssh_tunnel.closeLocal(
+                    alloc,
+                    ssh,
+                    control_path,
+                    destination,
+                    local_port,
+                    remote_port,
+                ) catch {};
+                continue;
+            };
+            ssh_tunnel.save(alloc, pid, ledger) catch {
+                _ = ssh_tunnel.closeLocal(
+                    alloc,
+                    ssh,
+                    control_path,
+                    destination,
+                    local_port,
+                    remote_port,
+                ) catch {};
+                continue;
+            };
             if (notify) notifyForward(remote_port, local_port);
         }
         std.Io.sleep(global.io(), .fromMilliseconds(750), .awake) catch return;
@@ -785,10 +805,12 @@ fn discoverPorts(
 
     var ports: std.ArrayList(u16) = .empty;
     errdefer ports.deinit(alloc);
-    var lines = std.mem.tokenizeAny(u8, result.stdout, " \r\n");
-    while (lines.next()) |line| {
-        const port = std.fmt.parseUnsigned(u16, line, 10) catch continue;
-        if (!isForwardablePort(port)) continue;
+    var lines = std.mem.tokenizeAny(u8, result.stdout, "\r\n");
+    while (lines.next()) |raw| {
+        const addr = stripListenSuffix(raw);
+        if (!isLoopbackOrAllInterfaces(addr)) continue;
+        const port = portFromListenAddr(addr) orelse continue;
+        if (isIgnoredPort(port)) continue;
         if (std.mem.indexOfScalar(u16, ports.items, port) == null) {
             try ports.append(alloc, port);
         }
@@ -796,8 +818,40 @@ fn discoverPorts(
     return ports.toOwnedSlice(alloc);
 }
 
+fn stripListenSuffix(addr: []const u8) []const u8 {
+    const trimmed = std.mem.trim(u8, addr, " \t");
+    if (std.mem.endsWith(u8, trimmed, "(LISTEN)")) {
+        return std.mem.trim(u8, trimmed[0 .. trimmed.len - "(LISTEN)".len], " \t");
+    }
+    return trimmed;
+}
+
 fn isForwardablePort(port: u16) bool {
     return port >= 1024;
+}
+
+fn isIgnoredPort(port: u16) bool {
+    return switch (port) {
+        111, // rpcbind
+        631, // cups
+        873, // rsync
+        2049, // nfs
+        2375,
+        2376,
+        2377, // docker API / swarm
+        3306, // mysql
+        5353, // mdns
+        5355, // llmnr
+        5432, // postgres
+        5672, // amqp
+        6379, // redis
+        6443, // kube-apiserver
+        10250, // kubelet
+        11211, // memcached
+        27017, // mongodb
+        => true,
+        else => false,
+    };
 }
 
 /// Last numeric field of a listen address. Handles Linux `ss` (`0.0.0.0:43210`),
@@ -807,6 +861,27 @@ fn portFromListenAddr(addr: []const u8) ?u16 {
     const port = std.fmt.parseUnsigned(u16, addr[start..], 10) catch return null;
     if (!isForwardablePort(port)) return null;
     return port;
+}
+
+fn listenHost(addr: []const u8) ?[]const u8 {
+    const sep = std.mem.lastIndexOfAny(u8, addr, ".:") orelse return null;
+    if (sep == 0) return addr[0..0];
+    var host = addr[0..sep];
+    if (host.len >= 2 and host[0] == '[' and host[host.len - 1] == ']') {
+        host = host[1 .. host.len - 1];
+    }
+    return host;
+}
+
+fn isLoopbackOrAllInterfaces(addr: []const u8) bool {
+    const host = listenHost(addr) orelse return false;
+    return host.len == 0 or
+        std.mem.eql(u8, host, "*") or
+        std.mem.eql(u8, host, "0.0.0.0") or
+        std.mem.eql(u8, host, "127.0.0.1") or
+        std.mem.eql(u8, host, "::") or
+        std.mem.eql(u8, host, "::1") or
+        std.mem.startsWith(u8, host, "::ffff:127.0.0.1");
 }
 
 test "isForwardablePort: unprivileged including ephemeral" {
@@ -830,48 +905,33 @@ test "portFromListenAddr: linux ss, bsd netstat, lsof" {
     try testing.expectEqual(@as(?u16, null), portFromListenAddr("127.0.0.1:80"));
 }
 
-
-fn createForward(
-    alloc: Allocator,
-    ssh: []const u8,
-    control_path: []const u8,
-    destination: []const u8,
-    remote_port: u16,
-) !u16 {
-    if (try requestForward(alloc, ssh, control_path, destination, remote_port, remote_port)) {
-        return remote_port;
-    }
-
-    const address = try std.Io.net.IpAddress.parseIp4("127.0.0.1", 0);
-    var reservation = try address.listen(global.io(), .{});
-    const local_port = reservation.socket.address.getPort();
-    reservation.deinit(global.io());
-    if (!try requestForward(alloc, ssh, control_path, destination, local_port, remote_port)) {
-        return error.ForwardFailed;
-    }
-    return local_port;
+test "isIgnoredPort: infra skipped, web kept" {
+    const testing = std.testing;
+    try testing.expect(isIgnoredPort(5432));
+    try testing.expect(isIgnoredPort(6379));
+    try testing.expect(isIgnoredPort(3306));
+    try testing.expect(!isIgnoredPort(3000));
+    try testing.expect(!isIgnoredPort(8080));
+    try testing.expect(!isIgnoredPort(5173));
 }
 
-fn requestForward(
-    alloc: Allocator,
-    ssh: []const u8,
-    control_path: []const u8,
-    destination: []const u8,
-    local_port: u16,
-    remote_port: u16,
-) !bool {
-    const spec = try std.fmt.allocPrint(
-        alloc,
-        "127.0.0.1:{d}:127.0.0.1:{d}",
-        .{ local_port, remote_port },
-    );
-    defer alloc.free(spec);
-    const result = try std.process.run(alloc, global.io(), .{
-        .argv = &.{ ssh, "-S", control_path, "-O", "forward", "-L", spec, destination },
-    });
-    defer alloc.free(result.stdout);
-    defer alloc.free(result.stderr);
-    return exitCode(result.term) == 0;
+test "isLoopbackOrAllInterfaces: ss netstat lsof" {
+    const testing = std.testing;
+    try testing.expect(isLoopbackOrAllInterfaces("127.0.0.1:3000"));
+    try testing.expect(isLoopbackOrAllInterfaces("0.0.0.0:3000"));
+    try testing.expect(isLoopbackOrAllInterfaces("*:3000"));
+    try testing.expect(isLoopbackOrAllInterfaces("[::]:3000"));
+    try testing.expect(isLoopbackOrAllInterfaces("[::1]:3000"));
+    try testing.expect(isLoopbackOrAllInterfaces("*.43210"));
+    try testing.expect(isLoopbackOrAllInterfaces("127.0.0.1.43210"));
+    try testing.expect(!isLoopbackOrAllInterfaces("192.168.1.10:3000"));
+    try testing.expect(!isLoopbackOrAllInterfaces("10.0.0.5:8080"));
+}
+
+test "stripListenSuffix: lsof optional suffix" {
+    const testing = std.testing;
+    try testing.expectEqualStrings("*:3000", stripListenSuffix("*:3000 (LISTEN)"));
+    try testing.expectEqualStrings("*:3000", stripListenSuffix("*:3000"));
 }
 
 fn notifyForward(remote_port: u16, local_port: u16) void {

@@ -14,6 +14,7 @@ const list_actions = @import("list_actions.zig");
 const ssh = @import("ssh.zig");
 const ssh_cache = @import("ssh_cache.zig");
 const ssh_upload = @import("ssh_upload.zig");
+const ssh_forward = @import("ssh_forward.zig");
 const edit_config = @import("edit_config.zig");
 const show_config = @import("show_config.zig");
 const explain_config = @import("explain_config.zig");
@@ -59,6 +60,9 @@ pub const Action = enum {
 
     /// Upload files through an active Ghostty SSH session
     @"ssh-upload",
+
+    /// List, add, or cancel SSH port forwards for an active session
+    @"ssh-forward",
 
     /// Edit the config file in the configured terminal editor.
     @"edit-config",
@@ -166,6 +170,7 @@ pub const Action = enum {
             .@"ssh-cache" => try ssh_cache.run(alloc),
             .ssh => try ssh.run(alloc),
             .@"ssh-upload" => try ssh_upload.run(alloc),
+            .@"ssh-forward" => try ssh_forward.run(alloc),
             .@"edit-config" => try edit_config.run(alloc),
             .@"show-config" => try show_config.run(alloc),
             .@"explain-config" => try explain_config.run(alloc),
@@ -210,6 +215,7 @@ pub const Action = enum {
                 .@"ssh-cache" => ssh_cache.Options,
                 .ssh => ssh.Options,
                 .@"ssh-upload" => ssh_upload.Options,
+                .@"ssh-forward" => ssh_forward.Options,
                 .@"edit-config" => edit_config.Options,
                 .@"show-config" => show_config.Options,
                 .@"explain-config" => explain_config.Options,

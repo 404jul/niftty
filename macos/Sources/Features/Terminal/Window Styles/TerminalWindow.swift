@@ -24,6 +24,9 @@ class TerminalWindow: NSWindow {
     /// Update notification UI in titlebar
     private let updateAccessory = NSTitlebarAccessoryViewController()
 
+    /// SSH ports button in titlebar
+    private let sshPortsAccessory = NSTitlebarAccessoryViewController()
+
     /// Visual indicator that mirrors the selected tab color.
     private lazy var tabColorIndicator: NSHostingView<TabColorIndicatorView> = {
         let view = NSHostingView(rootView: TabColorIndicatorView(tabColor: tabColor))
@@ -153,6 +156,13 @@ class TerminalWindow: NSWindow {
                 addTitlebarAccessoryViewController(updateAccessory)
                 updateAccessory.view.translatesAutoresizingMaskIntoConstraints = false
             }
+
+            sshPortsAccessory.layoutAttribute = .right
+            sshPortsAccessory.view = NonDraggableHostingView(rootView: SSHPortsAccessoryView(
+                viewModel: viewModel
+            ))
+            addTitlebarAccessoryViewController(sshPortsAccessory)
+            sshPortsAccessory.view.translatesAutoresizingMaskIntoConstraints = false
         }
 
         // Setup the accessory view for tabs that shows our keyboard shortcuts,
@@ -628,15 +638,20 @@ extension TerminalWindow {
         @Published var isSurfaceZoomed: Bool = false
         @Published var hasToolbar: Bool = false
         @Published var isMainWindow: Bool = true
+        @Published var focusedSurface: Ghostty.SurfaceView?
 
         /// Calculates the top padding based on toolbar visibility and macOS version
-        fileprivate var accessoryTopPadding: CGFloat {
+        var accessoryTopPadding: CGFloat {
             if #available(macOS 26.0, *) {
                 return hasToolbar ? 10 : 5
             } else {
                 return hasToolbar ? 9 : 4
             }
         }
+    }
+
+    func syncFocusedSurface(_ surface: Ghostty.SurfaceView?) {
+        viewModel.focusedSurface = surface
     }
 
     struct ResetZoomAccessoryView: View {

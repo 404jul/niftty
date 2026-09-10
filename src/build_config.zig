@@ -43,6 +43,13 @@ pub const font_backend: font.Backend = config.font_backend;
 pub const renderer: rendererpkg.Backend = config.renderer;
 pub const i18n: bool = config.i18n;
 
+/// User-facing application name (Dock, menus, About).
+pub const app_name = "Niftty";
+
+/// Directory name under XDG config/state/cache (`~/.config/niftty`, etc.).
+/// Must not be `ghostty` so this fork does not share Ghostty's files.
+pub const app_id = "niftty";
+
 /// The bundle ID for the app. This is used in many places and is currently
 /// hardcoded here. We could make this configurable in the future if there
 /// is a reason to do so.
@@ -55,7 +62,7 @@ pub const i18n: bool = config.i18n;
 /// There are many places that don't use this variable so simply swapping
 /// this variable is NOT ENOUGH to change the bundle ID. I just wanted to
 /// avoid it in Zig coe as much as possible.
-pub const bundle_id = "com.mitchellh.ghostty";
+pub const bundle_id = "com.niftty.app";
 
 /// True if we should have "slow" runtime safety checks. The initial motivation
 /// for this was terminal page/pagelist integrity checks. These were VERY

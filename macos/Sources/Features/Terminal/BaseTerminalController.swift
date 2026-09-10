@@ -877,6 +877,7 @@ class BaseTerminalController: NSWindowController,
     func focusedSurfaceDidChange(to: Ghostty.SurfaceView?) {
         let lastFocusedSurface = focusedSurface
         focusedSurface = to
+        (window as? TerminalWindow)?.syncFocusedSurface(to)
 
         // Important to cancel any prior subscriptions
         focusedSurfaceCancellables = []

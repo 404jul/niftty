@@ -2407,10 +2407,7 @@ extension Ghostty.SurfaceView {
     /// which cannot observe shell rc exports like XDG_STATE_HOME, so the
     /// path must match what `+ssh` computes from HOME in the shell.
     private func hasActiveSSHSession(pid: Int) -> Bool {
-        let state = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".local/state/ghostty/ssh-sessions", isDirectory: true)
-            .appendingPathComponent(String(pid))
-        return FileManager.default.fileExists(atPath: state.path)
+        SSHSessionStore.isActive(pid: pid)
     }
 
     private func startSSHUpload(paths: [String], remoteDirectory: String, pid: Int) {

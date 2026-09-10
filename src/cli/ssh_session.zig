@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const global = @import("../global.zig");
 const xdg = @import("../os/main.zig").xdg;
+const build_config = @import("../build_config.zig");
 
 const max_state_size = 16 * 1024;
 
@@ -32,18 +33,18 @@ pub fn currentPid() u64 {
 /// environment), the app-spawned `+ssh-upload` loader, and the app's own
 /// drag-and-drop detector (both app environment). A GUI app cannot observe
 /// XDG_STATE_HOME values set in shell rc files, so honoring it here would
-/// make writer and readers disagree and uploads would silently never
-/// activate.
+/// make writer and readers disagree and uploads would silently never activate.
 fn stateDir(alloc: Allocator, environ: *const std.process.Environ.Map) ![]u8 {
     if (builtin.os.tag == .windows) {
         return try xdg.state(global.io(), alloc, environ, .{
-            .subdir = "ghostty/ssh-sessions",
+            .subdir = build_config.app_id ++ "/ssh-sessions",
         });
     }
 
     const home = environ.get("HOME") orelse return error.HomeNotSet;
-    return std.fmt.allocPrint(alloc, "{s}/.local/state/ghostty/ssh-sessions", .{home});
+    return std.fmt.allocPrint(alloc, "{s}/.local/state/" ++ build_config.app_id ++ "/ssh-sessions", .{home});
 }
+
 
 pub fn pathForPid(alloc: Allocator, pid: u64) ![]u8 {
     var environ = try global.environMap();
@@ -53,6 +54,11 @@ pub fn pathForPid(alloc: Allocator, pid: u64) ![]u8 {
     return std.fmt.allocPrint(alloc, "{s}/{d}", .{ state_dir, pid });
 }
 
+pub fn tunnelsPathForPid(alloc: Allocator, pid: u64) ![]u8 {
+    const path = try pathForPid(alloc, pid);
+    defer alloc.free(path);
+    return std.fmt.allocPrint(alloc, "{s}.tunnels", .{path});
+}
 
 pub fn write(alloc: Allocator, pid: u64, info: Info) !void {
     if (std.mem.indexOfScalar(u8, info.control_path, '\n') != null or
@@ -91,6 +97,9 @@ pub fn remove(alloc: Allocator, pid: u64) void {
     const path = pathForPid(alloc, pid) catch return;
     defer alloc.free(path);
     std.Io.Dir.deleteFileAbsolute(global.io(), path) catch {};
+    const tunnels = std.fmt.allocPrint(alloc, "{s}.tunnels", .{path}) catch return;
+    defer alloc.free(tunnels);
+    std.Io.Dir.deleteFileAbsolute(global.io(), tunnels) catch {};
 }
 
 pub fn load(alloc: Allocator, pid: u64) !Info {

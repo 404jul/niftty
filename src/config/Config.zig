@@ -561,9 +561,9 @@ language: ?[:0]const u8 = null,
 /// systems with case-sensitive filesystems. It is an error for a theme name to
 /// include path separators unless it is an absolute pathname.
 ///
-/// The first directory is the `themes` subdirectory of your Ghostty
-/// configuration directory. This is `$XDG_CONFIG_HOME/ghostty/themes` or
-/// `~/.config/ghostty/themes`.
+/// The first directory is the `themes` subdirectory of your Niftty
+/// configuration directory. This is `$XDG_CONFIG_HOME/niftty/themes` or
+/// `~/.config/niftty/themes`.
 ///
 /// The second directory is the `themes` subdirectory of the Ghostty resources
 /// directory. Ghostty ships with a multitude of themes that will be installed
@@ -2610,7 +2610,7 @@ keybind: Keybinds = .{},
 
 /// When this is true, the default configuration file paths will be loaded.
 /// The default configuration file paths are currently only the XDG
-/// config path ($XDG_CONFIG_HOME/ghostty/config.ghostty).
+/// config path ($XDG_CONFIG_HOME/niftty/config).
 ///
 /// If this is false, the default configuration paths will not be loaded.
 /// This is targeted directly at using Ghostty from the CLI in a way
@@ -2988,9 +2988,10 @@ keybind: Keybinds = .{},
 @"shell-integration-features": ShellIntegrationFeatures = .{},
 
 /// Automatically forward TCP ports opened by remote development processes
-/// during SSH sessions launched through Ghostty's shell integration. Local
-/// listeners bind to loopback only. Disable this when explicit `ssh -L`
-/// management is preferred.
+/// during SSH sessions launched through Ghostty's shell integration, including
+/// ports that were already listening when the session started. Local listeners
+/// bind to loopback only. Disable this when explicit `ssh -L` management is
+/// preferred. On macOS, the SSH Ports overlay can add or close tunnels.
 ///
 /// Available since: 1.4.0
 @"ssh-auto-forward": bool = true,
@@ -3583,7 +3584,7 @@ keybind: Keybinds = .{},
 /// The absolute path to the custom icon file.
 /// Supported formats include PNG, JPEG, and ICNS.
 ///
-/// Defaults to `~/.config/ghostty/Ghostty.icns`
+/// Defaults to `~/.config/niftty/Niftty.icns`
 @"macos-custom-icon": ?[:0]const u8 = null,
 
 /// The material to use for the frame of the macOS app icon.
@@ -4182,13 +4183,10 @@ fn writeConfigTemplate(path: []const u8) !void {
 }
 
 /// Load configurations from the default configuration files. The default
-/// configuration file is at `$XDG_CONFIG_HOME/ghostty/config.ghostty`.
+/// configuration file is at `$XDG_CONFIG_HOME/niftty/config`.
 ///
 /// On macOS, `$HOME/Library/Application Support/$CFBundleIdentifier/`
 /// is also loaded.
-///
-/// The legacy `config` file (without extension) is first loaded,
-/// then `config.ghostty`.
 pub fn loadDefaultFiles(self: *Config, alloc: Allocator) !void {
     // Load XDG first
     const legacy_xdg_path = try file_load.legacyDefaultXdgPath(alloc);

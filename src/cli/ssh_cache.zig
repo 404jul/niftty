@@ -136,7 +136,7 @@ pub fn run(alloc_gpa: Allocator) !u8 {
     }
 
     // Setup our disk cache to the standard location
-    const cache_path = DiskCache.defaultPath(alloc, "ghostty") catch |err| {
+    const cache_path = DiskCache.defaultPath(alloc, "niftty") catch |err| {
         try stderr.print(
             "Error: unable to determine the cache path: {t}\n",
             .{err},

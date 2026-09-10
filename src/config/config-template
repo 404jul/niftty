@@ -1,11 +1,12 @@
-# This is the configuration file for Ghostty.
+# This is the configuration file for Niftty.
 #
-# This template file has been automatically created at the following
-# path since Ghostty couldn't find any existing config files on your system:
+# Niftty is based on Ghostty. This template file has been automatically
+# created at the following path since Niftty couldn't find any existing
+# config files on your system:
 #
 #   {[path]s}
 #
-# The template does not set any default options, since Ghostty ships
+# The template does not set any default options, since Niftty ships
 # with sensible defaults for all options.
 # Note that you should not paste the output of `ghostty +show-config
 # --default` into your config: some default options actually conflict with each other
@@ -18,7 +19,7 @@
 # Additionally, each config option is also explained in detail
 # on Ghostty's website, at https://ghostty.org/docs/config.
 #
-# Ghostty can reload the configuration while running by using the menu
+# Niftty can reload the configuration while running by using the menu
 # options or the bound key (default: Command + Shift + comma on macOS and
 # Control + Shift + comma on other platforms). Not all config options can be
 # reloaded while running; some only apply to new windows and others may require
