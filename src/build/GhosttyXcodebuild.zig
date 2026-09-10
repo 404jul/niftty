@@ -49,7 +49,7 @@ pub fn init(
     };
 
     const env = b.graph.environ_map;
-    const app_path = b.fmt("macos/build/{s}/Ghostty.app", .{xc_config});
+    const app_path = b.fmt("macos/build/{s}/Niftty.app", .{xc_config});
 
     // Our step to build the Ghostty macOS app.
     const build = build: {
@@ -139,11 +139,11 @@ pub fn init(
         disable_save_state.expectExitCode(0);
         disable_save_state.step.dependOn(&build.step);
 
-        const open = RunStep.create(b, "run Ghostty app");
+        const open = RunStep.create(b, "run Niftty app");
         open.has_side_effects = true;
         open.cwd = b.path("");
         open.addArgs(&.{b.fmt(
-            "{s}/Contents/MacOS/ghostty",
+            "{s}/Contents/MacOS/niftty",
             .{app_path},
         )});
 

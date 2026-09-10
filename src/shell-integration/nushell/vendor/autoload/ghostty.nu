@@ -4,12 +4,12 @@ export module ghostty {
     $feature in ($env.GHOSTTY_SHELL_FEATURES | default "" | split row ',')
   }
 
-  # Wrap `ssh` with `ghostty +ssh` and translate the shell-integration
+  # Wrap `ssh` with `niftty +ssh` and translate the shell-integration
   # feature flags into command options.
   @complete external
   export def --wrapped ssh [...args] {
 
-    let ghostty = ($env.GHOSTTY_BIN_DIR? | default "") | path join "ghostty"
+    let niftty = ($env.GHOSTTY_BIN_DIR? | default "") | path join "niftty"
     mut flags = []
     if not (has_feature "ssh-env") {
       $flags = ($flags ++ ["--forward-env=false"])
@@ -17,7 +17,7 @@ export module ghostty {
     if not (has_feature "ssh-terminfo") {
       $flags = ($flags ++ ["--terminfo=false"])
     }
-    ^$ghostty "+ssh" ...$flags "--" ...$args
+    ^$niftty "+ssh" ...$flags "--" ...$args
   }
 
   # Wrap `sudo` to preserve Ghostty's TERMINFO environment variable

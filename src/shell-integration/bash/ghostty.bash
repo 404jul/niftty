@@ -116,7 +116,7 @@ fi
 
 # SSH Integration
 #
-# Wrap `ssh` with `ghostty +ssh` and translate the shell-integration
+# Wrap `ssh` with `niftty +ssh` and translate the shell-integration
 # feature flags into command options.
 if [[ -n "$GHOSTTY_BIN_DIR" ]]; then
   function ssh() {
@@ -124,7 +124,7 @@ if [[ -n "$GHOSTTY_BIN_DIR" ]]; then
     flags=()
     [[ "$GHOSTTY_SHELL_FEATURES" != *ssh-env* ]] && flags+=(--forward-env=false)
     [[ "$GHOSTTY_SHELL_FEATURES" != *ssh-terminfo* ]] && flags+=(--terminfo=false)
-    "$GHOSTTY_BIN_DIR/ghostty" +ssh "${flags[@]}" -- "$@"
+    "$GHOSTTY_BIN_DIR/niftty" +ssh "${flags[@]}" -- "$@"
   }
 fi
 
