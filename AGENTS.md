@@ -5,6 +5,9 @@ A file for [guiding coding agents](https://agents.md/).
 ## Commands
 
 - **Build:** `zig build`
+  - For macOS app builds, follow
+    `.agents/skills/building-the-app/SKILL.md`. The canonical output is
+    `zig-out/Niftty.app`.
   - If you're on macOS and don't need to build the macOS app, use
     `-Demit-macos-app=false` to skip building the app bundle and speed up
     compilation.

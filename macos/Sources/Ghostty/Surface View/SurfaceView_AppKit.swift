@@ -2360,7 +2360,7 @@ extension Ghostty.SurfaceView {
             options: [.urlReadingFileURLsOnly: true]
         ) as? [URL]) ?? []
 
-        // A file drop on an active `ghostty +ssh` session uploads the files
+        // A file drop on an active `niftty +ssh` session uploads the files
         // to the remote working directory. Local surfaces (no session) fall
         // through to the text behavior below so they still paste the paths.
         if !fileURLs.isEmpty,
@@ -2368,7 +2368,7 @@ extension Ghostty.SurfaceView {
            hasActiveSSHSession(pid: pid) {
             guard let remoteDirectory = sshRemoteDirectory else {
                 showSSHUploadFailure(
-                    "Remote working directory unknown — the remote host needs Ghostty shell integration"
+                    "Remote working directory unknown"
                 )
                 return true
             }
@@ -2388,7 +2388,7 @@ extension Ghostty.SurfaceView {
     }
 
     /// The working directory reported via OSC 7 by the remote shell of an
-    /// active `ghostty +ssh` session. Core validates that the OSC 7 host is
+    /// active `niftty +ssh` session. Core validates that the OSC 7 host is
     /// non-local and delivers the decoded path (never a URL) separately
     /// from the local `pwd`. The report is only usable when it came from
     /// the session that is still in the foreground; otherwise it is stale
@@ -2397,7 +2397,7 @@ extension Ghostty.SurfaceView {
         guard let remote = remotePwd,
               let pid = surfaceModel?.foregroundPID,
               remote.sessionPID == pid,
-              !remote.path.isEmpty else { return nil }
+              Ghostty.OSSurfaceView.RemotePwd.isUsablePath(remote.path) else { return nil }
         return remote.path
     }
 
@@ -2458,8 +2458,7 @@ extension Ghostty.SurfaceView {
         }
         process.terminationHandler = { [weak self, weak process] finished in
             let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-            let error = String(data: errorData, encoding: .utf8)?
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let stderr = String(data: errorData, encoding: .utf8)
             DispatchQueue.main.async {
                 guard let self, let process, self.sshUploadProcess === process else { return }
                 outputPipe.fileHandleForReading.readabilityHandler = nil
@@ -2472,7 +2471,7 @@ extension Ghostty.SurfaceView {
                         message: "Upload complete"
                     ) : nil
                 } else {
-                    self.showSSHUploadFailure(error?.isEmpty == false ? error! : "Upload failed")
+                    self.showSSHUploadFailure(Self.sshUploadErrorMessage(stderr))
                 }
                 self.clearSSHUploadStatusLater()
             }
@@ -2505,6 +2504,30 @@ extension Ghostty.SurfaceView {
                 message: nil
             )
         }
+    }
+
+    /// Sentry/debug logs go to stderr of `+ssh-upload` in debug builds and
+    /// were previously shown as the failure. Prefer an `Error:` line, then a
+    /// Zig panic message. Never surface a stack-trace tail frame.
+    private static func sshUploadErrorMessage(_ stderr: String?) -> String {
+        let lines = (stderr ?? "")
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { line in
+                !line.isEmpty &&
+                !line.hasPrefix("[sentry]") &&
+                !line.hasPrefix("info: executing CLI action")
+            }
+        if let error = lines.last(where: { $0.hasPrefix("Error:") }) {
+            return String(error)
+        }
+        if let panic = lines.first(where: { $0.contains("panic:") }) {
+            return String(panic)
+        }
+        if let last = lines.last(where: { !$0.hasPrefix("???") }) {
+            return String(last)
+        }
+        return "Upload failed"
     }
 
     private func showSSHUploadFailure(_ message: String) {

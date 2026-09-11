@@ -41,4 +41,11 @@ struct SettingsFileEditorTests {
         #expect(SettingsFileEditor.overrides(in: updated)["font-family"] == "Menlo\nMonaco")
         #expect(updated.contains("font-family =\nfont-family = Menlo\nfont-family = Monaco"))
     }
+
+    @Test func categoryFallbackIsNeverEmptyOrAll() {
+        #expect(SettingsModel.category(for: "theme") == "Appearance")
+        #expect(SettingsModel.category(for: "language") == "Terminal")
+        #expect(SettingsModel.category(for: "unrecognized-future-key") == "Terminal")
+        #expect(SettingsModel.category(for: "unrecognized-future-key") != "All")
+    }
 }

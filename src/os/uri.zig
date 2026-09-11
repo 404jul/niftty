@@ -172,6 +172,7 @@ test "parse: raw_path" {
     try testing.expectEqual(null, uri3.fragment);
 }
 
+
 /// Checks if a string represents a valid MAC address, e.g. 12:34:56:ab:cd:ef.
 fn isValidMacAddress(s: []const u8) bool {
     if (s.len != 17) return false;

@@ -1964,6 +1964,11 @@ extension Ghostty {
                 // Read the raw C value rather than the @MainActor
                 // `foregroundPID` property: this handler is nonisolated.
                 let foregroundPid = ghostty_surface_foreground_pid(surface)
+                if !OSSurfaceView.RemotePwd.isUsablePath(pwd) {
+                    surfaceView.remotePwd = nil
+                    Ghostty.logger.debug("remote pwd ignored (unusable): \(pwd)")
+                    return
+                }
                 surfaceView.remotePwd = .init(
                     path: pwd,
                     sessionPID: foregroundPid != 0 ? Int(foregroundPid) : nil

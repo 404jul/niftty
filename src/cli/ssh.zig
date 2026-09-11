@@ -127,12 +127,12 @@ pub const Options = struct {
 /// integration.
 ///
 /// `+ssh` also keeps one connection-scoped control socket for uploads and
-/// performs up to three pieces of setup:
+/// performs up to four pieces of setup:
 ///
 ///   1. **Environment forwarding** (`--forward-env`). Sets `TERM` to
 ///      `xterm-256color` and requests `SendEnv` forwarding of
 ///      `COLORTERM`, `TERM_PROGRAM`, and `TERM_PROGRAM_VERSION` so the
-///      remote shell can still detect that it's running inside Ghostty.
+///      remote shell can still detect that it's running inside Niftty.
 ///      The remote `sshd_config` must list these in `AcceptEnv` for
 ///      forwarding to succeed.
 ///
@@ -140,7 +140,7 @@ pub const Options = struct {
 ///      given destination, installs Ghostty's embedded terminfo entry on the
 ///      remote host using `ssh tic -x -` over a shared `ControlMaster`
 ///      connection. Successful installs are cached
-///      (see `ghostty +ssh-cache`) so subsequent connections skip this
+///      (see `niftty +ssh-cache`) so subsequent connections skip this
 ///      step. When terminfo is successfully installed or already cached,
 ///      `TERM` is set to `xterm-ghostty` instead of `xterm-256color`.
 ///
@@ -148,9 +148,18 @@ pub const Options = struct {
 ///      unprivileged TCP ports on loopback or all-interfaces on the
 ///      remote host, including ports that were already open when the
 ///      session started, and forwards them to loopback locally. The
-///      same port is preferred; if it is occupied, Ghostty chooses an
+///      same port is preferred; if it is occupied, Niftty chooses an
 ///      available local port. On macOS, the SSH Ports overlay lists
 ///      these tunnels and can add or close them.
+///
+///   4. **Working directory reporting**. Interactive logins (no remote
+///      command) inject a POSIX middleman that runs the login shell as
+///      a child (stdin/stdout/stderr kept on the TTY), polls that
+///      child's cwd, and emits OSC 7 with host `niftty-ssh`. The
+///      watcher is the parent so Linux Yama allows `/proc/<child>/cwd`.
+///      Unresolved `lsof` `readlink:` paths are discarded. The parent
+///      `wait`s the shell once so the session exits. Skipped when a
+///      remote command is given, or with `-N`/`-T`/`-W`.
 ///
 /// If `--terminfo` install fails (e.g. `tic` not available on the
 /// remote, filesystem permissions), a warning is logged and the
@@ -338,12 +347,24 @@ fn runInner(
             "-o", path_opt,
         };
     } else &.{};
+    const inject_cwd = shouldInjectCwdReporter(opts._ssh_args.items);
+    const tty_opts: []const []const u8 = if (inject_cwd)
+        &.{ "-o", "RequestTTY=force" }
+    else
+        &.{};
+    const cwd_cmd: []const []const u8 = if (inject_cwd)
+        &.{cwd_reporter_command}
+    else
+        &.{};
     const argv = try std.mem.concat(alloc, []const u8, &.{
         &.{opts.ssh},
         control_opts,
         env_opts,
+        tty_opts,
         opts._ssh_args.items,
+        cwd_cmd,
     });
+    if (inject_cwd) verbosePrint(opts, stderr, "cwd reporter: injecting niftty OSC 7 middleman", .{});
     verbosePrint(opts, stderr, "exec: {f}", .{Joined{ .items = argv }});
 
     const exit_code = runInteractiveSession(
@@ -694,7 +715,6 @@ fn exitCode(term: std.process.Child.Term) u8 {
         .stopped, .unknown => 1,
     };
 }
-
 const port_discovery_script =
     \\if command -v ss >/dev/null 2>&1; then
     \\  ss -ltn 2>/dev/null | awk 'NR==1 && $1 ~ /State|Netid/ { next } { print $4 }'
@@ -705,6 +725,153 @@ const port_discovery_script =
     \\  netstat -an -p tcp 2>/dev/null | awk '/LISTEN/ { print $4 }'
     \\fi
 ;
+
+/// Injected as the remote command for interactive `niftty +ssh` logins.
+/// The login shell is a child with the TTY (`<&0 >&1 2>&1`); this process
+/// polls `/proc/<child>/cwd` (parent is allowed under Yama) and `wait`s
+/// the shell exactly once. OSC 7 host `niftty-ssh` marks the path remote.
+const cwd_reporter_command =
+    \\exec /bin/sh -c 'trap "" INT TTOU TTIN
+    \\set +m
+    \\(trap - INT TTOU TTIN; exec "${SHELL:-/bin/sh}" -l) <&0 >&1 2>&1 &
+    \\spid=$!
+    \\last=
+    \\while :; do
+    \\  if [ -r /proc/$spid/stat ]; then
+    \\    state=$(sed -n "s/.*) \([^ ]\).*/\1/p" /proc/$spid/stat 2>/dev/null)
+    \\    if [ -z "$state" ] || [ "$state" = Z ]; then break; fi
+    \\  else
+    \\    st=$(ps -o stat= -p "$spid" 2>/dev/null | tr -d " ")
+    \\    case "$st" in ""|Z*) break ;; esac
+    \\  fi
+    \\  cwd=$(readlink /proc/$spid/cwd 2>/dev/null)
+    \\  if [ -z "$cwd" ]; then
+    \\    cwd=$(lsof -a -p "$spid" -d cwd -Fn 2>/dev/null | sed -n "s/^n//p" | head -n 1)
+    \\  fi
+    \\  case "$cwd" in
+    \\    /*) ;;
+    \\    *) cwd= ;;
+    \\  esac
+    \\  case "$cwd" in
+    \\    /proc/[0-9]*/cwd*|*"(readlink:"*) cwd= ;;
+    \\  esac
+    \\  if [ "$cwd" != "$last" ]; then
+    \\    printf "\033]7;kitty-shell-cwd://niftty-ssh%s\007" "$cwd"
+    \\    last=$cwd
+    \\  fi
+    \\  sleep 1
+    \\done
+    \\wait $spid
+    \\exit $?'
+;
+
+fn sshFlagTakesArg(flag: u8) bool {
+    return switch (flag) {
+        'B',
+        'b',
+        'c',
+        'D',
+        'E',
+        'e',
+        'F',
+        'I',
+        'i',
+        'J',
+        'L',
+        'l',
+        'm',
+        'O',
+        'o',
+        'p',
+        'P',
+        'Q',
+        'R',
+        'S',
+        'W',
+        'w',
+        => true,
+        else => false,
+    };
+}
+
+fn requestTtyDisabled(value: []const u8) bool {
+    const prefix = "RequestTTY";
+    if (value.len < prefix.len or !std.ascii.eqlIgnoreCase(value[0..prefix.len], prefix)) {
+        return false;
+    }
+    const rest = std.mem.trim(u8, value[prefix.len..], " \t=");
+    return std.ascii.eqlIgnoreCase(rest, "no");
+}
+
+/// True when `+ssh` should wrap the remote login with the cwd reporter.
+/// Interactive logins only: a remote command, `-N`/`-W`, or `-T` skip it.
+fn shouldInjectCwdReporter(args: []const []const u8) bool {
+    var i: usize = 0;
+    var disable_tty = false;
+    var no_shell = false;
+    while (i < args.len) {
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "--")) {
+            i += 1;
+            break;
+        }
+        if (arg.len < 2 or arg[0] != '-') break;
+
+        var j: usize = 1;
+        while (j < arg.len) : (j += 1) {
+            const c = arg[j];
+            switch (c) {
+                'N' => no_shell = true,
+                'T' => disable_tty = true,
+                'W' => no_shell = true,
+                else => {},
+            }
+            if (!sshFlagTakesArg(c)) continue;
+            const attached = arg[j + 1 ..];
+            const value: []const u8 = if (attached.len > 0) attached else blk: {
+                i += 1;
+                break :blk if (i < args.len) args[i] else "";
+            };
+            if (c == 'o' and requestTtyDisabled(value)) disable_tty = true;
+            break;
+        }
+        i += 1;
+    }
+    if (i >= args.len or disable_tty or no_shell) return false;
+    return i + 1 >= args.len;
+}
+
+test "shouldInjectCwdReporter: interactive login" {
+    const testing = std.testing;
+    try testing.expect(shouldInjectCwdReporter(&.{"user@example.com"}));
+    try testing.expect(shouldInjectCwdReporter(&.{ "-p", "22", "user@example.com" }));
+    try testing.expect(shouldInjectCwdReporter(&.{ "-p22", "user@example.com" }));
+    try testing.expect(shouldInjectCwdReporter(&.{ "-vv", "user@example.com" }));
+    try testing.expect(shouldInjectCwdReporter(&.{ "-J", "jump", "user@example.com" }));
+    try testing.expect(shouldInjectCwdReporter(&.{ "-4t", "user@example.com" }));
+    try testing.expect(shouldInjectCwdReporter(&.{ "--", "user@example.com" }));
+}
+
+test "shouldInjectCwdReporter: skip remote command and no-shell" {
+    const testing = std.testing;
+    try testing.expect(!shouldInjectCwdReporter(&.{ "user@example.com", "ls" }));
+    try testing.expect(!shouldInjectCwdReporter(&.{ "--", "user@example.com", "ls" }));
+    try testing.expect(!shouldInjectCwdReporter(&.{ "-N", "user@example.com" }));
+    try testing.expect(!shouldInjectCwdReporter(&.{ "-T", "user@example.com" }));
+    try testing.expect(!shouldInjectCwdReporter(&.{ "-W", "localhost:1234", "user@example.com" }));
+    try testing.expect(!shouldInjectCwdReporter(&.{ "-o", "RequestTTY=no", "user@example.com" }));
+    try testing.expect(!shouldInjectCwdReporter(&.{ "-oRequestTTY=no", "user@example.com" }));
+    try testing.expect(!shouldInjectCwdReporter(&.{}));
+}
+
+test "cwd reporter watches child not parent" {
+    const testing = std.testing;
+    try testing.expect(std.mem.indexOf(u8, cwd_reporter_command, "/proc/$spid/cwd") != null);
+    try testing.expect(std.mem.indexOf(u8, cwd_reporter_command, "<&0 >&1 2>&1") != null);
+    try testing.expect(std.mem.indexOf(u8, cwd_reporter_command, "wait $spid") != null);
+    try testing.expect(std.mem.indexOf(u8, cwd_reporter_command, "trap - INT TTOU TTIN") != null);
+    try testing.expect(std.mem.indexOf(u8, cwd_reporter_command, "/proc/$PPID/cwd") == null);
+}
 
 fn monitorRemotePorts(
     ssh: []const u8,

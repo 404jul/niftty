@@ -81,7 +81,7 @@ final class SettingsModel: ObservableObject {
 
     @Published var rows: [Row] = []
     @Published var search = ""
-    @Published var selectedCategory = "All"
+    @Published var selectedCategory = "Appearance"
     @Published var error: String?
     @Published var hasUnsavedChanges = false
 
@@ -90,20 +90,17 @@ final class SettingsModel: ObservableObject {
 
     init(appDelegate: AppDelegate) {
         self.appDelegate = appDelegate
-        reload()
     }
 
     var configPath: String { appDelegate?.ghostty.configFilePath ?? "" }
 
     var categories: [String] {
-        ["All"] + Set(rows.map { category(for: $0.metadata.name) }).sorted()
+        Set(rows.map { Self.category(for: $0.metadata.name) }).sorted()
     }
 
     var filteredRows: [Row] {
         rows.filter { row in
-            let categoryMatches = selectedCategory == "All" ||
-                category(for: row.metadata.name) == selectedCategory
-            guard categoryMatches else { return false }
+            guard Self.category(for: row.metadata.name) == selectedCategory else { return false }
             guard !search.isEmpty else { return true }
             return row.metadata.name.localizedCaseInsensitiveContains(search) ||
                 row.metadata.description.localizedCaseInsensitiveContains(search) ||
@@ -152,6 +149,9 @@ final class SettingsModel: ObservableObject {
                     value: overrides[setting.name] ?? setting.value,
                     hasOverride: overrides[setting.name] != nil)
             }
+            if !categories.contains(selectedCategory) {
+                selectedCategory = categories.first ?? "Appearance"
+            }
             hasUnsavedChanges = false
             error = nil
         } catch {
@@ -161,6 +161,17 @@ final class SettingsModel: ObservableObject {
 
     func openConfigFile() {
         appDelegate?.ghostty.openConfigFile()
+    }
+
+    func openThemeList() {
+        guard let ghostty = appDelegate?.ghostty else { return }
+        guard let exe = Bundle.main.executableURL?.path else {
+            error = "Niftty executable is unavailable"
+            return
+        }
+        var config = Ghostty.SurfaceConfiguration()
+        config.initialInput = "\(Ghostty.Shell.quote(exe)) +list-themes; exit\n"
+        _ = TerminalController.newWindow(ghostty, withBaseConfig: config)
     }
 
     func save() {
@@ -180,17 +191,47 @@ final class SettingsModel: ObservableObject {
         }
     }
 
-    func category(for name: String) -> String {
-        if name.hasPrefix("font-") { return "Font" }
-        if name.hasPrefix("window-") || name == "maximize" || name == "fullscreen" { return "Window" }
+    static func category(for name: String) -> String {
+        if name.hasPrefix("font-") || name.hasPrefix("adjust-") ||
+            name == "grapheme-width-method" || name.hasPrefix("freetype-") {
+            return "Font"
+        }
+        if name.hasPrefix("window-") || name.hasPrefix("quick-terminal-") ||
+            name.hasPrefix("resize-overlay") || name.hasPrefix("quit-after-last-window-closed") ||
+            name.hasPrefix("tab-") || name.hasPrefix("split-") || name.hasPrefix("unfocused-split-") ||
+            name == "maximize" || name == "fullscreen" || name == "title" ||
+            name == "scrollbar" || name == "drag-handle" || name == "initial-window" ||
+            name == "confirm-close-surface" || name == "undo-timeout" {
+            return "Window"
+        }
         if name.hasPrefix("macos-") { return "macOS" }
-        if name.hasPrefix("gtk-") || name.hasPrefix("linux-") { return "Linux" }
-        if name.hasPrefix("clipboard-") || name.contains("copy") || name.contains("paste") { return "Clipboard" }
+        if name.hasPrefix("gtk-") || name.hasPrefix("linux-") ||
+            name == "class" || name == "x11-instance-name" || name == "async-backend" {
+            return "Linux"
+        }
+        if name.hasPrefix("clipboard-") || name == "copy-on-select" { return "Clipboard" }
         if name.hasPrefix("ssh-") { return "SSH" }
-        if name.hasPrefix("shell-") || name == "command" || name == "initial-command" { return "Shell" }
-        if name.hasPrefix("mouse-") || name.hasPrefix("keybind") { return "Input" }
-        if name.hasPrefix("background-") || name.hasPrefix("foreground") || name.contains("color") ||
-            name.hasPrefix("cursor-") || name == "theme" { return "Appearance" }
+        if name.hasPrefix("shell-") || name.hasPrefix("notify-on-command-finish") ||
+            name == "command" || name == "initial-command" || name == "env" ||
+            name == "input" || name == "wait-after-command" ||
+            name == "abnormal-command-exit-runtime" || name == "working-directory" ||
+            name == "command-palette-entry" {
+            return "Shell"
+        }
+        if name.hasPrefix("mouse-") || name.hasPrefix("keybind") ||
+            name == "key-remap" || name == "click-repeat-interval" ||
+            name == "right-click-action" || name == "middle-click-action" ||
+            name == "focus-follows-mouse" || name == "cursor-click-to-move" {
+            return "Input"
+        }
+        if name.hasPrefix("background") || name.hasPrefix("foreground") ||
+            name.contains("color") || name.hasPrefix("cursor-") || name == "theme" ||
+            name.hasPrefix("palette") || name.hasPrefix("selection-") ||
+            name.hasPrefix("search-") || name == "minimum-contrast" ||
+            name.hasPrefix("custom-shader") || name == "faint-opacity" ||
+            name == "alpha-blending" {
+            return "Appearance"
+        }
         if name.hasPrefix("auto-update") { return "Updates" }
         return "Terminal"
     }

@@ -62,8 +62,9 @@ pub const Options = struct {
 const Entry = struct {
     local_path: []const u8,
     remote_relative: []const u8,
-    kind: enum { directory, file },
+    kind: enum { directory, file, sym_link },
     size: u64 = 0,
+    symlink_target: []const u8 = "",
 };
 
 /// Upload local files and directories through the multiplexed connection
@@ -109,6 +110,10 @@ pub fn run(gpa: Allocator) !u8 {
         try stderr.print("Error: --remote-dir is required.\n\n{s}", .{usage});
         return 2;
     };
+    if (!usableRemoteDir(remote_dir)) {
+        try stderr.print("Error: unusable remote directory: {s}\n", .{remote_dir});
+        return 1;
+    }
     if (opts._paths.items.len == 0) {
         try stderr.print("Error: at least one path is required.\n\n{s}", .{usage});
         return 2;
@@ -143,7 +148,10 @@ pub fn run(gpa: Allocator) !u8 {
     uploadSftp(alloc, session, remote_dir, entries.items, total, opts.verbose, progress) catch |sftp_err| {
         try stderr.print("SFTP unavailable ({t}); using SSH stream fallback.\n", .{sftp_err});
         uploadFallback(alloc, session, remote_dir, entries.items, total, opts.verbose, progress) catch |err| {
-            try stderr.print("Error: upload failed: {t}\n", .{err});
+            switch (err) {
+                error.RemoteCommandFailed => {},
+                else => try stderr.print("Error: upload failed: {t}\n", .{err}),
+            }
             return 1;
         };
     };
@@ -187,7 +195,16 @@ fn gatherPath(
                 try gatherPath(alloc, child_local, child_relative, entries, total);
             }
         },
-        .sym_link => return error.SymbolicLinkNotSupported,
+        .sym_link => {
+            var buf: [std.fs.max_path_bytes]u8 = undefined;
+            const n = try std.Io.Dir.readLinkAbsolute(global.io(), local_path, &buf);
+            try entries.append(alloc, .{
+                .local_path = try alloc.dupe(u8, local_path),
+                .remote_relative = try alloc.dupe(u8, relative),
+                .kind = .sym_link,
+                .symlink_target = try alloc.dupe(u8, buf[0..n]),
+            });
+        },
         else => return error.SpecialFileNotSupported,
     }
 }
@@ -213,6 +230,58 @@ fn reportProgress(
     try writer.flush();
 }
 
+/// Close stdin and wait if the child has not already been reaped.
+/// `Child.wait` asserts `id != null` and is not idempotent: wait cleanup
+/// nulls `id`, so a second wait panics with `reached unreachable code`.
+fn reap(child: *std.process.Child) void {
+    if (child.stdin) |file| {
+        file.close(global.io());
+        child.stdin = null;
+    }
+    if (child.id != null) {
+        _ = child.wait(global.io()) catch {};
+    }
+}
+
+fn usableRemoteDir(path: []const u8) bool {
+    if (path.len == 0 or path[0] != '/') return false;
+    if (std.mem.indexOf(u8, path, "readlink:") != null) return false;
+    if (std.mem.startsWith(u8, path, "/proc/") and
+        std.mem.indexOf(u8, path, "/cwd") != null) return false;
+    return true;
+}
+
+fn drainPipe(file: std.Io.File, buf: []u8) usize {
+    var n: usize = 0;
+    while (n < buf.len) {
+        const rest = buf[n..];
+        const got = file.readStreaming(global.io(), &.{rest}) catch return n;
+        if (got == 0) return n;
+        n += got;
+    }
+    var scratch: [512]u8 = undefined;
+    while (true) {
+        const got = file.readStreaming(global.io(), &.{&scratch}) catch break;
+        if (got == 0) break;
+    }
+    return n;
+}
+
+fn printRemoteError(detail: []const u8) void {
+    var buffer: [1024]u8 = undefined;
+    var file = std.Io.File.stderr();
+    var writer = file.writer(global.io(), &buffer);
+    const stderr = &writer.interface;
+    const line = if (std.mem.indexOfScalar(u8, detail, '\n')) |i| detail[0..i] else detail;
+    const trimmed = std.mem.trim(u8, line, " \t\r");
+    if (trimmed.len == 0) {
+        stderr.print("Error: upload failed: RemoteCommandFailed\n", .{}) catch return;
+    } else {
+        stderr.print("Error: upload failed: {s}\n", .{trimmed}) catch return;
+    }
+    stderr.flush() catch {};
+}
+
 fn uploadSftp(
     alloc: Allocator,
     session: ssh_session.Info,
@@ -228,13 +297,7 @@ fn uploadSftp(
         .stdout = .pipe,
         .stderr = .ignore,
     });
-    defer {
-        if (child.stdin) |file| {
-            file.close(global.io());
-            child.stdin = null;
-        }
-        _ = child.wait(global.io()) catch {};
-    }
+    defer reap(&child);
 
     var write_buffer: [64 * 1024]u8 = undefined;
     var read_buffer: [64 * 1024]u8 = undefined;
@@ -252,6 +315,20 @@ fn uploadSftp(
         const remote_path = try remoteJoin(alloc, remote_dir, entry.remote_relative);
         switch (entry.kind) {
             .directory => try client.mkdir(remote_path),
+            .sym_link => {
+                const parent = std.fs.path.dirname(remote_path) orelse remote_dir;
+                try client.mkdir(parent);
+                const temporary = try std.fmt.allocPrint(
+                    alloc,
+                    "{s}.ghostty-upload-{d}-{d}",
+                    .{ remote_path, ssh_session.currentPid(), index },
+                );
+                try client.symlink(entry.symlink_target, temporary);
+                client.posixRename(temporary, remote_path) catch |err| {
+                    client.remove(temporary) catch {};
+                    return err;
+                };
+            },
             .file => {
                 const parent = std.fs.path.dirname(remote_path) orelse remote_dir;
                 try client.mkdir(parent);
@@ -303,6 +380,19 @@ const SftpClient = struct {
         const status = try statusCode(response, id);
         // OpenSSH reports generic failure when the directory already exists.
         if (status != 0 and status != 4) return error.SftpMkdirFailed;
+    }
+
+    fn remove(self: *SftpClient, path: []const u8) !void {
+        const id = self.takeId();
+        var body: std.Io.Writer.Allocating = .init(self.alloc);
+        defer body.deinit();
+        try body.writer.writeByte(13); // SSH_FXP_REMOVE
+        try putU32(&body.writer, id);
+        try putString(&body.writer, path);
+        try self.send(body.written());
+        const response = try self.receive();
+        defer self.alloc.free(response);
+        if (try statusCode(response, id) != 0) return error.SftpRemoveFailed;
     }
 
     fn uploadFile(
@@ -397,6 +487,37 @@ const SftpClient = struct {
         if (try statusCode(response, id) != 0) return error.SftpAtomicRenameFailed;
     }
 
+    /// OpenSSH SFTP v3: SSH_FXP_SYMLINK arguments are target, then link path
+    /// (reversed from the IETF draft). Message type 20; 18 is RENAME.
+    fn symlink(self: *SftpClient, target: []const u8, link_path: []const u8) !void {
+        const id = self.takeId();
+        var body: std.Io.Writer.Allocating = .init(self.alloc);
+        defer body.deinit();
+        try encodeSymlinkRequest(&body.writer, id, target, link_path);
+        try self.send(body.written());
+        const response = try self.receive();
+        defer self.alloc.free(response);
+        if (try statusCode(response, id) != 0) return error.SftpSymlinkFailed;
+    }
+
+    fn readLink(self: *SftpClient, path: []const u8) ![]u8 {
+        const id = self.takeId();
+        var body: std.Io.Writer.Allocating = .init(self.alloc);
+        defer body.deinit();
+        try body.writer.writeByte(19); // SSH_FXP_READLINK
+        try putU32(&body.writer, id);
+        try putString(&body.writer, path);
+        try self.send(body.written());
+        const response = try self.receive();
+        defer self.alloc.free(response);
+        if (response.len < 13 or response[0] != 104 or getU32(response[1..5]) != id) {
+            return error.SftpReadLinkFailed;
+        }
+        if (getU32(response[5..9]) < 1) return error.SftpReadLinkFailed;
+        var packet = PacketReader{ .data = response[9..] };
+        return self.alloc.dupe(u8, try packet.string());
+    }
+
     fn send(self: *SftpClient, body: []const u8) !void {
         try putU32(self.writer, @intCast(body.len));
         try self.writer.writeAll(body);
@@ -433,6 +554,15 @@ const PacketReader = struct {
         return self.data[self.offset..][0..length];
     }
 };
+
+const ssh_fxp_symlink: u8 = 20;
+
+fn encodeSymlinkRequest(writer: *std.Io.Writer, id: u32, target: []const u8, link_path: []const u8) !void {
+    try writer.writeByte(ssh_fxp_symlink);
+    try putU32(writer, id);
+    try putString(writer, target);
+    try putString(writer, link_path);
+}
 
 fn statusCode(response: []const u8, id: u32) !u32 {
     if (response.len < 9 or response[0] != 101 or getU32(response[1..5]) != id) {
@@ -480,6 +610,37 @@ fn uploadFallback(
                 const command = try std.fmt.allocPrint(alloc, "mkdir -p -- {s}", .{quoted});
                 try runRemote(session, command, null, null, false, progress, &completed, total);
             },
+            .sym_link => {
+                const parent = std.fs.path.dirname(remote_path) orelse remote_dir;
+                const quoted_parent = try shellQuote(alloc, parent);
+                const quoted_dest = try shellQuote(alloc, remote_path);
+                const quoted_target = try shellQuote(alloc, entry.symlink_target);
+                const temporary = try std.fmt.allocPrint(
+                    alloc,
+                    "{s}.ghostty-upload-{d}-{d}",
+                    .{ remote_path, ssh_session.currentPid(), index },
+                );
+                const quoted_temp = try shellQuote(alloc, temporary);
+                const command = try std.fmt.allocPrint(
+                    alloc,
+                    "mkdir -p -- {s} && rm -f -- {s} && ln -s -- {s} {s} && " ++
+                        "if [ -d {s} ] && [ ! -L {s} ]; then rm -f -- {s}; exit 1; fi && " ++
+                        "mv -f -- {s} {s} || {{ rm -f -- {s}; exit 1; }}",
+                    .{
+                        quoted_parent,
+                        quoted_temp,
+                        quoted_target,
+                        quoted_temp,
+                        quoted_dest,
+                        quoted_dest,
+                        quoted_temp,
+                        quoted_temp,
+                        quoted_dest,
+                        quoted_temp,
+                    },
+                );
+                try runRemote(session, command, null, null, false, progress, &completed, total);
+            },
             .file => {
                 const parent = std.fs.path.dirname(remote_path) orelse remote_dir;
                 const quoted_parent = try shellQuote(alloc, parent);
@@ -525,15 +686,10 @@ fn runRemote(
         .argv = &.{ session.ssh, "-S", session.control_path, session.destination, command },
         .stdin = if (local_path != null) .pipe else .ignore,
         .stdout = .ignore,
-        .stderr = .ignore,
+        .stderr = .pipe,
     });
-    errdefer {
-        if (child.stdin) |file| {
-            file.close(global.io());
-            child.stdin = null;
-        }
-        _ = child.wait(global.io()) catch {};
-    }
+    defer reap(&child);
+    errdefer child.kill(global.io());
     if (local_path) |path| {
         const file = try std.Io.Dir.openFileAbsolute(global.io(), path, .{});
         defer file.close(global.io());
@@ -552,8 +708,15 @@ fn runRemote(
         child.stdin = null;
     }
 
+    var err_buf: [4096]u8 = undefined;
+    const err_n = if (child.stderr) |file| drainPipe(file, &err_buf) else 0;
+
     const term = try child.wait(global.io());
-    if (switch (term) { .exited => |code| code != 0, else => true }) {
+    if (switch (term) {
+        .exited => |code| code != 0,
+        else => true,
+    }) {
+        printRemoteError(err_buf[0..err_n]);
         return error.RemoteCommandFailed;
     }
 }
@@ -585,4 +748,153 @@ test "shell quoting protects remote paths" {
     const quoted = try shellQuote(std.testing.allocator, "a'b c");
     defer std.testing.allocator.free(quoted);
     try std.testing.expectEqualStrings("'a'\"'\"'b c'", quoted);
+}
+
+test "runRemote non-zero exit does not panic" {
+    const testing = std.testing;
+    const session = ssh_session.Info{
+        .control_path = "/dev/null",
+        .destination = "unused",
+        .ssh = "/usr/bin/false",
+    };
+    var completed: u64 = 0;
+    var buf: [1]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buf);
+    try testing.expectError(
+        error.RemoteCommandFailed,
+        runRemote(session, "true", null, null, false, &writer, &completed, 0),
+    );
+}
+
+test "usableRemoteDir rejects lsof readlink failures" {
+    const testing = std.testing;
+    try testing.expect(usableRemoteDir("/home/julian/src"));
+    try testing.expect(usableRemoteDir("/tmp"));
+    try testing.expect(!usableRemoteDir(""));
+    try testing.expect(!usableRemoteDir("relative"));
+    try testing.expect(!usableRemoteDir("/proc/3107671/cwd"));
+    try testing.expect(!usableRemoteDir("/proc/3107671/cwd (readlink: Permission denied)"));
+}
+
+test "uploadFallback succeeds when SFTP subsystem is unavailable" {
+    const testing = std.testing;
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_n = try tmp.dir.realPath(testing.io, &path_buf);
+    const tmp_path = path_buf[0..tmp_n];
+
+    const stub_path = try std.fs.path.join(alloc, &.{ tmp_path, "ssh-stub" });
+    const stub_file = try std.Io.Dir.createFileAbsolute(global.io(), stub_path, .{
+        .permissions = .fromMode(0o755),
+    });
+    try stub_file.writeStreamingAll(global.io(),
+        \\#!/bin/sh
+        \\for arg in "$@"; do
+        \\    if [ "$arg" = "-s" ]; then exit 1; fi
+        \\done
+        \\cmd=""
+        \\for arg in "$@"; do cmd="$arg"; done
+        \\eval "$cmd"
+        \\
+    );
+    stub_file.close(global.io());
+
+    const payload = "fallback-probe\n";
+    const local_path = try std.fs.path.join(alloc, &.{ tmp_path, "local.txt" });
+    const local_file = try std.Io.Dir.createFileAbsolute(global.io(), local_path, .{});
+    try local_file.writeStreamingAll(global.io(), payload);
+    local_file.close(global.io());
+
+    const dest_dir = try std.fs.path.join(alloc, &.{ tmp_path, "dest" });
+    try std.Io.Dir.cwd().createDirPath(global.io(), dest_dir);
+
+    const session = ssh_session.Info{
+        .control_path = "/dev/null",
+        .destination = "unused",
+        .ssh = stub_path,
+    };
+    const entries = [_]Entry{.{
+        .local_path = local_path,
+        .remote_relative = "probe.txt",
+        .kind = .file,
+        .size = payload.len,
+    }};
+
+    var progress_buf: [256]u8 = undefined;
+    var progress: std.Io.Writer = .fixed(&progress_buf);
+    uploadSftp(alloc, session, dest_dir, &entries, payload.len, false, &progress) catch {
+        try uploadFallback(alloc, session, dest_dir, &entries, payload.len, false, &progress);
+    };
+
+    const uploaded = try std.fs.path.join(alloc, &.{ dest_dir, "probe.txt" });
+    const got_file = try std.Io.Dir.openFileAbsolute(global.io(), uploaded, .{});
+    defer got_file.close(global.io());
+    var reader = got_file.reader(global.io(), &.{});
+    const got = try reader.interface.allocRemaining(alloc, .limited(32));
+    try testing.expectEqualStrings(payload, got);
+}
+
+test "SFTP symlink request is type 20 with OpenSSH argument order" {
+    const testing = std.testing;
+    var buf: [64]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buf);
+    try encodeSymlinkRequest(&writer, 3, "A", "Current");
+    const out = writer.buffered();
+    try testing.expectEqual(@as(u8, 20), out[0]);
+    try testing.expectEqual(@as(u32, 3), getU32(out[1..5]));
+    try testing.expectEqual(@as(u32, 1), getU32(out[5..9]));
+    try testing.expectEqualStrings("A", out[9..10]);
+    try testing.expectEqual(@as(u32, 7), getU32(out[10..14]));
+    try testing.expectEqualStrings("Current", out[14..21]);
+}
+
+test "OpenSSH sftp-server round-trips symlink" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const server = "/usr/libexec/sftp-server";
+    std.Io.Dir.accessAbsolute(testing.io, server, .{}) catch return error.SkipZigTest;
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(testing.io, &path_buf);
+    const tmp_path = path_buf[0..n];
+    const link_path = try std.fs.path.join(alloc, &.{ tmp_path, "Current" });
+    defer alloc.free(link_path);
+
+    var child = std.process.spawn(global.io(), .{
+        .argv = &.{server},
+        .stdin = .pipe,
+        .stdout = .pipe,
+        .stderr = .ignore,
+    }) catch return error.SkipZigTest;
+    defer {
+        if (child.stdin) |file| {
+            file.close(global.io());
+            child.stdin = null;
+        }
+        _ = child.wait(global.io()) catch {};
+    }
+
+    var write_buffer: [4096]u8 = undefined;
+    var read_buffer: [4096]u8 = undefined;
+    var file_writer = child.stdin.?.writer(global.io(), &write_buffer);
+    var file_reader = child.stdout.?.reader(global.io(), &read_buffer);
+    var client = SftpClient{
+        .alloc = alloc,
+        .writer = &file_writer.interface,
+        .reader = &file_reader.interface,
+    };
+    try client.handshake();
+    try client.symlink("A", link_path);
+    const got = try client.readLink(link_path);
+    defer alloc.free(got);
+    try testing.expectEqualStrings("A", got);
 }

@@ -35,11 +35,30 @@ final class SettingsController: NSWindowController, NSWindowDelegate {
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         guard model.hasUnsavedChanges else { return true }
+
         let alert = NSAlert()
-        alert.messageText = "Discard unsaved settings?"
+        alert.messageText = "Apply settings before closing?"
         alert.informativeText = "Your changes have not been written to the Niftty config file."
-        alert.addButton(withTitle: "Discard Changes")
+        alert.addButton(withTitle: "Apply")
         alert.addButton(withTitle: "Cancel")
-        return alert.runModal() == .alertFirstButtonReturn
+        alert.addButton(withTitle: "Don't Apply")
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            model.save()
+            return !model.hasUnsavedChanges
+        case .alertThirdButtonReturn:
+            return true
+        default:
+            return false
+        }
+    }
+
+    @IBAction func close(_ sender: Any) {
+        window?.performClose(sender)
+    }
+
+    @IBAction func closeWindow(_ sender: Any) {
+        window?.performClose(sender)
     }
 }

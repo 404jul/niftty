@@ -23,6 +23,15 @@ extension Ghostty {
         struct RemotePwd: Equatable {
             var path: String
             var sessionPID: Int?
+
+            /// `lsof` may report `/proc/<pid>/cwd (readlink: Permission denied)`
+            /// when Yama blocks cwd resolution. That is not a directory.
+            static func isUsablePath(_ path: String) -> Bool {
+                guard path.hasPrefix("/"), !path.isEmpty else { return false }
+                if path.contains("readlink:") { return false }
+                if path.hasPrefix("/proc/"), path.contains("/cwd") { return false }
+                return true
+            }
         }
 
         @Published var remotePwd: RemotePwd?
