@@ -727,13 +727,15 @@ const port_discovery_script =
 ;
 
 /// Injected as the remote command for interactive `niftty +ssh` logins.
-/// The login shell is a child with the TTY (`<&0 >&1 2>&1`); this process
-/// polls `/proc/<child>/cwd` (parent is allowed under Yama) and `wait`s
-/// the shell exactly once. OSC 7 host `niftty-ssh` marks the path remote.
+/// The login shell is a child; this process polls `/proc/<child>/cwd`
+/// (parent is allowed under Yama) and `wait`s the shell exactly once.
+/// OSC 7 host `niftty-ssh` marks the path remote. POSIX sh with job
+/// control off (`set +m`) points `&` stdin at `/dev/null`, so the child
+/// reopens `/dev/tty` after fork.
 const cwd_reporter_command =
     \\exec /bin/sh -c 'trap "" INT TTOU TTIN
     \\set +m
-    \\(trap - INT TTOU TTIN; exec "${SHELL:-/bin/sh}" -l) <&0 >&1 2>&1 &
+    \\(trap - INT TTOU TTIN; exec "${SHELL:-/bin/sh}" -l <>/dev/tty >&0 2>&0) &
     \\spid=$!
     \\last=
     \\while :; do
@@ -867,7 +869,7 @@ test "shouldInjectCwdReporter: skip remote command and no-shell" {
 test "cwd reporter watches child not parent" {
     const testing = std.testing;
     try testing.expect(std.mem.indexOf(u8, cwd_reporter_command, "/proc/$spid/cwd") != null);
-    try testing.expect(std.mem.indexOf(u8, cwd_reporter_command, "<&0 >&1 2>&1") != null);
+    try testing.expect(std.mem.indexOf(u8, cwd_reporter_command, "<>/dev/tty") != null);
     try testing.expect(std.mem.indexOf(u8, cwd_reporter_command, "wait $spid") != null);
     try testing.expect(std.mem.indexOf(u8, cwd_reporter_command, "trap - INT TTOU TTIN") != null);
     try testing.expect(std.mem.indexOf(u8, cwd_reporter_command, "/proc/$PPID/cwd") == null);

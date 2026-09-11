@@ -960,6 +960,8 @@ extension Ghostty {
             selecting: Bool = false
         ) {
             guard let surfaceModel else { return }
+            // The core resolves button actions against its cached pointer position.
+            sendMousePosition(event, selecting: selecting)
             var modifiers = event.modifierFlags
             if selecting {
                 modifiers.insert(.shift)

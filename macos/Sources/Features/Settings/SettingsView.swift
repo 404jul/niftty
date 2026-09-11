@@ -95,26 +95,19 @@ private struct SettingRow: View {
             HStack(alignment: .firstTextBaseline) {
                 Text(row.metadata.name)
                     .font(.headline.monospaced())
-                if row.hasOverride {
-                    Text("Modified")
+                if model.isModified(row.id) {
+                    Text("Unsaved")
                         .font(.caption)
                         .foregroundStyle(.tint)
                 }
                 Spacer()
-                Button("Reset") {
+                Button("Restore Default") {
                     customFieldFocused = false
                     customPending = false
-                    model.resetToDefault(row.id)
+                    model.restoreDefault(row.id)
                 }
                 .buttonStyle(.link)
-                if row.hasOverride {
-                    Button("Use Config File") {
-                        customFieldFocused = false
-                        customPending = false
-                        model.removeOverride(row.id)
-                    }
-                    .buttonStyle(.link)
-                }
+                .disabled(row.value == row.metadata.defaultValue)
             }
 
             if !row.summary.isEmpty {
@@ -125,15 +118,14 @@ private struct SettingRow: View {
             }
             editor
 
-
-            Text("Default: \(row.metadata.defaultValue.isEmpty ? "unset" : row.metadata.defaultValue)")
+            Text("Default: \(row.defaultDisplayValue)")
                 .font(.caption.monospaced())
                 .foregroundStyle(.tertiary)
                 .lineLimit(2)
         }
         .onChange(of: row.value) { newValue in
             // The model can change this value from anywhere (save + reload,
-            // reset, etc.). If it lands on a known option, leave custom mode.
+            // restore, etc.). If it lands on a known option, leave custom mode.
             // While our own text field has focus, value changes are the
             // user's in-progress typing, so leave custom mode alone.
             guard !customFieldFocused else { return }
@@ -144,6 +136,7 @@ private struct SettingRow: View {
         .padding(.horizontal, 20)
         .padding(.vertical, 16)
     }
+
     @ViewBuilder
     private var editor: some View {
         switch row.metadata.kind {
@@ -151,7 +144,7 @@ private struct SettingRow: View {
             HStack(spacing: 8) {
                 Picker("Value", selection: selection) {
                     if row.metadata.value.isEmpty {
-                        Text("Unset").tag("")
+                        Text("Default: \(row.defaultDisplayValue)").tag("")
                     }
                     ForEach(row.metadata.options, id: \.self) { option in
                         Text(option).tag(option)
@@ -163,7 +156,7 @@ private struct SettingRow: View {
                 .frame(maxWidth: 300, alignment: .leading)
 
                 if isCustom {
-                    TextField("Value", text: model.binding(for: row.id))
+                    TextField(row.defaultDisplayValue, text: model.binding(for: row.id))
                         .textFieldStyle(.roundedBorder)
                         .font(.body.monospaced())
                         .frame(maxWidth: 300)
@@ -173,7 +166,7 @@ private struct SettingRow: View {
 
         case .text:
             HStack(alignment: .center, spacing: 8) {
-                TextField("Value", text: model.binding(for: row.id), axis: .vertical)
+                TextField(row.defaultDisplayValue, text: model.binding(for: row.id), axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(1...5)
                     .font(.body.monospaced())

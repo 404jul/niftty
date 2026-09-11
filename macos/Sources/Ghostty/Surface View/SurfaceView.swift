@@ -227,20 +227,20 @@ extension Ghostty {
         let progress: OSSurfaceView.SSHUploadProgress
 
         var body: some View {
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 if progress.isError {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(.red)
                 } else if progress.completedBytes < progress.totalBytes || progress.totalBytes == 0 {
                     ProgressView(value: progress.fraction)
                         .controlSize(.small)
-                        .frame(width: 70)
+                        .frame(width: 56)
                 } else {
                     Image(systemName: "checkmark.circle.fill")
                         .foregroundStyle(.green)
                 }
 
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 1) {
                     if let filename = progress.filename {
                         Text(filename)
                             .lineLimit(1)
@@ -250,18 +250,53 @@ extension Ghostty {
                         Text(message)
                             .lineLimit(2)
                     } else if progress.totalBytes > 0 {
-                        Text(progress.completedBytes.formatted(.byteCount(style: .file)) +
-                             " of " + progress.totalBytes.formatted(.byteCount(style: .file)))
+                        uploadBytesLabel
                             .foregroundStyle(.secondary)
                     }
                 }
                 .font(.caption)
+                .frame(maxWidth: 200, alignment: .leading)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-            .frame(maxWidth: 360)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
-            .shadow(radius: 5, y: 2)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+            .shadow(radius: 4, y: 1)
+            .fixedSize()
+        }
+
+        /// Always one fraction digit, sized to `total`, so 113 / 113.1 / 114
+        /// don't change the label width.
+        private var uploadBytesLabel: some View {
+            let (divisor, suffix) = Self.byteUnit(for: progress.totalBytes)
+            let completed = Self.formatBytes(progress.completedBytes, divisor: divisor, suffix: suffix)
+            let total = Self.formatBytes(progress.totalBytes, divisor: divisor, suffix: suffix)
+            return HStack(spacing: 0) {
+                Text(total)
+                    .hidden()
+                    .accessibilityHidden(true)
+                    .overlay(alignment: .trailing) {
+                        Text(completed)
+                    }
+                Text(" \(suffix) of \(total) \(suffix)")
+            }
+            .monospacedDigit()
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("\(completed) \(suffix) of \(total) \(suffix)")
+        }
+
+        private static func byteUnit(for total: UInt64) -> (divisor: Double, suffix: String) {
+            switch total {
+            case 1_000_000_000...: (1_000_000_000, "GB")
+            case 1_000_000...: (1_000_000, "MB")
+            case 1_000...: (1_000, "KB")
+            default: (1, "bytes")
+            }
+        }
+
+        private static func formatBytes(_ bytes: UInt64, divisor: Double, suffix: String) -> String {
+            if suffix == "bytes" { return "\(bytes)" }
+            return (Double(bytes) / divisor)
+                .formatted(.number.precision(.fractionLength(1...1)))
         }
     }
 

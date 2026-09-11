@@ -4,7 +4,7 @@ struct SettingsFileEditor {
     static let beginMarker = "# BEGIN NIFTTY GRAPHICAL SETTINGS"
     static let endMarker = "# END NIFTTY GRAPHICAL SETTINGS"
 
-    static func overrides(in text: String) -> [String: String] {
+    static func legacyOverrides(in text: String) -> [String: String] {
         let lines = text.components(separatedBy: "\n")
         guard let begin = lines.firstIndex(of: beginMarker),
               let end = lines[(begin + 1)...].firstIndex(of: endMarker)
@@ -12,16 +12,12 @@ struct SettingsFileEditor {
 
         var values: [String: [String]] = [:]
         for line in lines[(begin + 1)..<end] {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard !trimmed.isEmpty,
-                  !trimmed.hasPrefix("#"),
-                  let separator = trimmed.firstIndex(of: "=")
+            guard let name = settingName(in: line),
+                  let separator = line.firstIndex(of: "=")
             else { continue }
 
-            let name = trimmed[..<separator].trimmingCharacters(in: .whitespaces)
-            let value = trimmed[trimmed.index(after: separator)...]
+            let value = line[line.index(after: separator)...]
                 .trimmingCharacters(in: .whitespaces)
-            guard !name.isEmpty else { continue }
             if value.isEmpty {
                 values[name] = []
             } else {
@@ -32,10 +28,11 @@ struct SettingsFileEditor {
         return values.mapValues { $0.joined(separator: "\n") }
     }
 
-    static func replacingManagedBlock(
+    static func replacingSettings(
         in text: String,
-        overrides: [String: String],
-        orderedNames: [String]
+        values: [String: String],
+        orderedNames: [String],
+        repeatableNames: Set<String>
     ) -> String {
         var lines = text.components(separatedBy: "\n")
         if let begin = lines.firstIndex(of: beginMarker),
@@ -47,31 +44,59 @@ struct SettingsFileEditor {
             }
         }
 
-        guard !overrides.isEmpty else { return lines.joined(separator: "\n") }
-        if lines.last?.isEmpty == false { lines.append("") }
-        lines.append(beginMarker)
-        lines.append("# This block is maintained by Niftty Settings.")
-
-        let known = orderedNames.filter { overrides[$0] != nil }
-        let extras = overrides.keys.filter { !orderedNames.contains($0) }.sorted()
+        let known = orderedNames.filter { values[$0] != nil }
+        let extras = values.keys.filter { !orderedNames.contains($0) }.sorted()
         for name in known + extras {
-            guard let value = overrides[name] else { continue }
-            lines.append("\(name) =")
-            for item in value.components(separatedBy: "\n") where !item.isEmpty {
-                lines.append("\(name) = \(item)")
+            guard let value = values[name] else { continue }
+            var replacement: [String] = repeatableNames.contains(name) ? ["\(name) ="] : []
+            replacement += value.components(separatedBy: "\n")
+                .filter { !$0.isEmpty }
+                .map { "\(name) = \($0)" }
+            if replacement.isEmpty {
+                replacement = ["\(name) ="]
+            }
+
+            var firstMatch: Int?
+            var index = 0
+            while index < lines.count {
+                guard settingName(in: lines[index]) == name else {
+                    index += 1
+                    continue
+                }
+                if firstMatch == nil {
+                    firstMatch = index
+                    lines.replaceSubrange(index...index, with: replacement)
+                    index += replacement.count
+                } else {
+                    lines.remove(at: index)
+                }
+            }
+
+            if firstMatch == nil {
+                if lines.last?.isEmpty == false { lines.append("") }
+                lines.append(contentsOf: replacement)
             }
         }
-        lines.append(endMarker)
-        lines.append("")
+
         return lines.joined(separator: "\n")
+    }
+
+    private static func settingName(in line: String) -> String? {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty,
+              !trimmed.hasPrefix("#"),
+              let separator = trimmed.firstIndex(of: "=")
+        else { return nil }
+        let name = trimmed[..<separator].trimmingCharacters(in: .whitespaces)
+        return name.isEmpty ? nil : name
     }
 }
 
 final class SettingsModel: ObservableObject {
     struct Row: Identifiable {
         let metadata: Ghostty.ConfigEditorSetting
+        let defaultDisplayValue: String
         var value: String
-        var hasOverride: Bool
 
         var id: String { metadata.name }
         var summary: String {
@@ -86,7 +111,8 @@ final class SettingsModel: ObservableObject {
     @Published var hasUnsavedChanges = false
 
     private weak var appDelegate: AppDelegate?
-    private var overrides: [String: String] = [:]
+    private var legacyValues: [String: String] = [:]
+    private var pendingValues: [String: String] = [:]
 
     init(appDelegate: AppDelegate) {
         self.appDelegate = appDelegate
@@ -119,22 +145,17 @@ final class SettingsModel: ObservableObject {
     func set(_ value: String, for name: String) {
         guard let index = rows.firstIndex(where: { $0.id == name }) else { return }
         rows[index].value = value
-        rows[index].hasOverride = true
-        overrides[name] = value
+        pendingValues[name] = value
         hasUnsavedChanges = true
     }
 
-    func resetToDefault(_ name: String) {
+    func isModified(_ name: String) -> Bool {
+        pendingValues[name] != nil
+    }
+
+    func restoreDefault(_ name: String) {
         guard let row = rows.first(where: { $0.id == name }) else { return }
         set(row.metadata.defaultValue, for: name)
-    }
-
-    func removeOverride(_ name: String) {
-        guard let index = rows.firstIndex(where: { $0.id == name }) else { return }
-        overrides.removeValue(forKey: name)
-        rows[index].hasOverride = false
-        rows[index].value = rows[index].metadata.value
-        hasUnsavedChanges = true
     }
 
     func reload() {
@@ -142,17 +163,18 @@ final class SettingsModel: ObservableObject {
         do {
             let metadata = try appDelegate.ghostty.config.editorSettings()
             let text = try String(contentsOfFile: appDelegate.ghostty.configFilePath, encoding: .utf8)
-            overrides = SettingsFileEditor.overrides(in: text)
+            legacyValues = SettingsFileEditor.legacyOverrides(in: text)
+            pendingValues.removeAll()
             rows = metadata.map { setting in
                 Row(
                     metadata: setting,
-                    value: overrides[setting.name] ?? setting.value,
-                    hasOverride: overrides[setting.name] != nil)
+                    defaultDisplayValue: Self.defaultDisplayValue(for: setting, in: metadata),
+                    value: setting.value)
             }
             if !categories.contains(selectedCategory) {
                 selectedCategory = categories.first ?? "Appearance"
             }
-            hasUnsavedChanges = false
+            hasUnsavedChanges = !legacyValues.isEmpty
             error = nil
         } catch {
             self.error = error.localizedDescription
@@ -179,16 +201,36 @@ final class SettingsModel: ObservableObject {
         do {
             let path = appDelegate.ghostty.configFilePath
             let existing = try String(contentsOfFile: path, encoding: .utf8)
-            let updated = SettingsFileEditor.replacingManagedBlock(
+            let values = legacyValues.merging(pendingValues) { _, pending in pending }
+            let updated = SettingsFileEditor.replacingSettings(
                 in: existing,
-                overrides: overrides,
-                orderedNames: rows.map(\.id))
+                values: values,
+                orderedNames: rows.map(\.id),
+                repeatableNames: Set(rows.filter { $0.metadata.repeatable }.map(\.id)))
+
             try updated.write(toFile: path, atomically: true, encoding: .utf8)
             appDelegate.ghostty.reloadConfig()
             reload()
         } catch {
             self.error = error.localizedDescription
         }
+    }
+
+    static func defaultDisplayValue(
+        for setting: Ghostty.ConfigEditorSetting,
+        in settings: [Ghostty.ConfigEditorSetting]
+    ) -> String {
+        if !setting.defaultValue.isEmpty { return setting.defaultValue }
+        if setting.name == "theme" {
+            let background = settings.first { $0.name == "background" }?.defaultValue
+            let foreground = settings.first { $0.name == "foreground" }?.defaultValue
+            if let background, !background.isEmpty,
+               let foreground, !foreground.isEmpty {
+                return "Built-in (\(background) / \(foreground))"
+            }
+            return "Built-in"
+        }
+        return "Unset"
     }
 
     static func category(for name: String) -> String {

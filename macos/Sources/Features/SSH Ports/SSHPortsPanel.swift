@@ -24,8 +24,10 @@ struct SSHPortsAccessoryView: View {
                         }
                     }
                     .frame(height: 20)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .contentShape(Rectangle())
                 .help("SSH port forwards")
                 .accessibilityLabel("SSH port forwards")
                 .popover(isPresented: $showPopover, arrowEdge: .bottom) {

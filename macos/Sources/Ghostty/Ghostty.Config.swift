@@ -13,6 +13,7 @@ extension Ghostty {
         let defaultValue: String
         let kind: Kind
         let options: [String]
+        let repeatable: Bool
 
         var id: String { name }
     }

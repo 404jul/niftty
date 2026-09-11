@@ -205,6 +205,12 @@ fn configEditorData(self: *Config) !String {
             .@"enum" => "enum",
             else => "text",
         });
+        try json.objectField("repeatable");
+        try json.write(
+            std.mem.indexOf(u8, @typeName(Field), "Repeatable") != null or
+                std.mem.eql(u8, field.name, "keybind") or
+                std.mem.eql(u8, field.name, "key-remap"),
+        );
         try json.objectField("options");
         try json.beginArray();
         switch (@typeInfo(Field)) {
@@ -366,13 +372,19 @@ test "ghostty_config_editor_data includes effective values and enum options" {
         \\{"name":"maximize","description":
     ) != null);
     try testing.expect(std.mem.indexOf(u8, json,
-        \\"value":"true","defaultValue":"false","kind":"boolean"
+        \\"value":"true","defaultValue":"false","kind":"boolean","repeatable":false
     ) != null);
     try testing.expect(std.mem.indexOf(u8, json,
         \\"name":"window-theme"
     ) != null);
     try testing.expect(std.mem.indexOf(u8, json,
         \\"options":["auto","system","light","dark","ghostty"]
+    ) != null);
+    try testing.expect(std.mem.indexOf(u8, json,
+        \\"name":"font-family"
+    ) != null);
+    try testing.expect(std.mem.indexOf(u8, json,
+        \\"kind":"text","repeatable":true
     ) != null);
 }
 
