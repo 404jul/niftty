@@ -96,9 +96,15 @@ private struct TerminalSplitLeaf: View {
 
     var body: some View {
         GeometryReader { geometry in
-            Ghostty.InspectableSurface(
-                surfaceView: surfaceView,
-                isSplit: isSplit)
+            Group {
+                if let document = surfaceView.editorDocument {
+                    EditorPane(document: document, surfaceView: surfaceView, isSplit: isSplit)
+                } else {
+                    Ghostty.InspectableSurface(
+                        surfaceView: surfaceView,
+                        isSplit: isSplit)
+                }
+            }
             .background {
                 // If we're dragging ourself, we hide the entire drop zone. This makes
                 // it so that a released drop animates back to its source properly
@@ -126,7 +132,7 @@ private struct TerminalSplitLeaf: View {
                 }
             }
             .accessibilityElement(children: .contain)
-            .accessibilityLabel("Terminal pane")
+            .accessibilityLabel(surfaceView.editorDocument == nil ? "Terminal pane" : "Text editor pane")
         }
     }
 

@@ -167,6 +167,11 @@
                                     <action selector="newTab:" target="-1" id="KoW-K7-hw5"/>
                                 </connections>
                             </menuItem>
+                            <menuItem title="Open File in Editor…" keyEquivalent="o" id="Edi-t0-r01">
+                                <connections>
+                                    <action selector="openEditor:" target="bbz-4X-AYv" id="Edi-aC-t01"/>
+                                </connections>
+                            </menuItem>
                             <menuItem isSeparatorItem="YES" id="m54-Is-iLE"/>
                             <menuItem title="Split Right" id="VUR-Ld-nLx">
                                 <modifierMask key="keyEquivalentModifierMask"/>

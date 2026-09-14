@@ -985,7 +985,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
         let alert = NSAlert()
         alert.messageText = "Close All Windows?"
-        alert.informativeText = "All terminal sessions will be terminated."
+        alert.informativeText = "Running terminal sessions will be terminated and unsaved editor changes will be discarded."
         alert.addButton(withTitle: "Close All Windows")
         alert.addButton(withTitle: "Cancel")
         alert.alertStyle = .warning
@@ -1048,16 +1048,12 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             // Restore focus to the previously focused surface
             if let focusedUUID = undoState.focusedSurface,
                let focusTarget = surfaceTree.first(where: { $0.id == focusedUUID }) {
-                DispatchQueue.main.async {
-                    Ghostty.moveFocus(to: focusTarget, from: nil)
-                }
+                self.moveFocus(to: focusTarget)
             } else if let focusedSurface = surfaceTree.first {
                 // No prior focused surface or we can't find it, let's focus
                 // the first.
                 self.focusedSurface = focusedSurface
-                DispatchQueue.main.async {
-                    Ghostty.moveFocus(to: focusedSurface, from: nil)
-                }
+                self.moveFocus(to: focusedSurface)
             }
         }
     }
@@ -1323,7 +1319,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
         confirmClose(
             messageText: "Close Tab?",
-            informativeText: "The terminal still has a running process. If you close the tab the process will be killed."
+            informativeText: "This tab contains a running terminal process or unsaved editor changes."
         ) {
             self.closeTabImmediately()
         }
@@ -1355,7 +1351,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
         confirmClose(
             messageText: "Close Other Tabs?",
-            informativeText: "At least one other tab still has a running process. If you close the tab the process will be killed."
+            informativeText: "At least one other tab contains a running terminal process or unsaved editor changes."
         ) {
             self.closeOtherTabsImmediately()
         }
@@ -1384,7 +1380,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
         confirmClose(
             messageText: "Close Tabs on the Right?",
-            informativeText: "At least one tab to the right still has a running process. If you close the tab the process will be killed."
+            informativeText: "At least one tab to the right contains a running terminal process or unsaved editor changes."
         ) {
             self.closeTabsOnTheRightImmediately()
         }
@@ -1416,7 +1412,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             // attached to the window that needs confirmation.
             confirmControllers[0].confirmClose(
                 messageText: "Close Window?",
-                informativeText: "All terminal sessions in this window will be terminated.",
+                informativeText: "This window contains running terminal sessions or unsaved editor changes.",
             ) {
                 self.closeWindowImmediately()
             }
@@ -1425,7 +1421,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
         Task {
             let alert = NSAlert.reviewWindowsAlert(
-                messageText: "You have \(confirmControllers.count) windows with running processes. Do you want to review these windows before closing?",
+                messageText: "You have \(confirmControllers.count) windows with running processes or unsaved editor changes. Do you want to review these windows before closing?",
                 terminateNowButtonTitle: "Close"
             )
             switch await alert.beginSheetModal(for: window) {

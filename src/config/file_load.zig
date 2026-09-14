@@ -71,7 +71,6 @@ pub fn legacyDefaultAppSupportPath(alloc: Allocator) ![]const u8 {
     return try internal_os.macos.appSupportDir(alloc, "config");
 }
 
-
 /// Preferred default path for the macOS Application Support configuration file.
 /// Returned value must be freed by the caller.
 pub fn preferredAppSupportPath(alloc: Allocator) ![]const u8 {

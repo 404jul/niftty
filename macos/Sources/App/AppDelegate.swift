@@ -959,6 +959,28 @@ class AppDelegate: NSObject,
         openSettings()
     }
 
+    @IBAction func openEditor(_ sender: Any?) {
+        let panel = NSOpenPanel()
+        panel.title = "Open File in Editor"
+        panel.prompt = "Open"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+
+        guard panel.runModal() == .OK, let selectedURL = panel.url else { return }
+
+        do {
+            let document = try EditorDocument(
+                url: selectedURL.resolvingSymlinksInPath().standardizedFileURL
+            )
+            let controller = TerminalController.preferredParent ?? TerminalController.newWindow(ghostty)
+            guard let focusedSurface = controller.focusedSurface ?? controller.surfaceTree.first else { return }
+            controller.newEditorSplit(at: focusedSurface, direction: .right, document: document)
+        } catch {
+            NSAlert(error: error).runModal()
+        }
+    }
+
     @IBAction func reloadConfig(_ sender: Any?) {
         ghostty.reloadConfig()
     }

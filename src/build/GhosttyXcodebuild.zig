@@ -12,6 +12,7 @@ const XCFramework = @import("GhosttyXCFramework.zig");
 build: *std.Build.Step.Run,
 open: *std.Build.Step.Run,
 copy: *std.Build.Step.Run,
+resign: *std.Build.Step.Run,
 xctest: *std.Build.Step.Run,
 
 pub const Deps = struct {
@@ -177,17 +178,35 @@ pub fn init(
         break :copy step;
     };
 
+    // Re-sign the installed bundle. The target-based build above and the
+    // scheme-based test step share macos/build/{config}, and their
+    // incremental states can interleave into a bundle whose seal no longer
+    // matches its contents. macOS kills such an app at launch with
+    // "Code Signature Invalid", so re-sign the installed copy to guarantee
+    // zig-out/Niftty.app is always launchable.
+    const resign = resign: {
+        const step = RunStep.create(b, "codesign app bundle");
+        step.has_side_effects = true;
+        step.addArgs(&.{ "codesign", "--force", "--deep", "--sign", "-" });
+        step.addArg(b.fmt("--entitlements=macos/Ghostty{s}.entitlements", .{xc_config}));
+        step.addArg("--options=runtime");
+        step.addArg(b.fmt("{s}/Niftty.app", .{b.install_path}));
+        step.step.dependOn(&copy.step);
+        break :resign step;
+    };
+
     return .{
         .build = build,
         .open = open,
         .copy = copy,
+        .resign = resign,
         .xctest = xctest,
     };
 }
 
 pub fn install(self: *const Ghostty) void {
     const b = self.copy.step.owner;
-    b.getInstallStep().dependOn(&self.copy.step);
+    b.getInstallStep().dependOn(&self.resign.step);
 }
 
 pub fn installXcframework(self: *const Ghostty) void {

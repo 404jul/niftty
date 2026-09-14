@@ -284,24 +284,53 @@ class BaseTerminalController: NSWindowController,
         direction: SplitTree<Ghostty.SurfaceView>.NewDirection,
         baseConfig config: Ghostty.SurfaceConfiguration? = nil
     ) -> Ghostty.SurfaceView? {
-        // We can only create new splits for surfaces in our tree.
+        guard let ghosttyApp = ghostty.app else { return nil }
+        return insertSplit(
+            Ghostty.SurfaceView(ghosttyApp, baseConfig: config),
+            at: oldView,
+            direction: direction,
+            undoAction: "New Split"
+        )
+    }
+
+    @discardableResult
+    func newEditorSplit(
+        at oldView: Ghostty.SurfaceView,
+        direction: SplitTree<Ghostty.SurfaceView>.NewDirection,
+        document: EditorDocument
+    ) -> Ghostty.SurfaceView? {
+        guard let ghosttyApp = ghostty.app else { return nil }
+
+        var config = Ghostty.SurfaceConfiguration()
+        config.command = "/usr/bin/true"
+        config.waitAfterCommand = true
+
+        let newView = Ghostty.SurfaceView(ghosttyApp, baseConfig: config)
+        EditorPaneStore.shared.attach(document, to: newView)
+        return insertSplit(
+            newView,
+            at: oldView,
+            direction: direction,
+            undoAction: "Open Editor"
+        )
+    }
+
+    private func insertSplit(
+        _ newView: Ghostty.SurfaceView,
+        at oldView: Ghostty.SurfaceView,
+        direction: SplitTree<Ghostty.SurfaceView>.NewDirection,
+        undoAction: String
+    ) -> Ghostty.SurfaceView? {
         guard surfaceTree.root?.node(view: oldView) != nil else { return nil }
 
-        // Create a new surface view
-        guard let ghostty_app = ghostty.app else { return nil }
-        let newView = Ghostty.SurfaceView(ghostty_app, baseConfig: config)
-
-        // Do the split
         let newTree: SplitTree<Ghostty.SurfaceView>
         do {
             newTree = try surfaceTree.inserting(
                 view: newView,
                 at: oldView,
-                direction: direction)
+                direction: direction
+            )
         } catch {
-            // If splitting fails for any reason (it should not), then we just log
-            // and return. The new view we created will be deinitialized and its
-            // no big deal.
             Ghostty.logger.warning("failed to insert split: \(error, privacy: .public)")
             return nil
         }
@@ -310,23 +339,42 @@ class BaseTerminalController: NSWindowController,
             newTree,
             moveFocusTo: newView,
             moveFocusFrom: oldView,
-            undoAction: "New Split")
-
+            undoAction: undoAction
+        )
         return newView
     }
 
     /// Move focus to a surface view.
     func focusSurface(_ view: Ghostty.SurfaceView) {
-        // Check if target surface is in our tree
         guard surfaceTree.contains(view) else { return }
 
-        // Move focus to the target surface and activate the window/app
-        DispatchQueue.main.async {
-            Ghostty.moveFocus(to: view)
-            view.window?.makeKeyAndOrderFront(nil)
-            if !NSApp.isActive {
-                NSApp.activate(ignoringOtherApps: true)
-            }
+        moveFocus(to: view, from: focusedSurface)
+        window?.makeKeyAndOrderFront(nil)
+        if !NSApp.isActive {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
+    func moveFocus(
+        to view: Ghostty.SurfaceView,
+        from oldView: Ghostty.SurfaceView? = nil,
+        delay: TimeInterval? = nil
+    ) {
+        guard view.editorDocument != nil else {
+            Ghostty.moveFocus(to: view, from: oldView, delay: delay)
+            return
+        }
+
+        let work = { [weak self, weak view] in
+            guard let self, let view else { return }
+            self.focusedSurfaceDidChange(to: view)
+            NotificationCenter.default.post(name: .editorPaneFocusRequested, object: view)
+        }
+
+        if let delay {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+        } else {
+            DispatchQueue.main.async(execute: work)
         }
     }
 
@@ -484,13 +532,14 @@ class BaseTerminalController: NSWindowController,
         // confirmationDialog allows the user to Cmd-W close the alert, but when doing
         // so SwiftUI does not update any of the bindings to note that window is no longer
         // being shown, and provides no callback to detect this.
+        let hasUnsavedEditor = node.contains { $0.editorDocument?.isDirty == true }
         confirmClose(
-            messageText: "Close Terminal?",
-            informativeText: "The terminal still has a running process. If you close the terminal the process will be killed."
+            messageText: hasUnsavedEditor ? "Close Editor?" : "Close Terminal?",
+            informativeText: hasUnsavedEditor
+                ? "This editor has unsaved changes."
+                : "The terminal still has a running process. If you close the terminal the process will be killed."
         ) { [weak self] in
-            if let self {
-                self.removeSurfaceNode(node)
-            }
+            self?.removeSurfaceNode(node)
         }
     }
 
@@ -547,9 +596,7 @@ class BaseTerminalController: NSWindowController,
         let oldTree = surfaceTree
         surfaceTree = newTree
         if let newView {
-            DispatchQueue.main.async {
-                Ghostty.moveFocus(to: newView, from: oldView)
-            }
+            moveFocus(to: newView, from: oldView)
         }
 
         // Setup our undo
@@ -564,9 +611,7 @@ class BaseTerminalController: NSWindowController,
         ) { target in
             target.surfaceTree = oldTree
             if let oldView {
-                DispatchQueue.main.async {
-                    Ghostty.moveFocus(to: oldView, from: target.focusedSurface)
-                }
+                target.moveFocus(to: oldView, from: target.focusedSurface)
             }
 
             undoManager.registerUndo(
@@ -725,9 +770,7 @@ class BaseTerminalController: NSWindowController,
         }
 
         // Move focus to the next surface
-        DispatchQueue.main.async {
-            Ghostty.moveFocus(to: nextSurface, from: target)
-        }
+        moveFocus(to: nextSurface, from: target)
     }
 
     @objc private func ghosttyDidToggleSplitZoom(_ notification: Notification) {
@@ -753,9 +796,7 @@ class BaseTerminalController: NSWindowController,
 
         // Ensure focus stays on the target surface. We lose focus when we do
         // this so we need to grab it again.
-        DispatchQueue.main.async {
-            Ghostty.moveFocus(to: target)
-        }
+        moveFocus(to: target)
     }
 
     @objc private func ghosttyDidResizeSplit(_ notification: Notification) {
@@ -799,8 +840,8 @@ class BaseTerminalController: NSWindowController,
 
         // We use a small delay to ensure this runs after any UI cleanup
         // (e.g., command palette restoring focus to its original surface).
-        Ghostty.moveFocus(to: target)
-        Ghostty.moveFocus(to: target, delay: 0.1)
+        moveFocus(to: target)
+        moveFocus(to: target, delay: 0.1)
 
         // Show a brief highlight to help the user locate the presented terminal.
         target.highlight()
@@ -889,9 +930,10 @@ class BaseTerminalController: NSWindowController,
         if let titleSurface = focusedSurface ?? lastFocusedSurface,
            surfaceTree.contains(titleSurface) {
             // If we have a surface, we want to listen for title changes.
+            let editorTitle = titleSurface.editorDocument?.url.lastPathComponent
             titleSurface.$title
                 .combineLatest(titleSurface.$bell)
-                .map { [weak self] in self?.computeTitle(title: $0, bell: $1) ?? "" }
+                .map { [weak self] in self?.computeTitle(title: editorTitle ?? $0, bell: $1) ?? "" }
                 .sink { [weak self] in self?.titleDidChange(to: $0) }
                 .store(in: &focusedSurfaceCancellables)
         } else {
@@ -1261,9 +1303,7 @@ class BaseTerminalController: NSWindowController,
         // want to move focus to our focused terminal surface. This works around
         // various weirdness with moving surfaces around.
         if let window, window.firstResponder == window, let focusedSurface {
-            DispatchQueue.main.async {
-                Ghostty.moveFocus(to: focusedSurface)
-            }
+            moveFocus(to: focusedSurface)
         }
 
         // Becoming key can race with responder updates when activating a window.
@@ -1309,7 +1349,13 @@ class BaseTerminalController: NSWindowController,
     // MARK: First Responder
 
     @IBAction func close(_ sender: Any) {
-        guard let surface = focusedSurface?.surface else { return }
+        guard let focusedSurface else { return }
+        if let document = focusedSurface.editorDocument {
+            closeSurface(focusedSurface, withConfirmation: document.isDirty)
+            return
+        }
+
+        guard let surface = focusedSurface.surface else { return }
         ghostty.requestClose(surface: surface)
     }
 
@@ -1334,23 +1380,31 @@ class BaseTerminalController: NSWindowController,
     }
 
     @IBAction func splitRight(_ sender: Any) {
-        guard let surface = focusedSurface?.surface else { return }
-        ghostty.split(surface: surface, direction: GHOSTTY_SPLIT_DIRECTION_RIGHT)
+        split(direction: .right, ghosttyDirection: GHOSTTY_SPLIT_DIRECTION_RIGHT)
     }
 
     @IBAction func splitLeft(_ sender: Any) {
-        guard let surface = focusedSurface?.surface else { return }
-        ghostty.split(surface: surface, direction: GHOSTTY_SPLIT_DIRECTION_LEFT)
+        split(direction: .left, ghosttyDirection: GHOSTTY_SPLIT_DIRECTION_LEFT)
     }
 
     @IBAction func splitDown(_ sender: Any) {
-        guard let surface = focusedSurface?.surface else { return }
-        ghostty.split(surface: surface, direction: GHOSTTY_SPLIT_DIRECTION_DOWN)
+        split(direction: .down, ghosttyDirection: GHOSTTY_SPLIT_DIRECTION_DOWN)
     }
 
     @IBAction func splitUp(_ sender: Any) {
-        guard let surface = focusedSurface?.surface else { return }
-        ghostty.split(surface: surface, direction: GHOSTTY_SPLIT_DIRECTION_UP)
+        split(direction: .up, ghosttyDirection: GHOSTTY_SPLIT_DIRECTION_UP)
+    }
+
+    private func split(
+        direction: SplitTree<Ghostty.SurfaceView>.NewDirection,
+        ghosttyDirection: ghostty_action_split_direction_e
+    ) {
+        guard let focusedSurface else { return }
+        if focusedSurface.editorDocument != nil {
+            newSplit(at: focusedSurface, direction: direction)
+        } else if let surface = focusedSurface.surface {
+            ghostty.split(surface: surface, direction: ghosttyDirection)
+        }
     }
 
     @IBAction func splitZoom(_ sender: Any) {

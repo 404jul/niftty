@@ -6,6 +6,7 @@ const cli_args = @import("args.zig");
 const diagnostics = @import("diagnostics.zig");
 const global = @import("../global.zig");
 const ssh_session = @import("ssh_session.zig");
+const ssh_sftp = @import("ssh_sftp.zig");
 
 const usage =
     \\Usage: ghostty +ssh-upload --pid=<pid> --remote-dir=<path> [--verbose=<bool>] <paths...>
@@ -303,7 +304,7 @@ fn uploadSftp(
     var read_buffer: [64 * 1024]u8 = undefined;
     var file_writer = child.stdin.?.writer(global.io(), &write_buffer);
     var file_reader = child.stdout.?.reader(global.io(), &read_buffer);
-    var client = SftpClient{
+    var client = ssh_sftp.Client{
         .alloc = alloc,
         .writer = &file_writer.interface,
         .reader = &file_reader.interface,
@@ -314,282 +315,84 @@ fn uploadSftp(
     for (entries, 0..) |entry, index| {
         const remote_path = try remoteJoin(alloc, remote_dir, entry.remote_relative);
         switch (entry.kind) {
-            .directory => try client.mkdir(remote_path),
+            .directory => try mkdirExistingOk(&client, remote_path),
             .sym_link => {
                 const parent = std.fs.path.dirname(remote_path) orelse remote_dir;
-                try client.mkdir(parent);
+                try mkdirExistingOk(&client, parent);
                 const temporary = try std.fmt.allocPrint(
                     alloc,
                     "{s}.ghostty-upload-{d}-{d}",
                     .{ remote_path, ssh_session.currentPid(), index },
                 );
                 try client.symlink(entry.symlink_target, temporary);
-                client.posixRename(temporary, remote_path) catch |err| {
-                    client.remove(temporary) catch {};
-                    return err;
-                };
+                try finishUpload(&client, temporary, remote_path, true);
             },
             .file => {
                 const parent = std.fs.path.dirname(remote_path) orelse remote_dir;
-                try client.mkdir(parent);
+                try mkdirExistingOk(&client, parent);
                 const temporary = try std.fmt.allocPrint(
                     alloc,
                     "{s}.ghostty-upload-{d}-{d}",
                     .{ remote_path, ssh_session.currentPid(), index },
                 );
-                try client.uploadFile(entry.local_path, temporary, &completed, total, verbose, progress);
-                try client.posixRename(temporary, remote_path);
+                try uploadFile(&client, entry.local_path, temporary, &completed, total, verbose, progress);
+                try finishUpload(&client, temporary, remote_path, false);
             },
         }
     }
     try file_writer.interface.flush();
 }
 
-const SftpClient = struct {
-    alloc: Allocator,
-    writer: *std.Io.Writer,
-    reader: *std.Io.Reader,
-    next_id: u32 = 1,
-
-    const max_packet_size = 1024 * 1024;
-
-    fn handshake(self: *SftpClient) !void {
-        var body: std.Io.Writer.Allocating = .init(self.alloc);
-        defer body.deinit();
-        try body.writer.writeByte(1); // SSH_FXP_INIT
-        try putU32(&body.writer, 3);
-        try self.send(body.written());
-        const response = try self.receive();
-        defer self.alloc.free(response);
-        if (response.len < 5 or response[0] != 2 or getU32(response[1..5]) != 3) {
-            return error.UnsupportedSftpVersion;
-        }
-    }
-
-    fn mkdir(self: *SftpClient, path: []const u8) !void {
-        const id = self.takeId();
-        var body: std.Io.Writer.Allocating = .init(self.alloc);
-        defer body.deinit();
-        try body.writer.writeByte(14); // SSH_FXP_MKDIR
-        try putU32(&body.writer, id);
-        try putString(&body.writer, path);
-        try putU32(&body.writer, 0); // empty attrs
-        try self.send(body.written());
-        const response = try self.receive();
-        defer self.alloc.free(response);
-        const status = try statusCode(response, id);
-        // OpenSSH reports generic failure when the directory already exists.
-        if (status != 0 and status != 4) return error.SftpMkdirFailed;
-    }
-
-    fn remove(self: *SftpClient, path: []const u8) !void {
-        const id = self.takeId();
-        var body: std.Io.Writer.Allocating = .init(self.alloc);
-        defer body.deinit();
-        try body.writer.writeByte(13); // SSH_FXP_REMOVE
-        try putU32(&body.writer, id);
-        try putString(&body.writer, path);
-        try self.send(body.written());
-        const response = try self.receive();
-        defer self.alloc.free(response);
-        if (try statusCode(response, id) != 0) return error.SftpRemoveFailed;
-    }
-
-    fn uploadFile(
-        self: *SftpClient,
-        local_path: []const u8,
-        remote_path: []const u8,
-        completed: *u64,
-        total: u64,
-        verbose: bool,
-        progress: *std.Io.Writer,
-    ) !void {
-        const handle = try self.open(remote_path);
-        defer self.alloc.free(handle);
-
-        const file = try std.Io.Dir.openFileAbsolute(global.io(), local_path, .{});
-        defer file.close(global.io());
-        var offset: u64 = 0;
-        var buffer: [32 * 1024]u8 = undefined;
-        while (true) {
-            const amount = file.readStreaming(global.io(), &.{&buffer}) catch |err| switch (err) {
-                error.EndOfStream => break,
-                else => return err,
-            };
-            if (amount == 0) break;
-            try self.write(handle, offset, buffer[0..amount]);
-            offset += amount;
-            completed.* += amount;
-            try reportProgress(verbose, progress, completed.*, total, local_path);
-        }
-        try self.close(handle);
-    }
-
-    fn open(self: *SftpClient, path: []const u8) ![]u8 {
-        const id = self.takeId();
-        var body: std.Io.Writer.Allocating = .init(self.alloc);
-        defer body.deinit();
-        try body.writer.writeByte(3); // SSH_FXP_OPEN
-        try putU32(&body.writer, id);
-        try putString(&body.writer, path);
-        try putU32(&body.writer, 0x1a); // WRITE | CREAT | TRUNC
-        try putU32(&body.writer, 0); // empty attrs
-        try self.send(body.written());
-        const response = try self.receive();
-        defer self.alloc.free(response);
-        if (response.len < 9 or response[0] != 102 or getU32(response[1..5]) != id) {
-            return error.SftpOpenFailed;
-        }
-        var packet = PacketReader{ .data = response[5..] };
-        return self.alloc.dupe(u8, try packet.string());
-    }
-
-    fn write(self: *SftpClient, handle: []const u8, offset: u64, data: []const u8) !void {
-        const id = self.takeId();
-        var body: std.Io.Writer.Allocating = .init(self.alloc);
-        defer body.deinit();
-        try body.writer.writeByte(6); // SSH_FXP_WRITE
-        try putU32(&body.writer, id);
-        try putString(&body.writer, handle);
-        try putU64(&body.writer, offset);
-        try putString(&body.writer, data);
-        try self.send(body.written());
-        const response = try self.receive();
-        defer self.alloc.free(response);
-        if (try statusCode(response, id) != 0) return error.SftpWriteFailed;
-    }
-
-    fn close(self: *SftpClient, handle: []const u8) !void {
-        const id = self.takeId();
-        var body: std.Io.Writer.Allocating = .init(self.alloc);
-        defer body.deinit();
-        try body.writer.writeByte(4); // SSH_FXP_CLOSE
-        try putU32(&body.writer, id);
-        try putString(&body.writer, handle);
-        try self.send(body.written());
-        const response = try self.receive();
-        defer self.alloc.free(response);
-        if (try statusCode(response, id) != 0) return error.SftpCloseFailed;
-    }
-
-    fn posixRename(self: *SftpClient, old_path: []const u8, new_path: []const u8) !void {
-        const id = self.takeId();
-        var body: std.Io.Writer.Allocating = .init(self.alloc);
-        defer body.deinit();
-        try body.writer.writeByte(200); // SSH_FXP_EXTENDED
-        try putU32(&body.writer, id);
-        try putString(&body.writer, "posix-rename@openssh.com");
-        try putString(&body.writer, old_path);
-        try putString(&body.writer, new_path);
-        try self.send(body.written());
-        const response = try self.receive();
-        defer self.alloc.free(response);
-        if (try statusCode(response, id) != 0) return error.SftpAtomicRenameFailed;
-    }
-
-    /// OpenSSH SFTP v3: SSH_FXP_SYMLINK arguments are target, then link path
-    /// (reversed from the IETF draft). Message type 20; 18 is RENAME.
-    fn symlink(self: *SftpClient, target: []const u8, link_path: []const u8) !void {
-        const id = self.takeId();
-        var body: std.Io.Writer.Allocating = .init(self.alloc);
-        defer body.deinit();
-        try encodeSymlinkRequest(&body.writer, id, target, link_path);
-        try self.send(body.written());
-        const response = try self.receive();
-        defer self.alloc.free(response);
-        if (try statusCode(response, id) != 0) return error.SftpSymlinkFailed;
-    }
-
-    fn readLink(self: *SftpClient, path: []const u8) ![]u8 {
-        const id = self.takeId();
-        var body: std.Io.Writer.Allocating = .init(self.alloc);
-        defer body.deinit();
-        try body.writer.writeByte(19); // SSH_FXP_READLINK
-        try putU32(&body.writer, id);
-        try putString(&body.writer, path);
-        try self.send(body.written());
-        const response = try self.receive();
-        defer self.alloc.free(response);
-        if (response.len < 13 or response[0] != 104 or getU32(response[1..5]) != id) {
-            return error.SftpReadLinkFailed;
-        }
-        if (getU32(response[5..9]) < 1) return error.SftpReadLinkFailed;
-        var packet = PacketReader{ .data = response[9..] };
-        return self.alloc.dupe(u8, try packet.string());
-    }
-
-    fn send(self: *SftpClient, body: []const u8) !void {
-        try putU32(self.writer, @intCast(body.len));
-        try self.writer.writeAll(body);
-        try self.writer.flush();
-    }
-
-    fn receive(self: *SftpClient) ![]u8 {
-        var length_bytes: [4]u8 = undefined;
-        try self.reader.readSliceAll(&length_bytes);
-        const length = getU32(&length_bytes);
-        if (length == 0 or length > max_packet_size) return error.InvalidSftpPacket;
-        const packet = try self.alloc.alloc(u8, length);
-        errdefer self.alloc.free(packet);
-        try self.reader.readSliceAll(packet);
-        return packet;
-    }
-
-    fn takeId(self: *SftpClient) u32 {
-        defer self.next_id +%= 1;
-        return self.next_id;
-    }
-};
-
-const PacketReader = struct {
-    data: []const u8,
-    offset: usize = 0,
-
-    fn string(self: *PacketReader) ![]const u8 {
-        if (self.data.len - self.offset < 4) return error.InvalidSftpPacket;
-        const length = getU32(self.data[self.offset..][0..4]);
-        self.offset += 4;
-        if (length > self.data.len - self.offset) return error.InvalidSftpPacket;
-        defer self.offset += length;
-        return self.data[self.offset..][0..length];
-    }
-};
-
-const ssh_fxp_symlink: u8 = 20;
-
-fn encodeSymlinkRequest(writer: *std.Io.Writer, id: u32, target: []const u8, link_path: []const u8) !void {
-    try writer.writeByte(ssh_fxp_symlink);
-    try putU32(writer, id);
-    try putString(writer, target);
-    try putString(writer, link_path);
+fn mkdirExistingOk(client: *ssh_sftp.Client, path: []const u8) !void {
+    client.mkdir(path) catch |err| {
+        const attrs = client.stat(path) catch return err;
+        if (attrs.kind != .directory) return err;
+    };
 }
 
-fn statusCode(response: []const u8, id: u32) !u32 {
-    if (response.len < 9 or response[0] != 101 or getU32(response[1..5]) != id) {
-        return error.InvalidSftpStatus;
+fn finishUpload(client: *ssh_sftp.Client, temporary: []const u8, remote_path: []const u8, cleanup: bool) !void {
+    if (client.posix_rename) {
+        client.posixRename(temporary, remote_path) catch |err| {
+            if (cleanup) client.remove(temporary) catch {};
+            return err;
+        };
+        return;
     }
-    return getU32(response[5..9]);
+    client.rename(temporary, remote_path) catch |err| {
+        client.remove(temporary) catch {};
+        return err;
+    };
 }
 
-fn putU32(writer: *std.Io.Writer, value: u32) !void {
-    var bytes: [4]u8 = undefined;
-    std.mem.writeInt(u32, &bytes, value, .big);
-    try writer.writeAll(&bytes);
-}
+fn uploadFile(
+    client: *ssh_sftp.Client,
+    local_path: []const u8,
+    remote_path: []const u8,
+    completed: *u64,
+    total: u64,
+    verbose: bool,
+    progress: *std.Io.Writer,
+) !void {
+    const handle = try client.openWrite(remote_path);
+    defer client.alloc.free(handle);
+    errdefer client.close(handle) catch {};
 
-fn putU64(writer: *std.Io.Writer, value: u64) !void {
-    var bytes: [8]u8 = undefined;
-    std.mem.writeInt(u64, &bytes, value, .big);
-    try writer.writeAll(&bytes);
-}
-
-fn putString(writer: *std.Io.Writer, value: []const u8) !void {
-    try putU32(writer, @intCast(value.len));
-    try writer.writeAll(value);
-}
-
-fn getU32(bytes: *const [4]u8) u32 {
-    return std.mem.readInt(u32, bytes, .big);
+    const file = try std.Io.Dir.openFileAbsolute(global.io(), local_path, .{});
+    defer file.close(global.io());
+    var offset: u64 = 0;
+    var buffer: [32 * 1024]u8 = undefined;
+    while (true) {
+        const amount = file.readStreaming(global.io(), &.{&buffer}) catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => return err,
+        };
+        if (amount == 0) break;
+        try client.write(handle, offset, buffer[0..amount]);
+        offset += amount;
+        completed.* += amount;
+        try reportProgress(verbose, progress, completed.*, total, local_path);
+    }
+    try client.close(handle);
 }
 
 fn uploadFallback(
@@ -736,14 +539,6 @@ fn shellQuote(alloc: Allocator, value: []const u8) ![]u8 {
     return writer.toOwnedSlice();
 }
 
-test "SFTP packet integer encoding" {
-    var bytes: [12]u8 = undefined;
-    var writer: std.Io.Writer = .fixed(&bytes);
-    try putU32(&writer, 0x01020304);
-    try putU64(&writer, 0x05060708090a0b0c);
-    try std.testing.expectEqualSlices(u8, &.{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 }, writer.buffered());
-}
-
 test "shell quoting protects remote paths" {
     const quoted = try shellQuote(std.testing.allocator, "a'b c");
     defer std.testing.allocator.free(quoted);
@@ -839,62 +634,4 @@ test "uploadFallback succeeds when SFTP subsystem is unavailable" {
     var reader = got_file.reader(global.io(), &.{});
     const got = try reader.interface.allocRemaining(alloc, .limited(32));
     try testing.expectEqualStrings(payload, got);
-}
-
-test "SFTP symlink request is type 20 with OpenSSH argument order" {
-    const testing = std.testing;
-    var buf: [64]u8 = undefined;
-    var writer: std.Io.Writer = .fixed(&buf);
-    try encodeSymlinkRequest(&writer, 3, "A", "Current");
-    const out = writer.buffered();
-    try testing.expectEqual(@as(u8, 20), out[0]);
-    try testing.expectEqual(@as(u32, 3), getU32(out[1..5]));
-    try testing.expectEqual(@as(u32, 1), getU32(out[5..9]));
-    try testing.expectEqualStrings("A", out[9..10]);
-    try testing.expectEqual(@as(u32, 7), getU32(out[10..14]));
-    try testing.expectEqualStrings("Current", out[14..21]);
-}
-
-test "OpenSSH sftp-server round-trips symlink" {
-    const testing = std.testing;
-    const alloc = testing.allocator;
-    const server = "/usr/libexec/sftp-server";
-    std.Io.Dir.accessAbsolute(testing.io, server, .{}) catch return error.SkipZigTest;
-
-    var tmp = testing.tmpDir(.{});
-    defer tmp.cleanup();
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const n = try tmp.dir.realPath(testing.io, &path_buf);
-    const tmp_path = path_buf[0..n];
-    const link_path = try std.fs.path.join(alloc, &.{ tmp_path, "Current" });
-    defer alloc.free(link_path);
-
-    var child = std.process.spawn(global.io(), .{
-        .argv = &.{server},
-        .stdin = .pipe,
-        .stdout = .pipe,
-        .stderr = .ignore,
-    }) catch return error.SkipZigTest;
-    defer {
-        if (child.stdin) |file| {
-            file.close(global.io());
-            child.stdin = null;
-        }
-        _ = child.wait(global.io()) catch {};
-    }
-
-    var write_buffer: [4096]u8 = undefined;
-    var read_buffer: [4096]u8 = undefined;
-    var file_writer = child.stdin.?.writer(global.io(), &write_buffer);
-    var file_reader = child.stdout.?.reader(global.io(), &read_buffer);
-    var client = SftpClient{
-        .alloc = alloc,
-        .writer = &file_writer.interface,
-        .reader = &file_reader.interface,
-    };
-    try client.handshake();
-    try client.symlink("A", link_path);
-    const got = try client.readLink(link_path);
-    defer alloc.free(got);
-    try testing.expectEqualStrings("A", got);
 }

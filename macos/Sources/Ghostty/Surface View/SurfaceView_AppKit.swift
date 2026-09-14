@@ -146,6 +146,9 @@ extension Ghostty {
         // Returns true if quit confirmation is required for this surface to
         // exit safely.
         var needsConfirmQuit: Bool {
+            if let editorDocument {
+                return editorDocument.isDirty
+            }
             guard let surface = self.surface else { return false }
             return ghostty_surface_needs_confirm_quit(surface)
         }
@@ -1925,6 +1928,7 @@ extension Ghostty {
             case uuid
             case title
             case isUserSetTitle
+            case editorPath
         }
 
         required convenience init(from decoder: Decoder) throws {
@@ -1937,12 +1941,21 @@ extension Ghostty {
 
             let container = try decoder.container(keyedBy: CodingKeys.self)
             let uuid = UUID(uuidString: try container.decode(String.self, forKey: .uuid))
+            let editorDocument = try container.decodeIfPresent(String.self, forKey: .editorPath)
+                .flatMap { try? EditorDocument(url: URL(fileURLWithPath: $0)) }
             var config = Ghostty.SurfaceConfiguration()
             config.workingDirectory = try container.decode(String?.self, forKey: .pwd)
+            if editorDocument != nil {
+                config.command = "/usr/bin/true"
+                config.waitAfterCommand = true
+            }
             let savedTitle = try container.decodeIfPresent(String.self, forKey: .title)
             let isUserSetTitle = try container.decodeIfPresent(Bool.self, forKey: .isUserSetTitle) ?? false
 
             self.init(app, baseConfig: config, uuid: uuid)
+            if let editorDocument {
+                EditorPaneStore.shared.attach(editorDocument, to: self)
+            }
 
             // Restore the saved title after initialization
             if let title = savedTitle {
@@ -1960,6 +1973,7 @@ extension Ghostty {
             try container.encode(id.uuidString, forKey: .uuid)
             try container.encode(title, forKey: .title)
             try container.encode(titleFromTerminal != nil, forKey: .isUserSetTitle)
+            try container.encodeIfPresent(editorDocument?.url.path, forKey: .editorPath)
         }
     }
 }

@@ -45,7 +45,6 @@ fn stateDir(alloc: Allocator, environ: *const std.process.Environ.Map) ![]u8 {
     return std.fmt.allocPrint(alloc, "{s}/.local/state/" ++ build_config.app_id ++ "/ssh-sessions", .{home});
 }
 
-
 pub fn pathForPid(alloc: Allocator, pid: u64) ![]u8 {
     var environ = try global.environMap();
     defer environ.deinit();
