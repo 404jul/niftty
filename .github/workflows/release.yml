@@ -1,0 +1,184 @@
+name: Release
+
+# Builds Niftty.app, splits it into per-architecture archives (arm64 and
+# x86_64, so downloads are half the size of a universal binary), signs them
+# for Sparkle, generates per-arch appcast feeds, and publishes everything
+# to a GitHub Release. The in-app updater reads the appcasts from
+# releases/latest/download, which GitHub redirects to the newest release.
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (format: vX.Y.Z)"
+        required: true
+
+# Only one release at a time; concurrent releases would race on the
+# GitHub Release assets and the "latest" pointer.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+      ZIG_VERSION: "0.16.0"
+      SPARKLE_VERSION: "2.9.6"
+    steps:
+      - name: Determine version
+        id: version
+        run: |
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          else
+            TAG="${{ github.event.inputs.version }}"
+          fi
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Version must be vX.Y.Z (e.g. v0.2.0), got: $TAG"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history so the build number (commit count) is correct.
+          fetch-depth: 0
+
+      - name: Check Sparkle signing key
+        run: |
+          if [[ -z "$SPARKLE_PRIVATE_KEY" ]]; then
+            echo "::error::The SPARKLE_PRIVATE_KEY secret is not set."
+            echo "Add the contents of your EdDSA private key as a repository"
+            echo "secret named SPARKLE_PRIVATE_KEY (see RELEASING.md)."
+            exit 1
+          fi
+
+      - name: Install Zig
+        run: |
+          curl -fsSL \
+            "https://ziglang.org/download/${ZIG_VERSION}/zig-aarch64-macos-${ZIG_VERSION}.tar.xz" \
+            -o /tmp/zig.tar.xz
+          mkdir -p "$HOME/.zig"
+          tar -xJf /tmp/zig.tar.xz -C "$HOME/.zig"
+          echo "$HOME/.zig/zig-aarch64-macos-${ZIG_VERSION}" >> "$GITHUB_PATH"
+
+      - name: Build Niftty.app
+        run: |
+          # Export for this step's build and persist for later steps.
+          export GHOSTTY_BUILD=$(git rev-list --count HEAD)
+          export GHOSTTY_COMMIT=$(git rev-parse --short HEAD)
+          echo "GHOSTTY_BUILD=$GHOSTTY_BUILD" >> "$GITHUB_ENV"
+          echo "GHOSTTY_COMMIT=$GHOSTTY_COMMIT" >> "$GITHUB_ENV"
+          zig build -Doptimize=ReleaseFast
+        env:
+          GHOSTTY_VERSION: ${{ steps.version.outputs.version }}
+
+      - name: Verify version injection
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          ver=$(plutil -extract CFBundleShortVersionString raw \
+            zig-out/Niftty.app/Contents/Info.plist)
+          if [[ "$ver" != "$VERSION" ]]; then
+            echo "::error::CFBundleShortVersionString is '$ver', expected '$VERSION'"
+            exit 1
+          fi
+
+      - name: Package per-architecture archives
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          scripts/package-macos-release.sh zig-out/Niftty.app dist "$VERSION"
+          ls -lh dist/
+
+      - name: Sign updates and generate appcasts
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          # sign_update comes from the same Sparkle version the app embeds.
+          curl -fsSL -o /tmp/sparkle.zip \
+            "https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VERSION}/Sparkle-for-Swift-Package-Manager.zip"
+          mkdir -p /tmp/sparkle-bin
+          unzip -q -j /tmp/sparkle.zip 'bin/sign_update' -d /tmp/sparkle-bin
+          printf '%s' "$SPARKLE_PRIVATE_KEY" > /tmp/sparkle-eddsa.key
+
+          base_url="https://github.com/404jul/niftty/releases/download/$TAG"
+          pub_date=$(date -u +"%a, %d %b %Y %H:%M:%S +0000")
+
+          for arch in arm64 x86_64; do
+            zip="dist/Niftty-v$VERSION-$arch.zip"
+            read -r ed_sig length < <(
+              /tmp/sparkle-bin/sign_update \
+                --ed-key-file /tmp/sparkle-eddsa.key "$zip" \
+                | sed -E 's/sparkle:edSignature="([^"]+)" length="([0-9]+)"/\1 \2/'
+            )
+            if [[ -z "$ed_sig" || -z "$length" ]]; then
+              echo "::error::Failed to sign $zip"
+              exit 1
+            fi
+
+            cat > "dist/appcast-$arch.xml" <<EOF
+          <?xml version="1.0" encoding="utf-8" standalone="no"?>
+          <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" xmlns:dc="http://purl.org/dc/elements/1.1/">
+            <channel>
+              <title>Niftty ($arch)</title>
+              <link>https://github.com/404jul/niftty</link>
+              <description>Most recent changes with links to updates for the $arch build.</description>
+              <language>en</language>
+              <item>
+                <title>Niftty $VERSION</title>
+                <pubDate>$pub_date</pubDate>
+                <sparkle:version>$GHOSTTY_BUILD</sparkle:version>
+                <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
+                <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+                <enclosure
+                  url="$base_url/Niftty-v$VERSION-$arch.zip"
+                  type="application/octet-stream"
+                  sparkle:edSignature="$ed_sig"
+                  length="$length"
+                />
+              </item>
+            </channel>
+          </rss>
+          EOF
+          done
+
+          rm -f /tmp/sparkle-eddsa.key
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # On workflow_dispatch the tag may not exist yet; create it at
+          # the dispatched commit. For tag pushes it already exists.
+          extra=()
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            extra=(--target "$GITHUB_SHA")
+          fi
+          gh release create "$TAG" \
+            "${extra[@]}" \
+            --title "Niftty $VERSION" \
+            --notes "Automatic update notes are signed for Sparkle; the app checks for updates on its own via the \`appcast-*.xml\` feeds in this release.
+
+          Downloads:
+          - **Apple Silicon (M1/M2/M3/M4):** \`Niftty-v$VERSION-arm64.zip\`
+          - **Intel:** \`Niftty-v$VERSION-x86_64.zip\`
+
+          The app is ad-hoc signed, so on first launch macOS may ask you to right-click the app and choose **Open**." \
+            dist/Niftty-v"$VERSION"-arm64.zip \
+            dist/Niftty-v"$VERSION"-x86_64.zip \
+            dist/appcast-arm64.xml \
+            dist/appcast-x86_64.xml
