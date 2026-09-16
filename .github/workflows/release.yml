@@ -30,6 +30,12 @@ jobs:
     timeout-minutes: 90
     env:
       SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+      MAC_CERTIFICATE_P12: ${{ secrets.MAC_CERTIFICATE_P12 }}
+      MAC_CERTIFICATE_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
+      MAC_SIGNING_IDENTITY: ${{ secrets.MAC_SIGNING_IDENTITY }}
+      APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
       ZIG_VERSION: "0.16.0"
       SPARKLE_VERSION: "2.9.6"
     steps:
@@ -96,6 +102,34 @@ jobs:
             echo "::error::CFBundleShortVersionString is '$ver', expected '$VERSION'"
             exit 1
           fi
+      - name: Check Apple signing secrets
+        run: |
+          missing=0
+          for var in MAC_CERTIFICATE_P12 MAC_CERTIFICATE_PASSWORD \
+                     MAC_SIGNING_IDENTITY APPLE_API_KEY APPLE_API_KEY_ID \
+                     APPLE_API_ISSUER_ID; do
+            if [[ -z "${!var}" ]]; then
+              echo "::error::$var secret is not set (see RELEASING.md)."
+              missing=1
+            fi
+          done
+          exit $missing
+
+      - name: Import Developer ID certificate
+        run: |
+          # Dedicated keychain so the signing identity is available to
+          # codesign in later steps without polluting the login keychain.
+          security create-keychain -p build build.keychain-db
+          security default-keychain -s build.keychain-db
+          security set-keychain-settings -t 3600 \
+            -u -l /Users/runner/Library/Keychains/build.keychain-db
+          printf '%s' "$MAC_CERTIFICATE_P12" | base64 -d > /tmp/signing.p12
+          security import /tmp/signing.p12 -k build.keychain-db \
+            -P "$MAC_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: \
+            -k build build.keychain-db > /dev/null 2>&1 || true
+          rm -f /tmp/signing.p12
+          codesign --find-identity || true
 
       - name: Package per-architecture archives
         env:
@@ -103,6 +137,32 @@ jobs:
         run: |
           scripts/package-macos-release.sh zig-out/Niftty.app dist "$VERSION"
           ls -lh dist/
+
+      - name: Notarize and staple archives
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # notarytool authenticates with an App Store Connect API key
+          printf '%s' "$APPLE_API_KEY" | base64 -d > /tmp/apple-api.p8
+          for arch in arm64 x86_64; do
+            zip="dist/Niftty-v$VERSION-$arch.zip"
+
+            xcrun notarytool submit "$zip" \
+              --key /tmp/apple-api.p8 \
+              --key-id "$APPLE_API_KEY_ID" \
+              --issuer "$APPLE_API_ISSUER_ID" \
+              --wait
+
+            # Staple the ticket to the app itself so Gatekeeper accepts it
+            # even offline, then rebuild the zip around the stapled bundle.
+            work=$(mktemp -d)
+            xcrun stapler staple "$work/Niftty.app"
+            xcrun stapler validate "$work/Niftty.app"
+            rm -f "$zip"
+            ditto -c -k --sequesterRsrc --keepParent "$work/Niftty.app" "$zip"
+            rm -rf "$work"
+          done
+          rm -f /tmp/apple-api.p8
 
       - name: Sign updates and generate appcasts
         env:
@@ -180,7 +240,7 @@ jobs:
           - **Apple Silicon (M1/M2/M3/M4):** \`Niftty-v$VERSION-arm64.zip\`
           - **Intel:** \`Niftty-v$VERSION-x86_64.zip\`
 
-          The app is ad-hoc signed, so on first launch macOS may ask you to right-click the app and choose **Open**." \
+          The app is signed with a Developer ID certificate and notarized by Apple, so it opens on any Mac without Gatekeeper warnings." \
             dist/Niftty-v"$VERSION"-arm64.zip \
             dist/Niftty-v"$VERSION"-x86_64.zip \
             dist/appcast-arm64.xml \

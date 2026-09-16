@@ -1,3 +1,9 @@
+*.p12
+*.p8
+*.pem
+*.cer
+*.csr
+*.key
 *~
 .*.swp
 .build/

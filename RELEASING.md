@@ -18,17 +18,35 @@ How a release goes from your machine to every installed copy of the app.
 - **`.github/workflows/release.yml`** — does all of the above
   automatically when you push a version tag.
 
-## One-time setup (already done in this repo, keep for reference)
+## One-time setup: Apple code signing and notarization
 
-1. An EdDSA keypair was generated with Sparkle's `generate_keys`. The
-   **public** key is `SUPublicEDKey` in `macos/Ghostty-Info.plist` — it
-   must never change after users install a build, or updates will be
-   rejected.
-2. The **private** key is in `.sparkle-private-eddsa-key` (gitignored).
-   Add its contents as a repository secret named `SPARKLE_PRIVATE_KEY`
-   (Settings → Secrets and variables → Actions), and back the file up
-   somewhere safe (password manager). If you lose it, installed apps can
-   never be updated in place again.
+The app is signed with a **Developer ID Application** certificate and
+notarized by Apple, so downloads open without Gatekeeper warnings.
+
+1. Create a Developer ID Application certificate at
+   <https://developer.apple.com/account/resources/certificates/add>.
+   Generate a CSR + private key (Keychain Access or `openssl req`), upload
+   the CSR, download the `.cer`.
+2. Combine the `.cer` and its private key into a `.p12`:
+   `openssl x509 -in cert.cer -inform DER -out cert.pem && openssl pkcs12
+   -export -inkey key.pem -in cert.pem -out signing.p12`
+3. Create an **App Store Connect API key** (developer.apple.com → Users
+   and Access → Integrations, role Developer) for `notarytool`; note the
+   Key ID, Issuer ID, and keep the `.p8`.
+4. Add repository secrets:
+   - `MAC_CERTIFICATE_P12` — base64 of the `.p12`
+   - `MAC_CERTIFICATE_PASSWORD` — the `.p12` password
+   - `MAC_SIGNING_IDENTITY` — the full identity string, e.g.
+     `Developer ID Application: Your Name (ABCD12345)`
+   - `APPLE_API_KEY` — base64 of the `.p8`
+   - `APPLE_API_KEY_ID` — the API key ID
+   - `APPLE_API_ISSUER_ID` — the issuer UUID
+
+The release workflow imports the certificate into a temporary keychain,
+signs each per-architecture bundle (see `scripts/package-macos-release.sh`,
+`MAC_SIGNING_IDENTITY`), submits each zip to Apple's notary service with
+`notarytool`, staples the ticket, and repackages. Local dry runs without
+these secrets fall back to ad-hoc signing.
 
 ## Cutting a release
 
@@ -61,10 +79,8 @@ install updates: Settings → General → Danger Zone → Change visibility.
 Going public requires no other changes.
 
 ## Caveats
-
-- The app is **ad-hoc signed** (no Apple Developer account), so a fresh
-  download may need right-click → *Open* the first time. Updates installed
-  by Sparkle do not hit this prompt.
+- Releases are Developer ID signed and notarized, so fresh downloads
+  open without Gatekeeper prompts.
 - After publishing, `releases/latest/download/...` points at the new
   release within seconds (on public repos); clients check periodically
   (default once a day).

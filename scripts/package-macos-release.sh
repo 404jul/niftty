@@ -45,13 +45,23 @@ for arch in arm64 x86_64; do
         fi
     done
 
-    # Ad-hoc re-sign: the signature sealed both architecture slices, so it
-    # is invalid after thinning. Mirrors the resign step in
-    # src/build/GhosttyXcodebuild.zig for the ReleaseLocal configuration.
-    codesign --force --deep --sign - \
-        --entitlements "$root/macos/GhosttyReleaseLocal.entitlements" \
-        --options=runtime \
-        "$work/Niftty.app"
+    # Re-sign: the signature sealed both architecture slices, so it is
+    # invalid after thinning. With MAC_SIGNING_IDENTITY set (release CI),
+    # sign with that Developer ID Application certificate and a secure
+    # timestamp so the bundle can be notarized; otherwise fall back to an
+    # ad-hoc signature (same entitlements and hardened runtime as the
+    # build.zig resign step) for local dry runs.
+    if [[ -n "${MAC_SIGNING_IDENTITY:-}" ]]; then
+        codesign --force --deep --sign "$MAC_SIGNING_IDENTITY" --timestamp \
+            --entitlements "$root/macos/GhosttyReleaseLocal.entitlements" \
+            --options=runtime \
+            "$work/Niftty.app"
+    else
+        codesign --force --deep --sign - \
+            --entitlements "$root/macos/GhosttyReleaseLocal.entitlements" \
+            --options=runtime \
+            "$work/Niftty.app"
+    fi
     codesign --verify --deep "$work/Niftty.app"
 
     # Sanity check: nothing universal may remain, and the executable must
