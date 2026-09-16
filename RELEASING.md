@@ -5,9 +5,11 @@ How a release goes from your machine to every installed copy of the app.
 ## The moving parts
 
 - **GitHub Release** — each `vX.Y.Z` tag gets a Release page containing:
-  - `Niftty-vX.Y.Z-arm64.zip` (Apple Silicon) and `Niftty-vX.Y.Z-x86_64.zip`
-    (Intel). Separate archives per architecture keep downloads about half
-    the size of a universal binary.
+  - `Niftty-vX.Y.Z-arm64.dmg` (Apple Silicon) and `Niftty-vX.Y.Z-x86_64.dmg`
+    (Intel) — drag-and-drop installer DMGs (app beside an Applications
+    shortcut), notarized. `Niftty-vX.Y.Z-<arch>.zip` — the same app in the
+    archive format Sparkle's updater downloads; separate archives per
+    architecture keep updates about half the size of a universal binary.
   - `appcast-arm64.xml` and `appcast-x86_64.xml` — the update feeds.
 - **Sparkle** — the updater framework built into the app. On each machine
   it fetches the feed for its own CPU architecture from

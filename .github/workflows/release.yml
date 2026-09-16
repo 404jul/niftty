@@ -138,10 +138,11 @@ jobs:
           scripts/package-macos-release.sh zig-out/Niftty.app dist "$VERSION"
           ls -lh dist/
 
-      - name: Notarize and staple archives
+      - name: Notarize, staple, and package DMGs
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
+          brew install create-dmg
           # notarytool authenticates with an App Store Connect API key
           printf '%s' "$APPLE_API_KEY" | base64 -d > /tmp/apple-api.p8
           for arch in arm64 x86_64; do
@@ -156,10 +157,32 @@ jobs:
             # Staple the ticket to the app itself so Gatekeeper accepts it
             # even offline, then rebuild the zip around the stapled bundle.
             work=$(mktemp -d)
+            ditto -x -k --sequesterRsrc "$zip" "$work"
             xcrun stapler staple "$work/Niftty.app"
             xcrun stapler validate "$work/Niftty.app"
             rm -f "$zip"
             ditto -c -k --sequesterRsrc --keepParent "$work/Niftty.app" "$zip"
+
+            # Drag-and-drop installer DMG: app icon beside an
+            # Applications drop-link in the volume window.
+            dmg="dist/Niftty-v$VERSION-$arch.dmg"
+            rm -f "$dmg"
+            create-dmg \
+              --volname "Niftty" \
+              --window-size 660 400 \
+              --icon-size 128 \
+              --icon "Niftty.app" 180 158 \
+              --app-drop-link 480 158 \
+              --hide-extension "Niftty.app" \
+              --no-internet-enable \
+              "$dmg" "$work"
+            xcrun notarytool submit "$dmg" \
+              --key /tmp/apple-api.p8 \
+              --key-id "$APPLE_API_KEY_ID" \
+              --issuer "$APPLE_API_ISSUER_ID" \
+              --wait
+            xcrun stapler staple "$dmg"
+            xcrun stapler validate "$dmg"
             rm -rf "$work"
           done
           rm -f /tmp/apple-api.p8
@@ -237,11 +260,13 @@ jobs:
             --notes "Automatic update notes are signed for Sparkle; the app checks for updates on its own via the \`appcast-*.xml\` feeds in this release.
 
           Downloads:
-          - **Apple Silicon (M1/M2/M3/M4):** \`Niftty-v$VERSION-arm64.zip\`
-          - **Intel:** \`Niftty-v$VERSION-x86_64.zip\`
+          - **Apple Silicon (M1/M2/M3/M4):** \`Niftty-v$VERSION-arm64.dmg\`
+          - **Intel:** \`Niftty-v$VERSION-x86_64.dmg\`
+
+          The DMG opens with the app beside an Applications folder shortcut — drag the app onto it to install. The \`.zip\` files are for the built-in Sparkle updater.
 
           The app is signed with a Developer ID certificate and notarized by Apple, so it opens on any Mac without Gatekeeper warnings." \
-            dist/Niftty-v"$VERSION"-arm64.zip \
-            dist/Niftty-v"$VERSION"-x86_64.zip \
+            dist/Niftty-v"$VERSION"-arm64.dmg \
+            dist/Niftty-v"$VERSION"-x86_64.dmg \
             dist/appcast-arm64.xml \
             dist/appcast-x86_64.xml
