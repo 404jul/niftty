@@ -79,7 +79,10 @@ jobs:
           export GHOSTTY_COMMIT=$(git rev-parse --short HEAD)
           echo "GHOSTTY_BUILD=$GHOSTTY_BUILD" >> "$GITHUB_ENV"
           echo "GHOSTTY_COMMIT=$GHOSTTY_COMMIT" >> "$GITHUB_ENV"
-          zig build -Doptimize=ReleaseFast
+          # -Dversion-string skips the build graph's git tag detection,
+          # which would otherwise panic because the tag must match the
+          # version in build.zig.zon.
+          zig build -Doptimize=ReleaseFast -Dversion-string="$GHOSTTY_VERSION"
         env:
           GHOSTTY_VERSION: ${{ steps.version.outputs.version }}
 
