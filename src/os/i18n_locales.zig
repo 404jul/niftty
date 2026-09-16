@@ -2,8 +2,7 @@
 // we want to minimize the transitive dependencies of the build binary
 // itself.
 
-/// Supported locales for the application. This must be kept up to date
-/// with the translations available in the `po/` directory; this is used
+/// Supported locales for the application. It is used
 /// by our build process as well as runtime libghostty APIs.
 ///
 /// The order also matters. For incomplete locale information (i.e. only

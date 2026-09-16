@@ -14,7 +14,7 @@ Add the following to your project's `CMakeLists.txt`:
 ```cmake
 include(FetchContent)
 FetchContent_Declare(ghostty
-    GIT_REPOSITORY https://github.com/ghostty-org/ghostty.git
+    GIT_REPOSITORY https://github.com/404jul/niftty.git
     GIT_TAG main
 )
 FetchContent_MakeAvailable(ghostty)
@@ -33,7 +33,7 @@ If you already have the Ghostty source checked out, skip the download by
 pointing CMake at it:
 
 ```shell-session
-cmake -B build -DFETCHCONTENT_SOURCE_DIR_GHOSTTY=/path/to/ghostty
+cmake -B build -DFETCHCONTENT_SOURCE_DIR_GHOSTTY=/path/to/niftty
 cmake --build build
 ```
 
@@ -42,7 +42,7 @@ cmake --build build
 Build and install libghostty-vt first:
 
 ```shell-session
-cd /path/to/ghostty
+cd /path/to/niftty
 cmake -B build
 cmake --build build
 cmake --install build --prefix /usr/local

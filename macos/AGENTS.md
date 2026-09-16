@@ -1,4 +1,4 @@
-# macOS Ghostty Application
+# macOS Niftty Application
 
 - Use `swiftlint` for formatting and linting Swift code.
 - For every macOS app build, follow

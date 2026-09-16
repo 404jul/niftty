@@ -5,7 +5,6 @@ const builtin = @import("builtin");
 const RunStep = std.Build.Step.Run;
 const Config = @import("Config.zig");
 const Docs = @import("GhosttyDocs.zig");
-const I18n = @import("GhosttyI18n.zig");
 const Resources = @import("GhosttyResources.zig");
 const XCFramework = @import("GhosttyXCFramework.zig");
 
@@ -18,7 +17,6 @@ xctest: *std.Build.Step.Run,
 pub const Deps = struct {
     xcframework: *const XCFramework,
     docs: *const Docs,
-    i18n: ?*const I18n,
     resources: *const Resources,
 };
 
@@ -72,6 +70,26 @@ pub fn init(
             xc_config,
         });
 
+        // Release builds inject version information through the
+        // environment (the environment above is sanitized, so we forward
+        // these explicitly as xcodebuild settings):
+        //
+        //   GHOSTTY_VERSION - marketing version (CFBundleShortVersionString)
+        //   GHOSTTY_BUILD   - build number (CFBundleVersion, must increase
+        //                     across releases so Sparkle sees updates)
+        //   GHOSTTY_COMMIT  - short commit hash (GhosttyCommit in Info.plist)
+        //
+        // GHOSTTY_COMMIT always gets a value so the Info.plist build
+        // setting substitution never resolves to an empty string.
+        const commit = env.get("GHOSTTY_COMMIT") orelse "dev";
+        step.addArg(b.fmt("GHOSTTY_COMMIT={s}", .{commit}));
+        if (env.get("GHOSTTY_VERSION")) |v| {
+            step.addArg(b.fmt("MARKETING_VERSION={s}", .{v}));
+        }
+        if (env.get("GHOSTTY_BUILD")) |v| {
+            step.addArg(b.fmt("CURRENT_PROJECT_VERSION={s}", .{v}));
+        }
+
         // If we have a specific architecture, we need to pass it
         // to xcodebuild.
         if (xc_arch) |arch| step.addArgs(&.{ "-arch", arch });
@@ -82,7 +100,6 @@ pub fn init(
         // We also need all these resources because the xcode project
         // references them via symlinks.
         deps.resources.addStepDependencies(&step.step);
-        if (deps.i18n) |v| v.addStepDependencies(&step.step);
         deps.docs.installDummy(&step.step);
 
         // Expect success
@@ -116,7 +133,6 @@ pub fn init(
         // We also need all these resources because the xcode project
         // references them via symlinks.
         deps.resources.addStepDependencies(&step.step);
-        if (deps.i18n) |v| v.addStepDependencies(&step.step);
         deps.docs.installDummy(&step.step);
 
         // Expect success

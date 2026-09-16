@@ -136,13 +136,26 @@ final class SettingsModel: ObservableObject {
         return result
     }
 
+    /// Rows for the detail pane. Browsing shows only the selected category;
+    /// searching matches across every category.
     var filteredRows: [Row] {
         rows.filter { row in
-            guard Self.category(for: row.metadata.name) == selectedCategory else { return false }
-            guard !search.isEmpty else { return true }
+            guard !search.isEmpty else {
+                return Self.category(for: row.metadata.name) == selectedCategory
+            }
             return row.metadata.name.localizedCaseInsensitiveContains(search) ||
                 row.metadata.description.localizedCaseInsensitiveContains(search) ||
                 row.value.localizedCaseInsensitiveContains(search)
+        }
+    }
+
+    /// Search results grouped by category, in sidebar order.
+    var searchResultsByCategory: [(category: String, rows: [Row])] {
+        sidebarCategories.compactMap { category in
+            let matches = filteredRows.filter {
+                Self.category(for: $0.metadata.name) == category
+            }
+            return matches.isEmpty ? nil : (category, matches)
         }
     }
 
@@ -157,8 +170,17 @@ final class SettingsModel: ObservableObject {
     func set(_ value: String, for name: String) {
         guard let index = rows.firstIndex(where: { $0.id == name }) else { return }
         rows[index].value = value
-        pendingValues[name] = value
-        hasUnsavedChanges = true
+        // SwiftUI text fields fire their binding setter on focus/commit even
+        // when the text is unchanged, so compare against the loaded config
+        // value: an identical value is not a change, and reverting a value
+        // back to the original clears its pending entry. Other keys' pending
+        // entries are left alone.
+        if value == rows[index].metadata.value {
+            pendingValues.removeValue(forKey: name)
+        } else {
+            pendingValues[name] = value
+        }
+        hasUnsavedChanges = !pendingValues.isEmpty || !legacyValues.isEmpty
     }
 
     func isModified(_ name: String) -> Bool {

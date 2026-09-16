@@ -8,6 +8,9 @@ struct SettingsView: View {
             List(selection: $model.selectedCategory) {
                 ForEach(model.sidebarCategories, id: \.self) { category in
                     Label(category, systemImage: icon(for: category))
+                        .font(.body)
+                        .padding(.vertical, 6)
+                        .padding(.horizontal, 2)
                         .tag(category)
                 }
             }
@@ -16,9 +19,13 @@ struct SettingsView: View {
             VStack(spacing: 0) {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(model.selectedCategory)
+                        Text(model.search.isEmpty
+                            ? model.selectedCategory
+                            : "Search Results")
                             .font(.title2.bold())
-                        Text("\(model.filteredRows.count) settings")
+                        Text(model.search.isEmpty
+                            ? "\(model.filteredRows.count) settings"
+                            : "\(model.filteredRows.count) settings in \(model.searchResultsByCategory.count) categories")
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -31,7 +38,7 @@ struct SettingsView: View {
 
                 Divider()
 
-                if model.selectedCategory == "Shaders" {
+                if model.search.isEmpty && model.selectedCategory == "Shaders" {
                     ShadersPage(model: model)
                 } else {
                     if let error = model.error {
@@ -47,14 +54,30 @@ struct SettingsView: View {
                     }
 
                     ScrollView {
-                        LazyVStack(spacing: 0) {
-                            ForEach(model.filteredRows) { row in
-                                SettingRow(model: model, row: row)
-                                Divider()
+                            LazyVStack(spacing: 0) {
+                                if model.search.isEmpty {
+                                    ForEach(model.filteredRows) { row in
+                                        SettingRow(model: model, row: row)
+                                        Divider()
+                                    }
+                                } else {
+                                    ForEach(model.searchResultsByCategory, id: \.category) { group in
+                                        Text(group.category)
+                                            .font(.title3.bold())
+                                            .foregroundStyle(.secondary)
+                                            .padding(.horizontal)
+                                            .padding(.top, 12)
+                                            .padding(.bottom, 4)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                        ForEach(group.rows) { row in
+                                            SettingRow(model: model, row: row)
+                                            Divider()
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
-                }
 
 
                 Divider()

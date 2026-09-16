@@ -213,6 +213,17 @@ final class ShaderPreviewRenderer: NSObject, MTKViewDelegate {
 
     private let cell = CGSize(width: 12, height: 24)
     private let padding: CGFloat = 16
+    private static let cursorPath: [(col: Int, row: Int)] = [
+        (4, 0), (10, 0),
+        (10, 2), (4, 2), (8, 2), (12, 2),
+        (12, 1), (4, 1), (13, 1),
+        (13, 3), (4, 3),
+    ]
+    private var sceneScale: CGFloat {
+        min(
+            drawableSize.width / (padding * 2 + cell.width * 32),
+            drawableSize.height / (padding * 2 + cell.height * 6))
+    }
 
     /// Uniform buffer byte offsets, mirroring shadertoy.Uniforms.
     private enum U {
@@ -357,36 +368,38 @@ final class ShaderPreviewRenderer: NSObject, MTKViewDelegate {
         var h: Float
         var col: Int
         var row: Int
-        var bar: Bool
     }
 
-    /// The cursor hops between two cells, alternating between block and
-    /// bar widths so width-triggered effects (ripples, booms) fire.
+    /// Alternates word-sized horizontal jumps with vertical line jumps.
+    /// Every transition matches a move a terminal cursor can make.
     private func animatedCursor(at time: Float) -> Cursor {
-        let period: Float = 2.4
-        let second = time.truncatingRemainder(dividingBy: period) >= period / 2
-
-        let col = second ? 22 : 8
-        let row = second ? 3 : 2
-        let w: Float = second ? Float(cell.width) * 0.25 : Float(cell.width)
-        let h = Float(cell.height)
-        let top = Float(padding) + Float(row) * h
+        let position = Self.cursorPath[
+            Int(time / 0.75) % Self.cursorPath.count
+        ]
+        let scale = Float(sceneScale)
+        let w = max(2, Float(cell.width) * scale * 0.25)
+        let h = Float(cell.height) * scale * 0.80
         return Cursor(
-            x: Float(padding) + Float(col) * Float(cell.width),
-            y: top + h,
+            x: Float(padding + CGFloat(position.col) * cell.width) * scale,
+            y: Float(
+                padding + (CGFloat(position.row) + 0.83) * cell.height
+            ) * scale,
             w: w,
             h: h,
-            col: col,
-            row: row,
-            bar: second)
+            col: position.col,
+            row: position.row)
     }
 
     private func updateUniforms(time: Float, cursor: Cursor) {
         guard let uniformBuffer else { return }
         let ptr = uniformBuffer.contents()
 
-        let key = "\(cursor.col):\(cursor.row):\(cursor.bar)"
-        if key != lastCursorKey {
+        let key = "\(cursor.col):\(cursor.row)"
+        if lastCursorKey.isEmpty {
+            copy(ptr + U.previousCursor, [cursor.x, cursor.y, cursor.w, cursor.h])
+            copy(ptr + U.cursorChangeTime, [time])
+            lastCursorKey = key
+        } else if key != lastCursorKey {
             memcpy(ptr + U.previousCursor, ptr + U.currentCursor, 16)
             memcpy(ptr + U.previousCursorColor, ptr + U.currentCursorColor, 16)
             copy(ptr + U.cursorChangeTime, [time])
@@ -409,7 +422,7 @@ final class ShaderPreviewRenderer: NSObject, MTKViewDelegate {
         let width = max(Int(drawableSize.width), 1)
         let height = max(Int(drawableSize.height), 1)
 
-        let key = "\(width)x\(height):\(cursor.col):\(cursor.row):\(cursor.bar)"
+        let key = "\(width)x\(height):\(cursor.col):\(cursor.row)"
         if terminalTexture != nil, textureKey == key { return }
         textureKey = key
 
@@ -433,9 +446,7 @@ final class ShaderPreviewRenderer: NSObject, MTKViewDelegate {
         ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
 
         // Scale the mock scene so it fills the preview at any size.
-        let scale = min(
-            CGFloat(width) / (padding * 2 + cell.width * 32),
-            CGFloat(height) / (padding * 2 + cell.height * 6))
+        let scale = sceneScale
         ctx.scaleBy(x: scale, y: scale)
 
         let font = CTFontCreateWithName(
@@ -470,24 +481,32 @@ final class ShaderPreviewRenderer: NSObject, MTKViewDelegate {
             mipmapped: false)
         desc.usage = .shaderRead
         guard let texture = device.makeTexture(descriptor: desc) else { return }
-        // Shadertoy shaders sample iChannel0 with GL's bottom-left texture
-        // origin, so upload with row 0 = top of the drawn terminal.
         let rowBytes = width * 4
-        var flipped = [UInt8](repeating: 0, count: rowBytes * height)
         let src = ctx.data!.assumingMemoryBound(to: UInt8.self)
-        for y in 0..<height {
-            flipped.withUnsafeMutableBytes { dst in
-                _ = memcpy(
-                    dst.baseAddress! + y * rowBytes,
-                    src + (height - 1 - y) * rowBytes,
-                    rowBytes)
+        if pipeline != nil {
+            // Translated shaders use bottom-left fragment coordinates.
+            texture.replace(
+                region: MTLRegionMake2D(0, 0, width, height),
+                mipmapLevel: 0,
+                withBytes: src,
+                bytesPerRow: rowBytes)
+        } else {
+            // The direct blit uses top-left texture coordinates.
+            var topDown = [UInt8](repeating: 0, count: rowBytes * height)
+            for y in 0..<height {
+                topDown.withUnsafeMutableBytes { dst in
+                    _ = memcpy(
+                        dst.baseAddress! + y * rowBytes,
+                        src + (height - 1 - y) * rowBytes,
+                        rowBytes)
+                }
             }
+            texture.replace(
+                region: MTLRegionMake2D(0, 0, width, height),
+                mipmapLevel: 0,
+                withBytes: topDown,
+                bytesPerRow: rowBytes)
         }
-        texture.replace(
-            region: MTLRegionMake2D(0, 0, width, height),
-            mipmapLevel: 0,
-            withBytes: flipped,
-            bytesPerRow: rowBytes)
         terminalTexture = texture
     }
 
@@ -503,7 +522,10 @@ final class ShaderPreviewRenderer: NSObject, MTKViewDelegate {
             ] as CFDictionary
         ) else { return }
         let line = CTLineCreateWithAttributedString(attributed)
-        ctx.textPosition = position
+        ctx.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
+        ctx.textPosition = CGPoint(
+            x: position.x,
+            y: position.y + CTFontGetAscent(font))
         CTLineDraw(line, ctx)
     }
 
@@ -530,9 +552,7 @@ final class ShaderPreviewRenderer: NSObject, MTKViewDelegate {
                 float2 pos = float2(float((vid << 1u) & 2u), float(vid & 2u));
                 VSOut out;
                 out.position = float4(pos * 2.0 - 1.0, 0.0, 1.0);
-                // The texture is uploaded with row 0 = top (for shadertoy
-                // shaders), so flip V for the direct blit.
-                out.uv = float2(pos.x, 1.0 - pos.y);
+                out.uv = pos;
                 return out;
             }
 

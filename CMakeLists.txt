@@ -4,11 +4,11 @@
 # headers, and pkg-config file. It exists so that CMake-based projects can
 # consume libghostty-vt without interacting with the Zig build system
 # directly. However, downstream users do still require `zig` on the PATH.
-# Please consult the Ghostty docs for the required Zig version:
+# Please consult the upstream Ghostty docs for the required Zig version:
 #
 # https://ghostty.org/docs/install/build
 #
-# Building within the Ghostty repo
+# Building within this repo
 # ---------------------------------
 #
 #   cmake -B build

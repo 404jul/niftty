@@ -331,8 +331,7 @@ enum UpdateState: Equatable {
 
             // Check for semantic version (x.y.z)
             if let semver = Self.extractSemanticVersion(from: version) {
-                let slug = semver.replacingOccurrences(of: ".", with: "-")
-                if let url = URL(string: "https://ghostty.org/docs/install/release-notes/\(slug)") {
+                if let url = URL(string: "https://github.com/404jul/niftty/releases/tag/v\(semver)") {
                     self = .tagged(url)
                     return
                 }
@@ -344,9 +343,9 @@ enum UpdateState: Equatable {
             }
 
             if let currentHash = currentCommit, !currentHash.isEmpty,
-               let url = URL(string: "https://github.com/ghostty-org/ghostty/compare/\(currentHash)...\(newHash)") {
+               let url = URL(string: "https://github.com/404jul/niftty/compare/\(currentHash)...\(newHash)") {
                 self = .compareTip(url)
-            } else if let url = URL(string: "https://github.com/ghostty-org/ghostty/commit/\(newHash)") {
+            } else if let url = URL(string: "https://github.com/404jul/niftty/commit/\(newHash)") {
                 self = .commit(url)
             } else {
                 return nil

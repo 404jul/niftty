@@ -1,5 +1,7 @@
 *~
 .*.swp
+.build/
+WATCHDOG.yml
 .swp
 *.log
 *.profraw
@@ -30,6 +32,7 @@ glad.zip
 /Box_test_diff.ppm
 /ghostty.qcow2
 
+/.sparkle-private-eddsa-key
 vgcore.*
 
 /sprite_face_test*

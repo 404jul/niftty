@@ -10,16 +10,11 @@ const adw_c = @import("adw_c");
 
 pub const blueprint_compiler_help =
     \\
-    \\When building from a Git checkout, Ghostty requires
+    \\When building from a Git checkout, Niftty requires
     \\version {f} or newer of `blueprint-compiler` as a
     \\build-time dependency. Please install it, ensure that it
-    \\is available on your PATH, and then retry building Ghostty.
-    \\See `HACKING.md` for more details.
+    \\is available on your PATH, and then retry building Niftty.
     \\
-    \\This message should *not* appear for normal users, who
-    \\should build Ghostty from official release tarballs instead.
-    \\Please consult https://ghostty.org/docs/install/build for
-    \\more information on the recommended build instructions.
 ;
 
 const adwaita_version = std.SemanticVersion{
@@ -57,9 +52,9 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print(
             \\`libadwaita` is too old.
             \\
-            \\Ghostty requires a version {f} or newer of `libadwaita` to
+            \\Niftty requires a version {f} or newer of `libadwaita` to
             \\compile this blueprint. Please install it, ensure that it is
-            \\available on your PATH, and then retry building Ghostty.
+            \\available on your PATH, and then retry building Niftty.
         , .{required_adwaita_version});
         std.process.exit(1);
     }

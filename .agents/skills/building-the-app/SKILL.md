@@ -74,7 +74,7 @@ artifact.
 
 - Always run build commands from the repository root.
 - Use the Zig version required by `build.zig.zon` and the Xcode toolchain
-  required by `HACKING.md`.
+  required by `macos/AGENTS.md`.
 - Do not invoke `xcodebuild` or `swift build` directly for a complete app
   build. They bypass part of the Zig-owned dependency and install graph. Use
   them only when a task explicitly requests isolated Xcode-layer work.
