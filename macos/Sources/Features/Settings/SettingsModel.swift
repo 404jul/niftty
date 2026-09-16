@@ -124,6 +124,18 @@ final class SettingsModel: ObservableObject {
         Set(rows.map { Self.category(for: $0.metadata.name) }).sorted()
     }
 
+    /// Categories for the sidebar: row categories plus the dedicated
+    /// Shaders page.
+    var sidebarCategories: [String] {
+        var result = categories
+        if let idx = result.firstIndex(of: "Appearance") {
+            result.insert("Shaders", at: idx + 1)
+        } else {
+            result.append("Shaders")
+        }
+        return result
+    }
+
     var filteredRows: [Row] {
         rows.filter { row in
             guard Self.category(for: row.metadata.name) == selectedCategory else { return false }
@@ -171,8 +183,8 @@ final class SettingsModel: ObservableObject {
                     defaultDisplayValue: Self.defaultDisplayValue(for: setting, in: metadata),
                     value: setting.value)
             }
-            if !categories.contains(selectedCategory) {
-                selectedCategory = categories.first ?? "Appearance"
+            if !sidebarCategories.contains(selectedCategory) {
+                selectedCategory = sidebarCategories.first ?? "Appearance"
             }
             hasUnsavedChanges = !legacyValues.isEmpty
             error = nil

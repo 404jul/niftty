@@ -6,12 +6,11 @@ struct SettingsView: View {
     var body: some View {
         HSplitView {
             List(selection: $model.selectedCategory) {
-                ForEach(model.categories, id: \.self) { category in
+                ForEach(model.sidebarCategories, id: \.self) { category in
                     Label(category, systemImage: icon(for: category))
                         .tag(category)
                 }
             }
-            .listStyle(.sidebar)
             .frame(minWidth: 170, idealWidth: 190, maxWidth: 220)
 
             VStack(spacing: 0) {
@@ -32,26 +31,31 @@ struct SettingsView: View {
 
                 Divider()
 
-                if let error = model.error {
-                    HStack {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.yellow)
-                        Text(error)
-                            .textSelection(.enabled)
-                        Spacer()
+                if model.selectedCategory == "Shaders" {
+                    ShadersPage(model: model)
+                } else {
+                    if let error = model.error {
+                        HStack {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(.yellow)
+                            Text(error)
+                                .textSelection(.enabled)
+                            Spacer()
+                        }
+                        .padding(10)
+                        .background(.yellow.opacity(0.12))
                     }
-                    .padding(10)
-                    .background(.yellow.opacity(0.12))
-                }
 
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(model.filteredRows) { row in
-                            SettingRow(model: model, row: row)
-                            Divider()
+                    ScrollView {
+                        LazyVStack(spacing: 0) {
+                            ForEach(model.filteredRows) { row in
+                                SettingRow(model: model, row: row)
+                                Divider()
+                            }
                         }
                     }
                 }
+
 
                 Divider()
                 Text(model.configPath)
@@ -78,6 +82,7 @@ struct SettingsView: View {
         case "Linux": "desktopcomputer"
         case "macOS": "apple.logo"
         case "Shell": "terminal"
+        case "Shaders": "wand.and.stars"
         case "SSH": "network"
         case "Updates": "arrow.triangle.2.circlepath"
         case "Window": "macwindow"

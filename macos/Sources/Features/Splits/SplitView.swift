@@ -12,6 +12,7 @@ struct SplitView<L: View, R: View>: View {
     /// Divider color
     let dividerColor: Color
 
+
     /// Minimum increment (in points) that this split can be resized by, in
     /// each direction. Both `height` and `width` should be whole numbers
     /// greater than or equal to 1.0

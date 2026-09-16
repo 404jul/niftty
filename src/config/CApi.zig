@@ -152,6 +152,24 @@ export fn ghostty_config_editor_data(self: *Config) String {
     };
 }
 
+/// Compile a ShaderToy-style GLSL shader file to Metal Shading Language
+/// source that can be used to build an MTLLibrary. The returned string
+/// must be freed with ghostty_string_free.
+export fn ghostty_shader_msl(path: [*:0]const u8) String {
+    const shadertoy = @import("../renderer/shadertoy.zig");
+
+    const msl = shadertoy.loadFromFile(
+        global.alloc(),
+        std.mem.span(path),
+        .msl,
+    ) catch |err| {
+        log.err("error compiling shader to msl path={s} err={}", .{ path, err });
+        return .empty;
+    };
+
+    return .fromSlice(msl);
+}
+
 fn configEditorData(self: *Config) !String {
     const alloc = global.alloc();
     var defaults = try Config.default(alloc);
@@ -420,5 +438,21 @@ test "ghostty_config_trigger: default keybind" {
         const trigger = try config_trigger_(&cfg, "adjust_selection:left");
         try testing.expectEqual(.physical, trigger.tag);
         try testing.expectEqual(.unidentified, trigger.key.physical);
+    }
+}
+
+test "ghostty_shader_msl" {
+    if (@import("builtin").os.tag != .macos) return error.SkipZigTest;
+
+    const msl = ghostty_shader_msl("src/config/testdata/shader_smoke.glsl");
+    defer _ = @import("../main_c.zig").ghostty_string_free(msl);
+
+    try std.testing.expect(msl.ptr != null);
+    if (msl.ptr) |ptr| {
+        const source = ptr[0..msl.len];
+        try std.testing.expect(std.mem.indexOf(u8, source, "main0") != null);
+        try std.testing.expect(
+            std.mem.indexOf(u8, source, "fragment") != null,
+        );
     }
 }

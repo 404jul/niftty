@@ -427,3 +427,17 @@ test "shadertoy to glsl" {
 const test_crt = @embedFile("shaders/test_shadertoy_crt.glsl");
 const test_invalid = @embedFile("shaders/test_shadertoy_invalid.glsl");
 const test_focus = @embedFile("shaders/test_shadertoy_focus.glsl");
+
+// The macOS settings shader previews (ShaderPreviewRenderer in
+// macos/Sources/Features/Settings/ShadersPage.swift) hard-code byte
+// offsets into this struct for its uniform buffer. This test freezes
+// the layout so any change here fails loudly instead of silently
+// corrupting shader previews.
+test "shadertoy uniforms size" {
+    try std.testing.expectEqual(@as(usize, 4496), @sizeOf(Uniforms));
+    try std.testing.expectEqual(@as(usize, 208), @offsetOf(Uniforms, "current_cursor"));
+    try std.testing.expectEqual(@as(usize, 224), @offsetOf(Uniforms, "previous_cursor"));
+    try std.testing.expectEqual(@as(usize, 284), @offsetOf(Uniforms, "cursor_change_time"));
+    try std.testing.expectEqual(@as(usize, 4400), @offsetOf(Uniforms, "background_color"));
+    try std.testing.expectEqual(@as(usize, 4496), @offsetOf(Uniforms, "selection_foreground_color") + 16);
+}
