@@ -295,6 +295,14 @@ extension Ghostty {
             return v
         }
 
+        var sshMenuUseNiftty: Bool {
+            guard let config = self.config else { return true }
+            var v = true
+            let key = "ssh-menu-use-niftty"
+            _ = ghostty_config_get(config, &v, key, UInt(key.lengthOfBytes(using: .utf8)))
+            return v
+        }
+
         var dragHandle: DragHandle {
             let defaultValue = DragHandle.auto
             guard let config = self.config else { return defaultValue }

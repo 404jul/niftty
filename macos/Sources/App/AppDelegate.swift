@@ -151,6 +151,9 @@ class AppDelegate: NSObject,
     /// Manages updates
     let updateController = UpdateController()
     private lazy var settingsController = SettingsController(appDelegate: self)
+
+    /// Owns the Connect menubar menu (SSH hosts + port forwards).
+    private var connectMenu: ConnectMenuController?
     var updateViewModel: UpdateViewModel {
         updateController.viewModel
     }
@@ -329,6 +332,9 @@ class AppDelegate: NSObject,
 
         // Setup our menu
         setupMenuImages()
+
+        // Setup the Connect menu (SSH hosts + port forwards)
+        setupConnectMenu()
 
         // Setup signal handlers
         setupSignals()
@@ -1134,6 +1140,22 @@ extension AppDelegate {
         dockMenu.removeAllItems()
         dockMenu.addItem(newWindow)
         dockMenu.addItem(newTab)
+    }
+
+    /// Inserts the Connect menu after "View" in the main menu.
+    private func setupConnectMenu() {
+        let controller = ConnectMenuController(ghostty: ghostty)
+        let mainMenu = NSApp.mainMenu
+        let index: Int
+        if let viewIndex = mainMenu?.items.firstIndex(where: { $0.title == "View" }) {
+            index = viewIndex + 1
+        } else if let windowIndex = mainMenu?.items.firstIndex(where: { $0.title == "Window" }) {
+            index = windowIndex
+        } else {
+            index = mainMenu?.items.count ?? 0
+        }
+        mainMenu?.insertItem(controller.menuItem, at: index)
+        connectMenu = controller
     }
 
     /// Setup all the images for our menu items.

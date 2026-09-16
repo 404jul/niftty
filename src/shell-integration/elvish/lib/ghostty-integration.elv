@@ -119,7 +119,7 @@
   if (and (has-value $features sudo) (not-eq "" $E:TERMINFO) (has-external sudo)) {
     edit:add-var sudo~ $sudo-with-terminfo~
   }
-  if (and (has-env GHOSTTY_BIN_DIR) (has-external ssh)) {
+  if (and (str:contains $E:GHOSTTY_SHELL_FEATURES ssh-) (has-external ssh)) {
     edit:add-var ssh~ $ssh-integration~
   }
 

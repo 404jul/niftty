@@ -124,7 +124,7 @@ function __ghostty_setup --on-event fish_prompt -d "Setup ghostty integration"
     # Wrap `ssh` with `niftty +ssh` and translate the shell-integration
     # feature flags into command options.
     set -l features (string split ',' -- "$GHOSTTY_SHELL_FEATURES")
-    if test -n "$GHOSTTY_BIN_DIR"
+    if contains ssh-env $features; or contains ssh-terminfo $features
         function ssh --wraps=ssh --description "SSH wrapper with Niftty integration"
             set -l features (string split ',' -- "$GHOSTTY_SHELL_FEATURES")
             set -l flags

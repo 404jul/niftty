@@ -182,10 +182,10 @@ pub fn init(opts: InitOpts) !void {
 
     if (build_options.sentry) {
         // Crash reporting is only initialized for the app itself. CLI
-        // actions are one-shot processes -- the shell integration runs
-        // `niftty +ssh` for every single `ssh` invocation -- so crash
-        // capture there is never surfaced, and Sentry init would cost a
-        // thread plus disk I/O on every run.
+        // actions are one-shot processes; when SSH wrapping is enabled
+        // the shell integration runs `niftty +ssh`, so Sentry is still
+        // skipped for actions, where crash capture would never be
+        // surfaced anyway and init would cost a thread plus disk I/O.
         if (self.action == null) {
             // Initialize our crash reporting. The environ map snapshot is
             // owned by crash.init (it is freed by the init thread).

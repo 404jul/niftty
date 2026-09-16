@@ -76,6 +76,18 @@ pub fn run(gpa: Allocator) !u8 {
         try stderr.print("Error: --pid is required.\n\n{s}", .{usage});
         return 2;
     };
+
+    // A dead owner process leaves its state files behind; refuse to serve
+    // stale tunnels from a session that no longer exists.
+    const owner: std.posix.pid_t = @intCast(@min(pid, std.math.maxInt(std.posix.pid_t)));
+    if (std.posix.kill(owner, @enumFromInt(0))) |_| {} else |err| switch (err) {
+        // The process exists but belongs to another user.
+        error.PermissionDenied => {},
+        else => {
+            try stderr.print("Error: no active Ghostty SSH session for pid {d}.\n", .{pid});
+            return 1;
+        },
+    }
     if (@intFromBool(opts.add) + @intFromBool(opts.cancel) > 1) {
         try stderr.print("Error: --add and --cancel cannot be combined.\n\n{s}", .{usage});
         return 2;

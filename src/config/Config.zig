@@ -3008,6 +3008,13 @@ keybind: Keybinds = .{},
 /// Available since: 1.4.0
 @"ssh-upload-verbose": bool = true,
 
+/// Launch SSH hosts from the macOS Connect menu using `niftty +ssh` so
+/// automatic port forwarding and file uploads work. When disabled, hosts
+/// open with the system `ssh` command instead.
+///
+/// Available since: 1.4.0
+@"ssh-menu-use-niftty": bool = true,
+
 /// Custom entries into the command palette.
 ///
 /// Each entry requires the title, the corresponding action, and an optional

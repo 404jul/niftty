@@ -9,6 +9,11 @@ export module ghostty {
   @complete external
   export def --wrapped ssh [...args] {
 
+    if not ((has_feature "ssh-env") or (has_feature "ssh-terminfo")) {
+      ^ssh ...$args
+      return
+    }
+
     let niftty = ($env.GHOSTTY_BIN_DIR? | default "") | path join "niftty"
     mut flags = []
     if not (has_feature "ssh-env") {

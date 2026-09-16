@@ -10,7 +10,7 @@ struct SSHPortsAccessoryView: View {
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     var body: some View {
-        Group {
+        VStack(spacing: 0) {
             if hasSession, let surface = viewModel.focusedSurface {
                 Button {
                     showPopover.toggle()
@@ -36,6 +36,7 @@ struct SSHPortsAccessoryView: View {
                 .padding(.top, viewModel.accessoryTopPadding)
                 .padding(.trailing, 10)
             }
+            Spacer()
         }
         .onAppear { refresh() }
         .onReceive(timer) { _ in refresh() }
