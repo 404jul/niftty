@@ -8,6 +8,8 @@ const Action = @import("ghostty.zig").Action;
 const DiskCache = @import("ssh_cache.zig").DiskCache;
 const ssh_session = @import("ssh_session.zig");
 const ssh_tunnel = @import("ssh_tunnel.zig");
+const ssh_mux = @import("ssh_mux.zig");
+
 const internal_os = @import("../os/main.zig");
 const terminfopkg = @import("../terminfo/main.zig");
 const global = @import("../global.zig");
@@ -126,9 +128,9 @@ pub const Options = struct {
 /// `alias ssh='ghostty +ssh --'`) if you prefer not to use the shell
 /// integration.
 ///
-/// `+ssh` also keeps one connection-scoped control socket for uploads and
-/// performs up to four pieces of setup:
-///
+/// `+ssh` also keeps one connection-scoped control socket for uploads.
+/// Panes that resolve to the same `user@host:port` share one ControlMaster.
+/// It performs up to four pieces of setup:
 ///   1. **Environment forwarding** (`--forward-env`). Sets `TERM` to
 ///      `xterm-256color` and requests `SendEnv` forwarding of
 ///      `COLORTERM`, `TERM_PROGRAM`, and `TERM_PROGRAM_VERSION` so the
@@ -264,7 +266,10 @@ fn runInner(
         return 2;
     }
 
-    const destination = resolveDestination(alloc, opts.ssh, opts._ssh_args.items);
+    const g_out = sshGStdout(alloc, opts.ssh, opts._ssh_args.items);
+    const destination = if (g_out) |stdout| parseDestination(alloc, stdout) else null;
+    const mux_key = if (g_out) |stdout| ssh_mux.keyFromG(alloc, stdout) else null;
+
     const session: struct {
         term: []const u8,
         to_cache: ?struct { cache: DiskCache, dest: []const u8 } = null,
@@ -335,18 +340,12 @@ fn runInner(
             "-o", "SendEnv=TERM_PROGRAM_VERSION",
         };
     } else &.{};
-    const control_path = if (destination != null)
-        try allocControlSocketPath(alloc)
+    const mux: ?ssh_mux.Session = if (destination) |dest|
+        try prepareMux(alloc, opts.ssh, dest, mux_key)
     else
         null;
-    const control_opts: []const []const u8 = if (control_path) |path| control: {
-        const path_opt = try std.fmt.allocPrint(alloc, "ControlPath={s}", .{path});
-        break :control &.{
-            "-o", "ControlMaster=yes",
-            "-o", "ControlPersist=no",
-            "-o", path_opt,
-        };
-    } else &.{};
+    const control_opts: []const []const u8 = if (mux) |m| try controlOpts(alloc, m) else &.{};
+
     const inject_cwd = shouldInjectCwdReporter(opts._ssh_args.items);
     const tty_opts: []const []const u8 = if (inject_cwd)
         &.{ "-o", "RequestTTY=force" }
@@ -371,8 +370,7 @@ fn runInner(
         gpa,
         opts,
         argv,
-        control_path,
-        destination,
+        mux,
     ) catch |err| {
         try stderr.print("Error: failed to run {s}: {t}\n", .{ argv[0], err });
         return 1;
@@ -478,10 +476,8 @@ fn checkExit(term: std.process.Child.Term, label: []const u8) error{ChildFailed}
     }
 }
 
-/// Run `ssh -G <args>` and parse the output for `user` and `hostname`.
-/// Returns the resolved `user@hostname`, or null if the destination
-/// could not be resolved.
-fn resolveDestination(
+/// Run `ssh -G <args>` and return stdout, or null if it fails.
+fn sshGStdout(
     alloc: Allocator,
     ssh: []const u8,
     args: []const []const u8,
@@ -499,7 +495,15 @@ fn resolveDestination(
         return null;
     };
     checkExit(result.term, "ssh -G") catch return null;
-    return parseDestination(alloc, result.stdout);
+    return result.stdout;
+}
+
+fn resolveDestination(
+    alloc: Allocator,
+    ssh: []const u8,
+    args: []const []const u8,
+) ?[]const u8 {
+    return parseDestination(alloc, sshGStdout(alloc, ssh, args) orelse return null);
 }
 
 /// Parse `ssh -G` output for `user` and `hostname` and return the
@@ -649,14 +653,93 @@ fn installRemoteTerminfo(
     checkExit(term, "terminfo install") catch return error.InstallFailed;
 }
 
+fn controlOpts(alloc: Allocator, mux: ssh_mux.Session) ![]const []const u8 {
+    const path_opt = try std.fmt.allocPrint(alloc, "ControlPath={s}", .{mux.control_path});
+    return switch (mux.role) {
+        .client => &.{
+            "-o", "ControlMaster=auto",
+            "-o", path_opt,
+        },
+        .master => &.{
+            "-o", "ControlMaster=auto",
+            "-o", "ControlPersist=yes",
+            "-o", path_opt,
+        },
+        .legacy => &.{
+            "-o", "ControlMaster=yes",
+            "-o", "ControlPersist=no",
+            "-o", path_opt,
+        },
+    };
+}
+
+fn waitForMaster(
+    alloc: Allocator,
+    ssh: []const u8,
+    control_path: []const u8,
+    destination: []const u8,
+    timeout_ms: u32,
+) bool {
+    var waited: u32 = 0;
+    while (waited < timeout_ms) {
+        if (checkMaster(alloc, ssh, control_path, destination)) return true;
+        std.Io.sleep(global.io(), .fromMilliseconds(100), .awake) catch return false;
+        waited += 100;
+    }
+    return false;
+}
+
+fn prepareMux(
+    alloc: Allocator,
+    ssh: []const u8,
+    dest: []const u8,
+    key: ?[]const u8,
+) !ssh_mux.Session {
+    const key_val = key orelse {
+        return .{
+            .control_path = try allocControlSocketPath(alloc),
+            .destination = dest,
+            .key = null,
+            .role = .legacy,
+            .lock_dir = null,
+        };
+    };
+    const sock = try ssh_mux.sockPath(alloc, key_val);
+    if (checkMaster(alloc, ssh, sock, dest)) {
+        return .{ .control_path = sock, .destination = dest, .key = key_val, .role = .client, .lock_dir = null };
+    }
+    std.Io.Dir.deleteFileAbsolute(global.io(), sock) catch {};
+
+    if (try ssh_mux.tryLock(alloc, key_val)) |lock| {
+        if (checkMaster(alloc, ssh, sock, dest)) {
+            ssh_mux.unlock(lock);
+            alloc.free(lock);
+            return .{ .control_path = sock, .destination = dest, .key = key_val, .role = .client, .lock_dir = null };
+        }
+        ssh_mux.writeInfo(alloc, key_val, ssh, dest);
+        return .{ .control_path = sock, .destination = dest, .key = key_val, .role = .master, .lock_dir = lock };
+    }
+
+    if (waitForMaster(alloc, ssh, sock, dest, 15_000)) {
+        return .{ .control_path = sock, .destination = dest, .key = key_val, .role = .client, .lock_dir = null };
+    }
+    log.warn("shared master unavailable; falling back to per-session socket", .{});
+    return .{
+        .control_path = try allocControlSocketPath(alloc),
+        .destination = dest,
+        .key = null,
+        .role = .legacy,
+        .lock_dir = null,
+    };
+}
+
 /// Run the user's interactive SSH process while publishing its multiplexing
 /// socket for uploads and, when enabled, monitoring remote listening ports.
 fn runInteractiveSession(
     gpa: Allocator,
     opts: *const Options,
     argv: []const []const u8,
-    control_path: ?[]const u8,
-    destination: ?[]const u8,
+    mux: ?ssh_mux.Session,
 ) !u8 {
     var child = try std.process.spawn(global.io(), .{
         .argv = argv,
@@ -672,30 +755,58 @@ fn runInteractiveSession(
     );
 
     const pid = ssh_session.currentPid();
-    if (control_path != null and destination != null) {
+    if (mux) |m| {
         ssh_session.write(gpa, pid, .{
-            .control_path = control_path.?,
-            .destination = destination.?,
+            .control_path = m.control_path,
+            .destination = m.destination,
             .ssh = opts.ssh,
+            .key = m.key,
         }) catch |err| log.warn("unable to publish SSH session: {t}", .{err});
     }
-    defer ssh_session.remove(gpa, pid);
-
+    var watch_pid = std.atomic.Value(i32).init(0);
     var running = std.atomic.Value(bool).init(true);
-    const monitor = if (auto_forward and control_path != null and destination != null)
-        std.Thread.spawn(.{}, monitorRemotePorts, .{
-            opts.ssh,
-            control_path.?,
-            destination.?,
-            forward_notify,
-            pid,
-            &running,
-        }) catch null
-    else
-        null;
+    const monitor = if (mux) |m| blk: {
+        const ledger_path = if (m.key) |key|
+            ssh_mux.tunnelsPath(gpa, key) catch break :blk null
+        else
+            ssh_session.tunnelsPathForPid(gpa, pid) catch break :blk null;
+        break :blk std.Thread.spawn(.{}, monitorRemotePorts, .{
+            MonitorArgs{
+                .ssh = opts.ssh,
+                .control_path = m.control_path,
+                .destination = m.destination,
+                .notify = forward_notify,
+                .ledger_path = ledger_path,
+                .key = m.key,
+                .lock_dir = m.lock_dir,
+                .auto_forward = auto_forward,
+                .pid = pid,
+                .running = &running,
+                .watch_pid = &watch_pid,
+            },
+        }) catch null;
+    } else null;
+    if (monitor == null) {
+        if (mux) |m| if (m.lock_dir) |lock| ssh_mux.unlock(lock);
+    }
     defer {
         running.store(false, .release);
+        const wpid = watch_pid.swap(0, .acq_rel);
+        if (wpid > 0 and builtin.os.tag != .windows) {
+            std.posix.kill(@intCast(wpid), std.posix.SIG.TERM) catch {};
+        }
         if (monitor) |thread| thread.join();
+        ssh_session.remove(gpa, pid);
+        if (mux) |m| {
+            if (m.key) |key| {
+                if (!ssh_session.anyWithKey(gpa, key)) {
+                    _ = std.process.run(gpa, global.io(), .{
+                        .argv = &.{ opts.ssh, "-S", m.control_path, "-O", "exit", m.destination },
+                    }) catch {};
+                    ssh_mux.unlinkMuxFiles(gpa, key, m.control_path);
+                }
+            }
+        }
     }
 
     const term = try child.wait(global.io());
@@ -724,6 +835,36 @@ const port_discovery_script =
     \\  netstat -lnt 2>/dev/null | awk '/LISTEN/ { print $4 }'
     \\  netstat -an -p tcp 2>/dev/null | awk '/LISTEN/ { print $4 }'
     \\fi
+;
+
+const port_watch_script =
+    \\old=${TMPDIR:-/tmp}/niftty-ports-$$
+    \\: > "$old"
+    \\trap 'rm -f "$old" "$old.new"' EXIT
+    \\while :; do
+    \\  {
+    \\    if command -v ss >/dev/null 2>&1; then
+    \\      ss -ltn 2>/dev/null | awk 'NR==1 && $1 ~ /State|Netid/ { next } { print $4 }'
+    \\    elif command -v lsof >/dev/null 2>&1; then
+    \\      lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | awk 'NR>1 { print $9 }'
+    \\    elif command -v netstat >/dev/null 2>&1; then
+    \\      netstat -lnt 2>/dev/null | awk '/LISTEN/ { print $4 }'
+    \\      netstat -an -p tcp 2>/dev/null | awk '/LISTEN/ { print $4 }'
+    \\    fi
+    \\  } | sort -u > "$old.new"
+    \\  if ! [ -s "$old" ]; then
+    \\    while IFS= read -r line; do
+    \\      [ -n "$line" ] && printf 'P %s\n' "$line"
+    \\    done < "$old.new"
+    \\  else
+    \\    while IFS= read -r line; do
+    \\      [ -z "$line" ] && continue
+    \\      grep -F -x -q "$line" "$old" || printf 'P %s\n' "$line"
+    \\    done < "$old.new"
+    \\  fi
+    \\  mv "$old.new" "$old"
+    \\  sleep 5
+    \\done
 ;
 
 /// Injected as the remote command for interactive `niftty +ssh` logins.
@@ -875,74 +1016,155 @@ test "cwd reporter watches child not parent" {
     try testing.expect(std.mem.indexOf(u8, cwd_reporter_command, "/proc/$PPID/cwd") == null);
 }
 
-fn monitorRemotePorts(
+const MonitorArgs = struct {
     ssh: []const u8,
     control_path: []const u8,
     destination: []const u8,
     notify: bool,
+    ledger_path: []const u8,
+    key: ?[]const u8,
+    lock_dir: ?[]const u8,
+    auto_forward: bool,
     pid: u64,
     running: *std.atomic.Value(bool),
-) void {
+    watch_pid: *std.atomic.Value(i32),
+};
+
+fn sleepWhileRunning(running: *std.atomic.Value(bool), total_ms: u32) bool {
+    var waited: u32 = 0;
+    while (waited < total_ms) {
+        if (!running.load(.acquire)) return false;
+        std.Io.sleep(global.io(), .fromMilliseconds(100), .awake) catch return false;
+        waited += 100;
+    }
+    return running.load(.acquire);
+}
+
+fn monitorRemotePorts(args: MonitorArgs) void {
     const alloc = std.heap.page_allocator;
 
-    // The master socket is created asynchronously by OpenSSH.
-    while (running.load(.acquire)) {
-        if (checkMaster(alloc, ssh, control_path, destination)) break;
+    while (args.running.load(.acquire)) {
+        if (checkMaster(alloc, args.ssh, args.control_path, args.destination)) break;
         std.Io.sleep(global.io(), .fromMilliseconds(100), .awake) catch return;
     }
+    if (args.lock_dir) |lock| ssh_mux.unlock(lock);
+    if (!args.running.load(.acquire) or !args.auto_forward) return;
 
-    while (running.load(.acquire)) {
-        const ports = discoverPorts(alloc, ssh, control_path, destination) catch {
+    if (args.key == null) {
+        pollLegacy(args, alloc);
+        return;
+    }
+
+    while (args.running.load(.acquire)) {
+        if (!ssh_mux.tryClaimWatch(alloc, args.key.?, args.pid)) {
+            if (!sleepWhileRunning(args.running, 5000)) return;
+            continue;
+        }
+        runWatcher(args, alloc);
+        if (!args.running.load(.acquire)) return;
+        if (!checkMaster(alloc, args.ssh, args.control_path, args.destination)) return;
+        if (!sleepWhileRunning(args.running, 1000)) return;
+    }
+}
+
+fn pollLegacy(args: MonitorArgs, alloc: Allocator) void {
+    while (args.running.load(.acquire)) {
+        const ports = discoverPorts(alloc, args.ssh, args.control_path, args.destination) catch {
             std.Io.sleep(global.io(), .fromMilliseconds(250), .awake) catch return;
             continue;
         };
         defer if (ports.len > 0) alloc.free(ports);
-
-        var ledger = ssh_tunnel.load(alloc, pid) catch ssh_tunnel.Ledger{ .alloc = alloc };
-        defer ledger.deinit();
-
-        for (ports) |remote_port| {
-            if (ledger.hasRemote(remote_port) or ledger.ignores(remote_port)) continue;
-            if (ledger.tunnels.items.len >= ssh_tunnel.max_auto_forwards) break;
-            const local_port = ssh_tunnel.openLocal(
-                alloc,
-                ssh,
-                control_path,
-                destination,
-                remote_port,
-                null,
-            ) catch continue;
-            ledger.add(
-                ssh_tunnel.loopback,
-                local_port,
-                ssh_tunnel.loopback,
-                remote_port,
-            ) catch {
-                _ = ssh_tunnel.closeLocal(
-                    alloc,
-                    ssh,
-                    control_path,
-                    destination,
-                    local_port,
-                    remote_port,
-                ) catch {};
-                continue;
-            };
-            ssh_tunnel.save(alloc, pid, ledger) catch {
-                _ = ssh_tunnel.closeLocal(
-                    alloc,
-                    ssh,
-                    control_path,
-                    destination,
-                    local_port,
-                    remote_port,
-                ) catch {};
-                continue;
-            };
-            if (notify) notifyForward(remote_port, local_port);
-        }
+        for (ports) |remote_port| applyForward(args, alloc, remote_port);
         std.Io.sleep(global.io(), .fromMilliseconds(750), .awake) catch return;
     }
+}
+
+fn runWatcher(args: MonitorArgs, alloc: Allocator) void {
+    var child = std.process.spawn(global.io(), .{
+        .argv = &.{ args.ssh, "-S", args.control_path, args.destination, "sh", "-s" },
+        .stdin = .pipe,
+        .stdout = .pipe,
+        .stderr = .ignore,
+    }) catch return;
+    if (child.id) |id| args.watch_pid.store(@intCast(id), .release);
+    defer {
+        args.watch_pid.store(0, .release);
+        if (child.id != null) child.kill(global.io());
+    }
+
+    if (child.stdin) |stdin| {
+        stdin.writeStreamingAll(global.io(), port_watch_script) catch {};
+        stdin.close(global.io());
+        child.stdin = null;
+    }
+    const stdout = child.stdout orelse return;
+    var buf: [4096]u8 = undefined;
+    var file_reader = stdout.reader(global.io(), &buf);
+    const reader = &file_reader.interface;
+    while (args.running.load(.acquire)) {
+        const line = reader.takeDelimiterInclusive('\n') catch |err| switch (err) {
+            error.EndOfStream, error.ReadFailed => break,
+            error.StreamTooLong => {
+                _ = reader.take(buf.len) catch {};
+                continue;
+            },
+        };
+        const port = parseWatchLine(line) orelse continue;
+        applyForward(args, alloc, port);
+    }
+}
+
+fn applyForward(args: MonitorArgs, alloc: Allocator, remote_port: u16) void {
+    var ledger = ssh_tunnel.load(alloc, args.ledger_path) catch ssh_tunnel.Ledger{ .alloc = alloc };
+    defer ledger.deinit();
+    if (ledger.hasRemote(remote_port) or ledger.ignores(remote_port)) return;
+    if (ledger.tunnels.items.len >= ssh_tunnel.max_auto_forwards) return;
+    const local_port = ssh_tunnel.openLocal(
+        alloc,
+        args.ssh,
+        args.control_path,
+        args.destination,
+        remote_port,
+        null,
+    ) catch return;
+    ledger.add(
+        ssh_tunnel.loopback,
+        local_port,
+        ssh_tunnel.loopback,
+        remote_port,
+    ) catch {
+        _ = ssh_tunnel.closeLocal(
+            alloc,
+            args.ssh,
+            args.control_path,
+            args.destination,
+            local_port,
+            remote_port,
+        ) catch {};
+        return;
+    };
+    ssh_tunnel.save(alloc, args.ledger_path, ledger) catch {
+        _ = ssh_tunnel.closeLocal(
+            alloc,
+            args.ssh,
+            args.control_path,
+            args.destination,
+            local_port,
+            remote_port,
+        ) catch {};
+        return;
+    };
+    if (args.notify) notifyForward(remote_port, local_port);
+}
+
+fn parseWatchLine(raw: []const u8) ?u16 {
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    const payload = if (std.mem.startsWith(u8, trimmed, "P ")) trimmed[2..] else trimmed;
+    const addr = stripListenSuffix(payload);
+    if (!isLoopbackOrAllInterfaces(addr)) return null;
+    const port = portFromListenAddr(addr) orelse return null;
+    if (isIgnoredPort(port)) return null;
+    return port;
 }
 
 fn checkMaster(
@@ -1101,6 +1323,15 @@ test "stripListenSuffix: lsof optional suffix" {
     const testing = std.testing;
     try testing.expectEqualStrings("*:3000", stripListenSuffix("*:3000 (LISTEN)"));
     try testing.expectEqualStrings("*:3000", stripListenSuffix("*:3000"));
+}
+
+test "parseWatchLine: P-prefixed listen addresses" {
+    const testing = std.testing;
+    try testing.expectEqual(@as(?u16, 3000), parseWatchLine("P 127.0.0.1:3000"));
+    try testing.expectEqual(@as(?u16, 43210), parseWatchLine("P *:43210 (LISTEN)"));
+    try testing.expectEqual(@as(?u16, null), parseWatchLine("P 127.0.0.1:80"));
+    try testing.expectEqual(@as(?u16, null), parseWatchLine("P 192.168.1.10:3000"));
+    try testing.expectEqual(@as(?u16, 8080), parseWatchLine("0.0.0.0:8080"));
 }
 
 fn notifyForward(remote_port: u16, local_port: u16) void {

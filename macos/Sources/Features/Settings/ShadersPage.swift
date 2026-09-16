@@ -470,11 +470,24 @@ final class ShaderPreviewRenderer: NSObject, MTKViewDelegate {
             mipmapped: false)
         desc.usage = .shaderRead
         guard let texture = device.makeTexture(descriptor: desc) else { return }
+        // Shadertoy shaders sample iChannel0 with GL's bottom-left texture
+        // origin, so upload with row 0 = top of the drawn terminal.
+        let rowBytes = width * 4
+        var flipped = [UInt8](repeating: 0, count: rowBytes * height)
+        let src = ctx.data!.assumingMemoryBound(to: UInt8.self)
+        for y in 0..<height {
+            flipped.withUnsafeMutableBytes { dst in
+                _ = memcpy(
+                    dst.baseAddress! + y * rowBytes,
+                    src + (height - 1 - y) * rowBytes,
+                    rowBytes)
+            }
+        }
         texture.replace(
             region: MTLRegionMake2D(0, 0, width, height),
             mipmapLevel: 0,
-            withBytes: ctx.data!,
-            bytesPerRow: width * 4)
+            withBytes: flipped,
+            bytesPerRow: rowBytes)
         terminalTexture = texture
     }
 
@@ -517,7 +530,9 @@ final class ShaderPreviewRenderer: NSObject, MTKViewDelegate {
                 float2 pos = float2(float((vid << 1u) & 2u), float(vid & 2u));
                 VSOut out;
                 out.position = float4(pos * 2.0 - 1.0, 0.0, 1.0);
-                out.uv = pos;
+                // The texture is uploaded with row 0 = top (for shadertoy
+                // shaders), so flip V for the direct blit.
+                out.uv = float2(pos.x, 1.0 - pos.y);
                 return out;
             }
 

@@ -124,7 +124,8 @@ fn listTunnels(
     pid: u64,
     session: ssh_session.Info,
 ) !u8 {
-    var ledger = try ssh_tunnel.load(gpa, pid);
+    const path = try ssh_session.tunnelsPath(alloc, session, pid);
+    var ledger = try ssh_tunnel.load(gpa, path);
     defer ledger.deinit();
 
     var stdout_buffer: [1024]u8 = undefined;
@@ -139,7 +140,6 @@ fn listTunnels(
         );
     }
     try stdout.flush();
-    _ = alloc;
     return 0;
 }
 
@@ -152,7 +152,8 @@ fn addTunnel(
     remote_port: u16,
     stderr: *std.Io.Writer,
 ) !u8 {
-    var ledger = try ssh_tunnel.load(gpa, pid);
+    const path = try ssh_session.tunnelsPath(alloc, session, pid);
+    var ledger = try ssh_tunnel.load(gpa, path);
     defer ledger.deinit();
     if (ledger.hasRemote(remote_port)) return 0;
 
@@ -168,7 +169,7 @@ fn addTunnel(
         return 1;
     };
     try ledger.add(ssh_tunnel.loopback, opened, ssh_tunnel.loopback, remote_port);
-    ssh_tunnel.save(gpa, pid, ledger) catch |err| {
+    ssh_tunnel.save(gpa, path, ledger) catch |err| {
         _ = ssh_tunnel.closeLocal(
             alloc,
             session.ssh,
@@ -192,7 +193,8 @@ fn cancelTunnel(
     remote_port: u16,
     stderr: *std.Io.Writer,
 ) !u8 {
-    var ledger = try ssh_tunnel.load(gpa, pid);
+    const path = try ssh_session.tunnelsPath(alloc, session, pid);
+    var ledger = try ssh_tunnel.load(gpa, path);
     defer ledger.deinit();
 
     if (local_port) |local| {
@@ -234,7 +236,7 @@ fn cancelTunnel(
         }
     }
 
-    ssh_tunnel.save(gpa, pid, ledger) catch |err| {
+    ssh_tunnel.save(gpa, path, ledger) catch |err| {
         try stderr.print("Error: failed to record cancel: {t}\n", .{err});
         return 1;
     };

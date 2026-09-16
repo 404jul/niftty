@@ -1,7 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const global = @import("../global.zig");
-const ssh_session = @import("ssh_session.zig");
 
 const log = std.log.scoped(.ssh_tunnel);
 
@@ -107,9 +106,7 @@ pub const Ledger = struct {
     }
 };
 
-pub fn load(alloc: Allocator, pid: u64) !Ledger {
-    const path = try ssh_session.tunnelsPathForPid(alloc, pid);
-    defer alloc.free(path);
+pub fn load(alloc: Allocator, path: []const u8) !Ledger {
     const file = std.Io.Dir.openFileAbsolute(global.io(), path, .{}) catch |err| switch (err) {
         error.FileNotFound => return .{ .alloc = alloc },
         else => return err,
@@ -121,9 +118,8 @@ pub fn load(alloc: Allocator, pid: u64) !Ledger {
     return parseLedger(alloc, data);
 }
 
-pub fn save(alloc: Allocator, pid: u64, ledger: Ledger) !void {
-    const path = try ssh_session.tunnelsPathForPid(alloc, pid);
-    defer alloc.free(path);
+pub fn save(alloc: Allocator, path: []const u8, ledger: Ledger) !void {
+    _ = alloc;
     if (std.fs.path.dirname(path)) |dir| {
         try std.Io.Dir.cwd().createDirPath(global.io(), dir);
     }
@@ -331,4 +327,23 @@ test "writeLedger round trip" {
     try testing.expectEqual(@as(usize, 1), parsed.tunnels.items.len);
     try testing.expectEqual(@as(u16, 3000), parsed.tunnels.items[0].remote_port);
     try testing.expect(parsed.ignores(6379));
+}
+
+test "load/save path round trip" {
+    const testing = std.testing;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const dir_path = try tmp.dir.realPathFileAlloc(testing.io, ".", testing.allocator);
+    defer testing.allocator.free(dir_path);
+    const path = try std.fs.path.join(testing.allocator, &.{ dir_path, "led.tunnels" });
+    defer testing.allocator.free(path);
+
+    var ledger: Ledger = .{ .alloc = testing.allocator };
+    defer ledger.deinit();
+    try ledger.add(loopback, 4000, loopback, 4000);
+    try save(testing.allocator, path, ledger);
+
+    var loaded = try load(testing.allocator, path);
+    defer loaded.deinit();
+    try testing.expectEqual(@as(u16, 4000), loaded.tunnels.items[0].remote_port);
 }
