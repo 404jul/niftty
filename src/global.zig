@@ -181,15 +181,22 @@ pub fn init(opts: InitOpts) !void {
     self.rlimits = .init();
 
     if (build_options.sentry) {
-        // Initialize our crash reporting. The environ map snapshot is
-        // owned by crash.init (it is freed by the init thread).
-        const environ_map = try self.environ.createMap(self.alloc);
-        crash.init(self.alloc, environ_map) catch |err| {
-            std.log.warn(
-                "sentry init failed, no crash capture available err={}",
-                .{err},
-            );
-        };
+        // Crash reporting is only initialized for the app itself. CLI
+        // actions are one-shot processes -- the shell integration runs
+        // `niftty +ssh` for every single `ssh` invocation -- so crash
+        // capture there is never surfaced, and Sentry init would cost a
+        // thread plus disk I/O on every run.
+        if (self.action == null) {
+            // Initialize our crash reporting. The environ map snapshot is
+            // owned by crash.init (it is freed by the init thread).
+            const environ_map = try self.environ.createMap(self.alloc);
+            crash.init(self.alloc, environ_map) catch |err| {
+                std.log.warn(
+                    "sentry init failed, no crash capture available err={}",
+                    .{err},
+                );
+            };
+        }
     }
 
     // const sentrylib = @import("sentry");

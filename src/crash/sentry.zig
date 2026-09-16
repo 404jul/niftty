@@ -161,6 +161,11 @@ fn initThread(gpa: Allocator, environ_map_: std.process.Environ.Map) !void {
     // do here and why we use this.
     sentry.c.sentry_options_set_before_send(opts, beforeSend, null);
 
+    // Route the SDK's own logging through our logger (see sentryLogger)
+    // so it respects our logging configuration instead of writing
+    // directly to process stderr.
+    sentry.c.sentry_options_set_logger(opts, sentryLogger, null);
+
     sentry.c.sentry_options_set_database_path_n(
         opts,
         cache_dir.ptr,
@@ -168,7 +173,9 @@ fn initThread(gpa: Allocator, environ_map_: std.process.Environ.Map) !void {
     );
 
     if (comptime builtin.mode == .Debug) {
-        // Debug logging for Sentry
+        // Debug logging for Sentry. This also enables our custom logger
+        // above: the SDK only installs a logger at all when the debug
+        // option is set.
         sentry.c.sentry_options_set_debug(opts, @intFromBool(true));
     }
 
@@ -294,6 +301,54 @@ fn beforeSend(
     }
 
     return event_val;
+}
+
+/// The exact logger signature sentry expects. The C `va_list` parameter
+/// is translated differently per target, so the parameter types are
+/// derived from the SDK's own typedef rather than written by hand.
+const LoggerFunc = blk: {
+    const optional = @typeInfo(sentry.c.sentry_logger_function_t).optional;
+    const pointer = @typeInfo(optional.child).pointer;
+    break :blk pointer.child;
+};
+const LoggerFormat = @typeInfo(LoggerFunc).@"fn".params[1].type.?;
+const LoggerVaList = @typeInfo(LoggerFunc).@"fn".params[2].type.?;
+
+extern "c" fn vsnprintf(
+    str: [*]u8,
+    size: usize,
+    format: LoggerFormat,
+    ap: LoggerVaList,
+) c_int;
+
+/// The SDK's default logger writes straight to process stderr with a
+/// `[sentry]` prefix, bypassing `GHOSTTY_LOG` and the stderr disabling we
+/// do for CLI actions. This callback is installed via
+/// `sentry_options_set_logger` so the SDK's messages flow through
+/// `std.log` like everything else. Note the SDK only invokes a custom
+/// logger when the debug option is enabled.
+///
+/// The SDK logs with printf format strings and a C `va_list`, so the
+/// message is rendered with libc `vsnprintf`. Messages are short; a
+/// fixed buffer is plenty.
+fn sentryLogger(
+    level: c_int,
+    format: LoggerFormat,
+    args: LoggerVaList,
+    _: ?*anyopaque,
+) callconv(.c) void {
+    var buf: [1024]u8 = undefined;
+    const n = vsnprintf(&buf, buf.len, format, args);
+    if (n <= 0) return;
+    const len: usize = @min(@as(usize, @intCast(n)), buf.len - 1);
+    const msg = buf[0..len];
+    switch (level) {
+        sentry.c.SENTRY_LEVEL_DEBUG => log.debug("{s}", .{msg}),
+        sentry.c.SENTRY_LEVEL_INFO => log.info("{s}", .{msg}),
+        sentry.c.SENTRY_LEVEL_WARNING => log.warn("{s}", .{msg}),
+        sentry.c.SENTRY_LEVEL_ERROR, sentry.c.SENTRY_LEVEL_FATAL => log.err("{s}", .{msg}),
+        else => log.debug("{s}", .{msg}),
+    }
 }
 
 pub const Transport = struct {
