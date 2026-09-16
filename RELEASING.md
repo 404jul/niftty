@@ -50,13 +50,24 @@ Rules:
   Sparkle always sees the new release as an update.
 - Users' apps pick the release up on their next automatic update check.
 
+## The repository must be public for updates to work
+
+Sparkle (and anyone downloading the zips) fetches the appcast and
+archives from `releases/latest/download/...` **anonymously**. On a
+private repository those URLs return 404, so auto-update silently finds
+nothing. Releases can still be cut from a private repo (CI works fine),
+but flip the repo to public before expecting any installed app to see or
+install updates: Settings → General → Danger Zone → Change visibility.
+Going public requires no other changes.
+
 ## Caveats
 
 - The app is **ad-hoc signed** (no Apple Developer account), so a fresh
   download may need right-click → *Open* the first time. Updates installed
   by Sparkle do not hit this prompt.
 - After publishing, `releases/latest/download/...` points at the new
-  release within seconds; clients check periodically (default once a day).
+  release within seconds (on public repos); clients check periodically
+  (default once a day).
 
 ## Local dry run
 
