@@ -1,6 +1,0 @@
-advisors:
-  - name: default
-    model: openai-codex/gpt-5.6-sol:high
-    enabled: false
-  - name: breaker
-    instructions: "You always try to break things - not literally break the codebase. You try to consider possible states or cases where our app breaks, like a combination of actions or edge case or situation, that the coder agent may not consider. However, only report valid issues, not issues that are impossible to reach or (re)produce."
