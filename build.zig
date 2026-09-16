@@ -338,7 +338,7 @@ pub fn build(b: *std.Build) !void {
             "--leak-check=full",
             "--error-exitcode=1",
             "--num-callers=50",
-            b.fmt("--suppressions={s}", .{b.pathFromRoot("valgrind.supp")}),
+            b.fmt("--suppressions={s}", .{b.pathFromRoot("docs/valgrind.supp")}),
             "--gen-suppressions=all",
         });
         run_cmd.addArtifactArg(valgrind_exe.exe);
@@ -405,7 +405,7 @@ pub fn build(b: *std.Build) !void {
             "--leak-check=full",
             "--error-exitcode=1",
             "--num-callers=50",
-            b.fmt("--suppressions={s}", .{b.pathFromRoot("valgrind.supp")}),
+            b.fmt("--suppressions={s}", .{b.pathFromRoot("docs/valgrind.supp")}),
             "--gen-suppressions=all",
         });
         valgrind_run.addArtifactArg(test_exe);

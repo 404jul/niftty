@@ -65,7 +65,7 @@ jobs:
           if [[ -z "$SPARKLE_PRIVATE_KEY" ]]; then
             echo "::error::The SPARKLE_PRIVATE_KEY secret is not set."
             echo "Add the contents of your EdDSA private key as a repository"
-            echo "secret named SPARKLE_PRIVATE_KEY (see RELEASING.md)."
+            echo "secret named SPARKLE_PRIVATE_KEY (see docs/RELEASING.md)."
             exit 1
           fi
 
@@ -109,7 +109,7 @@ jobs:
                      MAC_SIGNING_IDENTITY APPLE_API_KEY APPLE_API_KEY_ID \
                      APPLE_API_ISSUER_ID; do
             if [[ -z "${!var}" ]]; then
-              echo "::error::$var secret is not set (see RELEASING.md)."
+              echo "::error::$var secret is not set (see docs/RELEASING.md)."
               missing=1
             fi
           done
