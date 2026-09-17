@@ -7,7 +7,7 @@
  <p align="center">
  <strong>A terminal built for remote work</strong> <br />
  SSH, port forwarding, and drag-and-drop file upload —<br />
- all in one cozy, native app. <br />
+ in the Ghostty interface you love.<br />
  </p>
 </p>
 
