@@ -4,6 +4,7 @@ const inputpkg = @import("../input.zig");
 const global = @import("../global.zig");
 const String = @import("../main_c.zig").String;
 
+const Allocator = std.mem.Allocator;
 const Config = @import("Config.zig");
 const c_get = @import("c_get.zig");
 const edit = @import("edit.zig");
@@ -150,6 +151,312 @@ export fn ghostty_config_editor_data(self: *Config) String {
         log.err("error generating config editor data err={}", .{err});
         return .empty;
     };
+}
+
+/// Return the keybinding state for graphical editors as JSON. This includes
+/// every effective binding (defaults plus user configuration), whether each
+/// binding matches the built-in defaults, and a catalog of all bindable
+/// actions with their documentation. The returned string must be freed with
+/// ghostty_string_free.
+export fn ghostty_config_keybind_data(self: *Config) String {
+    return configKeybindData(self) catch |err| {
+        log.err("error generating config keybind data err={}", .{err});
+        return .empty;
+    };
+}
+
+/// Parse and validate a single `keybind =` line value (for example
+/// `cmd+shift+c=copy_to_clipboard`) using the same parser as the real
+/// configuration. Returns JSON describing the canonical form of the binding,
+/// or an error message if it is invalid. Table prefixes (`name/`) are not
+/// handled here; callers validate the binding portion and re-add the prefix.
+/// The returned string must be freed with ghostty_string_free.
+export fn ghostty_keybind_parse(str: [*]const u8, len: usize) String {
+    return keybindParse(str[0..len]) catch |err| {
+        log.err("error parsing keybind err={}", .{err});
+        return .empty;
+    };
+}
+
+/// One flattened keybinding: a full trigger sequence (sequences are joined
+/// with `>`) mapped to one or more actions (chained actions), within an
+/// optional key table.
+const KeybindEntry = struct {
+    table: ?[]const u8,
+    trigger: []const u8,
+    actions: []const []const u8,
+    flags: inputpkg.Binding.Flags,
+};
+
+fn keybindEntries(
+    alloc: Allocator,
+    keybinds: Config.Keybinds,
+) Allocator.Error![]KeybindEntry {
+    var list: std.ArrayList(KeybindEntry) = .empty;
+    errdefer list.deinit(alloc);
+    try keybindEntriesSet(alloc, &keybinds.set, null, "", &list);
+    var table_iter = keybinds.tables.iterator();
+    while (table_iter.next()) |table_entry| {
+        try keybindEntriesSet(
+            alloc,
+            &table_entry.value_ptr.*,
+            table_entry.key_ptr.*,
+            "",
+            &list,
+        );
+    }
+    return list.toOwnedSlice(alloc);
+}
+
+fn keybindEntriesSet(
+    alloc: Allocator,
+    set: *const inputpkg.Binding.Set,
+    table: ?[]const u8,
+    prefix: []const u8,
+    list: *std.ArrayList(KeybindEntry),
+) Allocator.Error!void {
+    var iter = set.bindings.iterator();
+    while (iter.next()) |entry| {
+        var trigger: std.Io.Writer.Allocating = .init(alloc);
+        defer trigger.deinit();
+        trigger.writer.writeAll(prefix) catch return error.OutOfMemory;
+        trigger.writer.print("{f}", .{entry.key_ptr.*}) catch return error.OutOfMemory;
+
+        switch (entry.value_ptr.*) {
+            .leader => |sub| try keybindEntriesSet(
+                alloc,
+                sub,
+                table,
+                try std.fmt.allocPrint(alloc, "{s}>", .{trigger.written()}),
+                list,
+            ),
+
+            .leaf, .leaf_chained => {
+                const generic = switch (entry.value_ptr.*) {
+                    .leaf => |*leaf| leaf.generic(),
+                    .leaf_chained => |*leaf| leaf.generic(),
+                    else => unreachable,
+                };
+                var actions: std.ArrayList([]const u8) = .empty;
+                errdefer actions.deinit(alloc);
+                for (generic.actionsSlice()) |action| {
+                    var formatted: std.Io.Writer.Allocating = .init(alloc);
+                    errdefer formatted.deinit();
+                    action.format(&formatted.writer) catch return error.OutOfMemory;
+                    actions.append(alloc, try formatted.toOwnedSlice()) catch
+                        return error.OutOfMemory;
+                }
+                list.append(alloc, .{
+                    .table = table,
+                    .trigger = try alloc.dupe(u8, trigger.written()),
+                    .actions = try actions.toOwnedSlice(alloc),
+                    .flags = generic.flags,
+                }) catch return error.OutOfMemory;
+            },
+        }
+    }
+}
+
+fn keybindEntryIsDefault(
+    self: KeybindEntry,
+    defaults: []const KeybindEntry,
+) bool {
+    for (defaults) |default| {
+        if (default.table == null and self.table != null) continue;
+        if (default.table != null and self.table == null) continue;
+        if (self.table) |t| {
+            if (!std.mem.eql(u8, t, default.table.?)) continue;
+        }
+        if (!std.mem.eql(u8, self.trigger, default.trigger)) continue;
+        if (self.actions.len != default.actions.len) continue;
+        for (self.actions, default.actions) |a, b| {
+            if (!std.mem.eql(u8, a, b)) continue;
+        }
+        if (self.flags.cval() != default.flags.cval()) continue;
+        return true;
+    }
+    return false;
+}
+
+fn configKeybindData(self: *Config) !String {
+    const alloc = global.alloc();
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var defaults = try Config.default(arena);
+    try defaults.finalize();
+    const default_entries = try keybindEntries(arena, defaults.keybind);
+    const current_entries = try keybindEntries(arena, self.keybind);
+
+    var output: std.Io.Writer.Allocating = .init(alloc);
+    errdefer output.deinit();
+    var json: std.json.Stringify = .{ .writer = &output.writer };
+
+    try json.beginObject();
+    try json.objectField("bindings");
+    try json.beginArray();
+    for (current_entries) |entry| {
+        try json.beginObject();
+        try json.objectField("trigger");
+        try json.write(entry.trigger);
+        try json.objectField("actions");
+        try json.beginArray();
+        for (entry.actions) |action| try json.write(action);
+        try json.endArray();
+        try json.objectField("table");
+        try json.write(entry.table);
+        try json.objectField("default");
+        try json.write(keybindEntryIsDefault(entry, default_entries));
+        try json.objectField("flags");
+        try json.beginObject();
+        try json.objectField("all");
+        try json.write(entry.flags.all);
+        try json.objectField("global");
+        try json.write(entry.flags.global);
+        try json.objectField("consumed");
+        try json.write(entry.flags.consumed);
+        try json.objectField("performable");
+        try json.write(entry.flags.performable);
+        try json.endObject();
+        try json.endObject();
+    }
+    try json.endArray();
+
+    try json.objectField("actions");
+    try json.beginArray();
+    @setEvalBranchQuota(100_000);
+    inline for (@typeInfo(inputpkg.Binding.Action).@"union".fields) |field| {
+        // cursor_key bindings cannot be expressed in configuration text
+        // (Action.parse rejects them) so they are not offered.
+        if (field.type == inputpkg.Binding.Action.CursorKey) continue;
+
+        try json.beginObject();
+        try json.objectField("name");
+        try json.write(field.name);
+        try json.objectField("docs");
+        try json.write(if (@hasDecl(help_strings.KeybindAction, field.name))
+            @field(help_strings.KeybindAction, field.name)
+        else
+            "");
+        try json.objectField("parameter");
+        try json.write(switch (field.type) {
+            void => "none",
+            []const u8 => "required",
+            else => parameter: {
+                switch (@typeInfo(field.type)) {
+                    .@"struct", .@"union", .@"enum" => {
+                        if (comptime @hasDecl(field.type, "default")) {
+                            break :parameter "optional";
+                        }
+                    },
+                    else => {},
+                }
+                break :parameter "required";
+            },
+        });
+        try json.endObject();
+    }
+    try json.endArray();
+    try json.endObject();
+
+    return .fromSlice(try output.toOwnedSlice());
+}
+
+fn keybindParseError(alloc: Allocator, message: []const u8) !String {
+    var output: std.Io.Writer.Allocating = .init(alloc);
+    errdefer output.deinit();
+    var json: std.json.Stringify = .{ .writer = &output.writer };
+    try json.beginObject();
+    try json.objectField("ok");
+    try json.write(false);
+    try json.objectField("error");
+    try json.write(message);
+    try json.endObject();
+    return .fromSlice(try output.toOwnedSlice());
+}
+
+fn keybindParse(str: []const u8) !String {
+    const alloc = global.alloc();
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var parser = inputpkg.Binding.Parser.init(str) catch |err| {
+        return keybindParseError(alloc, switch (err) {
+            error.InvalidFormat => "invalid keybind format",
+            error.InvalidAction => "unknown action or invalid action parameter",
+        });
+    };
+
+    var triggers: std.ArrayList([]const u8) = .empty;
+    var actions: std.ArrayList([]const u8) = .empty;
+    var flags: inputpkg.Binding.Flags = .{};
+    var chain = false;
+    while (true) {
+        const elem = parser.next() catch |err| {
+            return keybindParseError(alloc, switch (err) {
+                error.InvalidFormat => "invalid keybind format",
+                error.InvalidAction => "unknown action or invalid action parameter",
+            });
+        } orelse break;
+
+        switch (elem) {
+            .leader => |trigger| {
+                var formatted: std.Io.Writer.Allocating = .init(arena);
+                try formatted.writer.print("{f}", .{trigger});
+                try triggers.append(arena, try arena.dupe(u8, formatted.written()));
+            },
+            .binding => |binding| {
+                var formatted: std.Io.Writer.Allocating = .init(arena);
+                try formatted.writer.print("{f}", .{binding.trigger});
+                try triggers.append(arena, try arena.dupe(u8, formatted.written()));
+                var action: std.Io.Writer.Allocating = .init(arena);
+                try binding.action.format(&action.writer);
+                try actions.append(arena, try arena.dupe(u8, action.written()));
+                flags = binding.flags;
+            },
+            .chain => |action| {
+                chain = true;
+                var formatted: std.Io.Writer.Allocating = .init(arena);
+                try action.format(&formatted.writer);
+                try actions.append(arena, try arena.dupe(u8, formatted.written()));
+            },
+        }
+    }
+
+    if (actions.items.len == 0) {
+        return keybindParseError(alloc, "invalid keybind format");
+    }
+
+    var output: std.Io.Writer.Allocating = .init(alloc);
+    errdefer output.deinit();
+    var json: std.json.Stringify = .{ .writer = &output.writer };
+    try json.beginObject();
+    try json.objectField("ok");
+    try json.write(true);
+    try json.objectField("trigger");
+    try json.write(std.mem.join(arena, ">", triggers.items) catch
+        return error.OutOfMemory);
+    try json.objectField("actions");
+    try json.beginArray();
+    for (actions.items) |action| try json.write(action);
+    try json.endArray();
+    try json.objectField("chain");
+    try json.write(chain);
+    try json.objectField("flags");
+    try json.beginObject();
+    try json.objectField("all");
+    try json.write(flags.all);
+    try json.objectField("global");
+    try json.write(flags.global);
+    try json.objectField("consumed");
+    try json.write(flags.consumed);
+    try json.objectField("performable");
+    try json.write(flags.performable);
+    try json.endObject();
+    try json.endObject();
+    return .fromSlice(try output.toOwnedSlice());
 }
 
 /// Compile a ShaderToy-style GLSL shader file to Metal Shading Language
@@ -404,6 +711,144 @@ test "ghostty_config_editor_data includes effective values and enum options" {
     try testing.expect(std.mem.indexOf(u8, json,
         \\"kind":"text","repeatable":true
     ) != null);
+}
+
+test "ghostty_config_keybind_data: default config" {
+    const testing = std.testing;
+    var cfg = try Config.default(testing.allocator);
+    defer cfg.deinit();
+
+    const data = ghostty_config_keybind_data(&cfg);
+    defer data.deinit();
+    const json = data.ptr.?[0..data.len];
+
+    if (comptime builtin.target.os.tag.isDarwin()) {
+        try testing.expect(std.mem.indexOf(u8, json,
+            \\{"trigger":"super+c","actions":["copy_to_clipboard:mixed"],"table":null,"default":true
+        ) != null);
+    }
+
+    // The action catalog documents payload requirements.
+    try testing.expect(std.mem.indexOf(u8, json,
+        \\{"name":"ignore","docs":
+    ) != null);
+    try testing.expect(std.mem.indexOf(u8, json,
+        \\"parameter":"none"
+    ) != null);
+    try testing.expect(std.mem.indexOf(u8, json,
+        \\"parameter":"required"
+    ) != null);
+    try testing.expect(std.mem.indexOf(u8, json,
+        \\"parameter":"optional"
+    ) != null);
+
+    // cursor_key cannot be set through configuration text.
+    try testing.expect(std.mem.indexOf(u8, json, "\\\"cursor_key\\\"") == null);
+}
+
+test "ghostty_config_keybind_data: user overrides are not defaults" {
+    const testing = std.testing;
+    var cfg = try Config.default(testing.allocator);
+    defer cfg.deinit();
+
+    // Override a default binding and add a brand new one.
+    try cfg.keybind.parseCLI(cfg.arenaAlloc(), "super+c=paste_from_clipboard");
+    try cfg.keybind.parseCLI(cfg.arenaAlloc(), "super+x=new_window");
+    try cfg.keybind.parseCLI(cfg.arenaAlloc(), "ctrl+a>ctrl+b=reset_font_size");
+
+    const data = ghostty_config_keybind_data(&cfg);
+    defer data.deinit();
+    const json = data.ptr.?[0..data.len];
+
+    try testing.expect(std.mem.indexOf(u8, json,
+        \\{"trigger":"super+c","actions":["paste_from_clipboard"],"table":null,"default":false
+    ) != null);
+    try testing.expect(std.mem.indexOf(u8, json,
+        \\{"trigger":"super+x","actions":["new_window"],"table":null,"default":false
+    ) != null);
+    try testing.expect(std.mem.indexOf(u8, json,
+        \\{"trigger":"ctrl+a>ctrl+b","actions":["reset_font_size"],"table":null,"default":false
+    ) != null);
+}
+
+test "ghostty_config_keybind_data: table bindings" {
+    const testing = std.testing;
+    var cfg = try Config.default(testing.allocator);
+    defer cfg.deinit();
+
+    try cfg.keybind.parseCLI(cfg.arenaAlloc(), "mytable/a=text:hello");
+
+    const data = ghostty_config_keybind_data(&cfg);
+    defer data.deinit();
+    const json = data.ptr.?[0..data.len];
+
+    try testing.expect(std.mem.indexOf(u8, json,
+        \\{"trigger":"a","actions":["text:hello"],"table":"mytable","default":false
+    ) != null);
+}
+
+fn keybindParseTest(str: []const u8) String {
+    return ghostty_keybind_parse(str.ptr, str.len);
+}
+
+test "ghostty_keybind_parse: valid bindings canonicalize" {
+    const testing = std.testing;
+
+    {
+        const result = keybindParseTest("cmd+shift+c=copy_to_clipboard");
+        defer result.deinit();
+        const json = result.ptr.?[0..result.len];
+        try testing.expect(std.mem.indexOf(u8, json,
+            \\{"ok":true,"trigger":"super+shift+c","actions":["copy_to_clipboard:mixed"],"chain":false
+        ) != null);
+    }
+    {
+        const result = keybindParseTest("ctrl+a>ctrl+b=goto_tab:2");
+        defer result.deinit();
+        const json = result.ptr.?[0..result.len];
+        try testing.expect(std.mem.indexOf(u8, json,
+            \\{"ok":true,"trigger":"ctrl+a>ctrl+b","actions":["goto_tab:2"],"chain":false
+        ) != null);
+    }
+    {
+        const result = keybindParseTest(
+            "global:unconsumed:ctrl+shift+t=new_window",
+        );
+        defer result.deinit();
+        const json = result.ptr.?[0..result.len];
+        try testing.expect(std.mem.indexOf(u8, json,
+            \\"flags":{"all":false,"global":true,"consumed":false,"performable":false}
+        ) != null);
+    }
+}
+
+test "ghostty_keybind_parse: invalid bindings report errors" {
+    const testing = std.testing;
+
+    {
+        const result = keybindParseTest("ctrl+a");
+        defer result.deinit();
+        const json = result.ptr.?[0..result.len];
+        try testing.expect(std.mem.indexOf(u8, json,
+            \\{"ok":false,"error":"invalid keybind format"}
+        ) != null);
+    }
+    {
+        const result = keybindParseTest("ctrl+a=not_an_action");
+        defer result.deinit();
+        const json = result.ptr.?[0..result.len];
+        try testing.expect(std.mem.indexOf(u8, json,
+            \\{"ok":false,"error":"unknown action or invalid action parameter"}
+        ) != null);
+    }
+    {
+        const result = keybindParseTest("");
+        defer result.deinit();
+        const json = result.ptr.?[0..result.len];
+        try testing.expect(std.mem.indexOf(u8, json,
+            \\{"ok":false,"error":"invalid keybind format"}
+        ) != null);
+    }
 }
 
 test "ghostty_config_trigger: default keybind" {

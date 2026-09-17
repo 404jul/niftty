@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 
 struct SettingsFileEditor {
@@ -126,9 +127,21 @@ final class SettingsModel: ObservableObject {
     private var legacyValues: [String: String] = [:]
     private var pendingValues: [String: String] = [:]
     private var restoredDefaults: Set<String> = []
+    private var keybindsCancellable: AnyCancellable?
+
+    /// The model for the dedicated Keybinds page. Owned here so its edits
+    /// participate in the shared Apply / unsaved-changes flow.
+    let keybinds: KeybindsModel
 
     init(appDelegate: AppDelegate) {
         self.appDelegate = appDelegate
+        self.keybinds = KeybindsModel(appDelegate: appDelegate)
+
+        // Row edits inside the keybinds page must recompute the enabled
+        // state of the shared Apply button.
+        keybindsCancellable = keybinds.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
     }
 
     var configPath: String { appDelegate?.ghostty.configFilePath ?? "" }
@@ -138,13 +151,18 @@ final class SettingsModel: ObservableObject {
     }
 
     /// Categories for the sidebar: row categories plus the dedicated
-    /// Shaders page.
+    /// Shaders and Keybinds pages.
     var sidebarCategories: [String] {
         var result = categories
         if let idx = result.firstIndex(of: "Appearance") {
             result.insert("Shaders", at: idx + 1)
         } else {
             result.append("Shaders")
+        }
+        if let idx = result.firstIndex(of: "Input") {
+            result.insert("Keybinds", at: idx + 1)
+        } else {
+            result.append("Keybinds")
         }
         return result
     }
@@ -195,7 +213,7 @@ final class SettingsModel: ObservableObject {
             pendingValues[name] = value
         }
         hasUnsavedChanges = !pendingValues.isEmpty || !legacyValues.isEmpty ||
-            !restoredDefaults.isEmpty
+            !restoredDefaults.isEmpty || keybinds.hasChanges
     }
 
     func isModified(_ name: String) -> Bool {
@@ -216,11 +234,17 @@ final class SettingsModel: ObservableObject {
     func reload() {
         guard let appDelegate else { return }
         do {
+            // The raw `keybind` row is replaced by the dedicated Keybinds
+            // page, which owns that setting's lines.
             let metadata = try appDelegate.ghostty.config.editorSettings()
+                .filter { $0.name != "keybind" }
             let text = try String(contentsOfFile: appDelegate.ghostty.configFilePath, encoding: .utf8)
             legacyValues = SettingsFileEditor.legacyOverrides(in: text)
+            // Legacy-block keybind lines are owned by the Keybinds page;
+            // they are only migrated on save when that page has edits.
             pendingValues.removeAll()
             restoredDefaults.removeAll()
+            keybinds.reload()
             rows = metadata.map { setting in
                 Row(
                     metadata: setting,
@@ -230,7 +254,7 @@ final class SettingsModel: ObservableObject {
             if !sidebarCategories.contains(selectedCategory) {
                 selectedCategory = sidebarCategories.first ?? "Appearance"
             }
-            hasUnsavedChanges = !legacyValues.isEmpty
+            hasUnsavedChanges = !legacyValues.isEmpty || keybinds.hasChanges
             error = nil
         } catch {
             self.error = error.localizedDescription
@@ -261,11 +285,26 @@ final class SettingsModel: ObservableObject {
             for name in restoredDefaults {
                 values.removeValue(forKey: name)
             }
+            var removeNames = restoredDefaults
+
+            // Keybind edits from the dedicated page. The page preserves
+            // untouched raw lines verbatim in its value, so user spellings
+            // (e.g. cmd vs super) survive. An empty result removes every
+            // keybind line, restoring the built-in defaults.
+            if let keybindLines = keybinds.pendingLines() {
+                legacyValues.removeValue(forKey: "keybind")
+                if keybindLines.isEmpty {
+                    removeNames.insert("keybind")
+                } else {
+                    values["keybind"] = keybindLines.joined(separator: "\n")
+                }
+            }
+
             let updated = SettingsFileEditor.replacingSettings(
                 in: existing,
                 values: values,
                 orderedNames: rows.map(\.id),
-                removeNames: restoredDefaults)
+                removeNames: removeNames)
 
             try updated.write(toFile: path, atomically: true, encoding: .utf8)
             appDelegate.ghostty.reloadConfig()

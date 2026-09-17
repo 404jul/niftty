@@ -1153,6 +1153,8 @@ GHOSTTY_API uint32_t ghostty_config_diagnostics_count(ghostty_config_t);
 GHOSTTY_API ghostty_diagnostic_s ghostty_config_get_diagnostic(ghostty_config_t, uint32_t);
 GHOSTTY_API ghostty_string_s ghostty_config_open_path(void);
 GHOSTTY_API ghostty_string_s ghostty_config_editor_data(ghostty_config_t);
+GHOSTTY_API ghostty_string_s ghostty_config_keybind_data(ghostty_config_t);
+GHOSTTY_API ghostty_string_s ghostty_keybind_parse(const char*, uintptr_t);
 GHOSTTY_API ghostty_string_s ghostty_shader_msl(const char* path);
 
 GHOSTTY_API ghostty_app_t ghostty_app_new(const ghostty_runtime_config_s*,

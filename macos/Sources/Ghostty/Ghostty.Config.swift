@@ -18,6 +18,60 @@ extension Ghostty {
         var id: String { name }
     }
 
+    /// A single effective keybinding as reported by the C API. The trigger is
+    /// in canonical Ghostty syntax (sequences joined with `>`); actions are
+    /// full action strings including any parameter (e.g. `goto_tab:2`).
+    struct Keybinding: Decodable, Equatable {
+        struct Flags: Decodable, Equatable {
+            var all: Bool = false
+            var global: Bool = false
+            var consumed: Bool = true
+            var performable: Bool = false
+        }
+
+        let trigger: String
+        let actions: [String]
+        let table: String?
+        let `default`: Bool
+        let flags: Flags
+
+        /// Identity within a keybind set: table name plus trigger.
+        var key: String {
+            if let table { return table + "/" + trigger }
+            return trigger
+        }
+    }
+
+    /// An entry in the catalog of bindable actions.
+    struct KeybindActionInfo: Decodable, Identifiable {
+        let name: String
+        let docs: String
+        let parameter: String
+
+        var id: String { name }
+
+        var summary: String {
+            docs.components(separatedBy: "\n\n").first ?? ""
+        }
+    }
+
+    /// The full keybinding state for the graphical editor.
+    struct KeybindEditorData: Decodable {
+        let bindings: [Keybinding]
+        let actions: [KeybindActionInfo]
+    }
+
+    /// The result of validating one `keybind =` line value through the real
+    /// Ghostty parser.
+    struct KeybindParseResult: Decodable {
+        let ok: Bool
+        var trigger: String?
+        var actions: [String]?
+        var chain: Bool?
+        var flags: Keybinding.Flags?
+        var error: String?
+    }
+
     /// Maps to a `ghostty_config_t` and the various operations on that.
     class Config: ObservableObject {
         // The underlying C pointer to the Ghostty config structure. This
@@ -126,6 +180,38 @@ extension Ghostty {
             return try JSONDecoder().decode(
                 [ConfigEditorSetting].self,
                 from: Data(json.utf8))
+        }
+
+        /// Return the effective keybindings and the action catalog for the
+        /// graphical keybinds editor.
+        func keybindData() throws -> KeybindEditorData {
+            guard let config else {
+                return KeybindEditorData(bindings: [], actions: [])
+            }
+            let json = AllocatedString(ghostty_config_keybind_data(config)).string
+            return try JSONDecoder().decode(
+                KeybindEditorData.self,
+                from: Data(json.utf8))
+        }
+
+        /// Validate one `keybind =` line value (trigger and action) through
+        /// the real Ghostty parser. Returns the canonical form on success or
+        /// a user-presentable error.
+        static func parseKeybindLine(_ line: String) -> KeybindParseResult {
+            let bytes = Array(line.utf8)
+            guard let base = bytes.withUnsafeBufferPointer({ $0.baseAddress }) else {
+                return KeybindParseResult(ok: false, error: "invalid keybind format")
+            }
+            let result = AllocatedString(ghostty_keybind_parse(
+                base,
+                UInt(bytes.count))).string
+            guard let decoded = try? JSONDecoder().decode(
+                KeybindParseResult.self,
+                from: Data(result.utf8))
+            else {
+                return KeybindParseResult(ok: false, error: "unable to validate keybind")
+            }
+            return decoded
         }
 
         // MARK: - Keybindings

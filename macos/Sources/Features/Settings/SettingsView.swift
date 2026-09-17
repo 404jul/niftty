@@ -23,16 +23,14 @@ struct SettingsView: View {
                             ? model.selectedCategory
                             : "Search Results")
                             .font(.title2.bold())
-                        Text(model.search.isEmpty
-                            ? "\(model.filteredRows.count) settings"
-                            : "\(model.filteredRows.count) settings in \(model.searchResultsByCategory.count) categories")
+                        Text(subtitle)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
                     Button("Open Config File") { model.openConfigFile() }
                     Button("Apply") { model.save() }
                         .buttonStyle(.borderedProminent)
-                        .disabled(!model.hasUnsavedChanges)
+                        .disabled(!model.hasUnsavedChanges || model.keybinds.hasInvalidRows)
                 }
                 .padding()
 
@@ -40,6 +38,8 @@ struct SettingsView: View {
 
                 if model.search.isEmpty && model.selectedCategory == "Shaders" {
                     ShadersPage(model: model)
+                } else if model.search.isEmpty && model.selectedCategory == "Keybinds" {
+                    KeybindsPage(model: model.keybinds)
                 } else {
                     if let error = model.error {
                         HStack {
@@ -96,12 +96,23 @@ struct SettingsView: View {
         .frame(minWidth: 800, minHeight: 560)
     }
 
+    private var subtitle: String {
+        if !model.search.isEmpty {
+            return "\(model.filteredRows.count) settings in \(model.searchResultsByCategory.count) categories"
+        }
+        if model.selectedCategory == "Keybinds" {
+            return "\(model.keybinds.rows.count) bindings"
+        }
+        return "\(model.filteredRows.count) settings"
+    }
+
     private func icon(for category: String) -> String {
         switch category {
         case "Appearance": "paintbrush"
         case "Clipboard": "clipboard"
         case "Font": "textformat"
         case "Input": "keyboard"
+        case "Keybinds": "capslock"
         case "Linux": "desktopcomputer"
         case "macOS": "apple.logo"
         case "Shell": "terminal"
