@@ -17,7 +17,7 @@ const global = @import("../global.zig");
 const log = std.log.scoped(.ssh);
 
 const usage =
-    \\Usage: ghostty +ssh [flags] [--] <ssh args...>
+    \\Usage: niftty ++ssh [flags] [--] <ssh args...>
     \\
     \\Flags:
     \\  --forward-env[=bool]  Enable TERM / SendEnv forwarding. Default: true.
@@ -122,10 +122,10 @@ pub const Options = struct {
 /// This is typically called by every supported Ghostty shell integration.
 /// Each shell defines an `ssh` function that runs:
 ///
-///     ghostty +ssh <flags> -- "$@"
+///     niftty ++ssh <flags> -- "$@"
 ///
-/// You can also run `ghostty +ssh` directly, or alias it yourself (e.g.
-/// `alias ssh='ghostty +ssh --'`) if you prefer not to use the shell
+/// You can also run `niftty ++ssh` directly, or alias it yourself (e.g.
+/// `alias ssh='niftty ++ssh --'`) if you prefer not to use the shell
 /// integration.
 ///
 /// `+ssh` also keeps one connection-scoped control socket for uploads.
@@ -185,7 +185,7 @@ pub const Options = struct {
 ///     When `false`, both the cache read (skip-if-installed) and the
 ///     cache write (record-on-success) are bypassed, and every
 ///     connection performs the install. To one-shot reinstall a single
-///     host while keeping the cache in use, prefer `ghostty +ssh-cache
+///     host while keeping the cache in use, prefer `niftty ++ssh-cache
 ///     --remove=<host>` followed by a normal connection.
 ///
 ///   * `--ssh=<path>`: Path to the `ssh` binary to execute. Default: the
@@ -197,19 +197,19 @@ pub const Options = struct {
 /// Examples:
 ///
 ///     # Basic invocation using defaults:
-///     ghostty +ssh user@example.com
+///     niftty ++ssh user@example.com
 ///
 ///     # Forward Ghostty env vars but skip the terminfo install:
-///     ghostty +ssh --terminfo=false user@example.com
+///     niftty ++ssh --terminfo=false user@example.com
 ///
 ///     # `ssh` flags (short-form `-p`, etc.) pass through unchanged:
-///     ghostty +ssh -p 2222 -i ~/.ssh/id_ed25519 user@example.com
+///     niftty ++ssh -p 2222 -i ~/.ssh/id_ed25519 user@example.com
 ///
 ///     # Use `--` explicitly if your ssh args might collide with our flags:
-///     ghostty +ssh -- --some-rare-ssh-arg user@example.com
+///     niftty ++ssh -- --some-rare-ssh-arg user@example.com
 ///
 /// Pass `--verbose` to see what `+ssh` is doing. For cache inspection
-/// and management, see `ghostty +ssh-cache`.
+/// and management, see `niftty ++ssh-cache`.
 ///
 /// Available since: 1.4.0
 pub fn run(alloc_gpa: Allocator) !u8 {
@@ -283,7 +283,7 @@ fn runInner(
 
         const cache: ?DiskCache = if (opts.cache) cache: {
             const path = DiskCache.defaultPath(alloc, "niftty") catch |err| {
-                warnPrint(stderr, "ghostty terminfo cache unavailable: {t}", .{err});
+                warnPrint(stderr, "niftty +terminfo cache unavailable: {t}", .{err});
                 break :session .{ .term = "xterm-256color" };
             };
             break :cache .{ .path = path };
@@ -313,7 +313,7 @@ fn runInner(
             verbosePrint(opts, stderr, "dest: {s} (cache disabled, will install)", .{dest});
         }
 
-        stderr.print("Setting up xterm-ghostty terminfo on {s}...\n", .{dest}) catch {};
+        stderr.print("Setting up xterm-niftty +terminfo on {s}...\n", .{dest}) catch {};
         stderr.flush() catch {};
 
         installRemoteTerminfo(alloc, opts, stderr) catch |err| {
@@ -655,21 +655,22 @@ fn installRemoteTerminfo(
 
 fn controlOpts(alloc: Allocator, mux: ssh_mux.Session) ![]const []const u8 {
     const path_opt = try std.fmt.allocPrint(alloc, "ControlPath={s}", .{mux.control_path});
+    // The option list must be owned by `alloc`: an anonymous array literal
+    // containing `path_opt` would be stack-allocated in this frame, and the
+    // returned pointer would dangle the moment we return.
     return switch (mux.role) {
-        .client => &.{
-            "-o", "ControlMaster=auto",
-            "-o", path_opt,
-        },
-        .master => &.{
-            "-o", "ControlMaster=auto",
-            "-o", "ControlPersist=yes",
-            "-o", path_opt,
-        },
-        .legacy => &.{
-            "-o", "ControlMaster=yes",
-            "-o", "ControlPersist=no",
-            "-o", path_opt,
-        },
+        .client => try std.mem.concat(alloc, []const u8, &.{
+            &.{ "-o", "ControlMaster=auto" },
+            &.{ "-o", path_opt },
+        }),
+        .master => try std.mem.concat(alloc, []const u8, &.{
+            &.{ "-o", "ControlMaster=auto", "-o", "ControlPersist=yes" },
+            &.{ "-o", path_opt },
+        }),
+        .legacy => try std.mem.concat(alloc, []const u8, &.{
+            &.{ "-o", "ControlMaster=yes", "-o", "ControlPersist=no" },
+            &.{ "-o", path_opt },
+        }),
     };
 }
 

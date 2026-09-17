@@ -123,6 +123,18 @@ pub fn init(opts: InitOpts) !void {
     // Discover and save the temporary directory path
     self.tmp_dir_path = try allocTmpDir(self.alloc, self.environ);
 
+    // Promote the bare command alias (`niftty ssh ...` → `niftty +ssh ...`)
+    // before action detection so every downstream parser sees the
+    // canonical `+` form. Tool binaries have their own command namespace.
+    self.args = switch (opts) {
+        .main, .c => try cli.action.promoteBareCommand(
+            cli.ghostty.Action,
+            self.alloc,
+            self.args,
+        ),
+        .tool => self.args,
+    };
+
     // We first try to parse any action that we may be executing.
     // Tool binaries (ghostty-bench, ghostty-gen) have their own action
     // namespace and detect their own actions, so we skip detection here.

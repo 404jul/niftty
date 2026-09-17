@@ -51,13 +51,13 @@ pub const Options = struct {
 ///
 /// Examples:
 ///
-///     ghostty +ssh-cache                           # List all cached destinations
-///     ghostty +ssh-cache user@example.com          # Show that destination
-///     ghostty +ssh-cache example.com               # Show all users on that host
-///     ghostty +ssh-cache --add=user@example.com    # Manually add a destination
-///     ghostty +ssh-cache --remove=user@example.com # Remove a destination
-///     ghostty +ssh-cache --prune=30d               # Remove entries older than 30 days
-///     ghostty +ssh-cache --clear                   # Clear entire cache
+///     niftty ++ssh-cache                           # List all cached destinations
+///     niftty ++ssh-cache user@example.com          # Show that destination
+///     niftty ++ssh-cache example.com               # Show all users on that host
+///     niftty ++ssh-cache --add=user@example.com    # Manually add a destination
+///     niftty ++ssh-cache --remove=user@example.com # Remove a destination
+///     niftty ++ssh-cache --prune=30d               # Remove entries older than 30 days
+///     niftty ++ssh-cache --clear                   # Clear entire cache
 pub fn run(alloc_gpa: Allocator) !u8 {
     var arena = std.heap.ArenaAllocator.init(alloc_gpa);
     defer arena.deinit();
@@ -91,7 +91,7 @@ pub fn run(alloc_gpa: Allocator) !u8 {
             if (is_host_flag) {
                 try stderr.print(
                     "Warning: --host is deprecated; pass the destination " ++
-                        "directly, e.g. `ghostty +ssh-cache {s}`.\n",
+                        "directly, e.g. `niftty ++ssh-cache {s}`.\n",
                     .{arg["--host=".len..]},
                 );
             }

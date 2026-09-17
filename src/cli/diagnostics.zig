@@ -96,7 +96,7 @@ pub const DiagnosticList = struct {
     list: std.ArrayList(Diagnostic) = .empty,
 
     /// Precomputed data for diagnostics. This is used specifically
-    /// when we build libghostty so that we can precompute the messages
+    /// when we build libniftty +so that we can precompute the messages
     /// and return them via the C API without allocating memory at
     /// call time.
     precompute: Precompute = precompute_init,

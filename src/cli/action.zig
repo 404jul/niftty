@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 
 pub const DetectError = error{
@@ -76,6 +77,98 @@ pub fn SpecialCase(comptime E: type) type {
         /// a special case to allow "-e" in Ghostty.
         abort_if_no_action,
     };
+}
+
+/// Promote the bare command alias `niftty <command>` to the canonical
+/// `niftty +<command>` form so that all downstream parsing (action
+/// detection, per-action option parsing) sees one shape.
+///
+/// Only the first argument is considered, and only if it is a bare word
+/// that exactly names an action. Anything else — flags, config files,
+/// `-e`, an explicit `+action` — is returned unchanged so existing
+/// semantics are preserved.
+///
+/// The returned `Args` references memory allocated from `alloc` that is
+/// intentionally leaked: process args live for the lifetime of the
+/// process.
+pub fn promoteBareCommand(
+    comptime E: type,
+    alloc: Allocator,
+    args: std.process.Args,
+) Allocator.Error!std.process.Args {
+    switch (builtin.os.tag) {
+        // Unsupported vector shapes: Windows is WTF-16 encoded, WASI
+        // without libc has no vector, freestanding has no args.
+        .windows, .freestanding => return args,
+        .wasi => if (!builtin.link_libc) return args,
+        else => {},
+    }
+
+    if (args.vector.len < 2) return args;
+    const first = std.mem.span(args.vector[1]);
+
+    // Only a bare word (no leading dash or plus) can be promoted.
+    if (first.len == 0 or first[0] == '-' or first[0] == '+') return args;
+
+    // Only a bare word that names an action is promoted; anything else
+    // (e.g. a config file path) keeps its existing meaning.
+    if (std.meta.stringToEnum(E, first) == null) return args;
+
+    const plus = try std.fmt.allocPrintSentinel(alloc, "+{s}", .{first}, 0);
+    const copy = try alloc.dupe([*:0]const u8, args.vector);
+    copy[1] = plus.ptr;
+    return .{ .vector = copy };
+}
+
+test "promoteBareCommand promotes bare action" {
+    const testing = std.testing;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const Enum = enum { foo, bar };
+    const args: std.process.Args = .{ .vector = &.{ "prog", "foo", "--a=1" } };
+
+    const promoted = try promoteBareCommand(Enum, arena.allocator(), args);
+    try testing.expectEqual(@as(usize, 3), promoted.vector.len);
+    try testing.expectEqualStrings("+foo", std.mem.span(promoted.vector[1]));
+    try testing.expectEqual(args.vector[0], promoted.vector[0]);
+    try testing.expectEqual(args.vector[2], promoted.vector[2]);
+}
+
+test "promoteBareCommand leaves non-bare args unchanged" {
+    const testing = std.testing;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const Enum = enum { foo, bar };
+
+    // Explicit action.
+    {
+        const args: std.process.Args = .{ .vector = &.{ "prog", "+foo" } };
+        const result = try promoteBareCommand(Enum, arena.allocator(), args);
+        try testing.expectEqual(args.vector, result.vector);
+    }
+
+    // Flags first.
+    {
+        const args: std.process.Args = .{ .vector = &.{ "prog", "-e", "foo" } };
+        const result = try promoteBareCommand(Enum, arena.allocator(), args);
+        try testing.expectEqual(args.vector, result.vector);
+    }
+
+    // Unknown word (e.g. a config file).
+    {
+        const args: std.process.Args = .{ .vector = &.{ "prog", "config" } };
+        const result = try promoteBareCommand(Enum, arena.allocator(), args);
+        try testing.expectEqual(args.vector, result.vector);
+    }
+
+    // No args beyond argv0.
+    {
+        const args: std.process.Args = .{ .vector = &.{"prog"} };
+        const result = try promoteBareCommand(Enum, arena.allocator(), args);
+        try testing.expectEqual(args.vector, result.vector);
+    }
 }
 
 test "detect direct match" {

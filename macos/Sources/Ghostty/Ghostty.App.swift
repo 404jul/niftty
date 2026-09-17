@@ -316,10 +316,44 @@ extension Ghostty {
             guard let surface = surfaceView.surface else {
                 return GHOSTTY_CLIPBOARD_READ_UNSUPPORTED
             }
+            var requestedMimes: [String] = []
+            var seen = Set<String>()
+            if let mimes {
+                for i in 0..<mimesLen {
+                    guard let ptr = mimes[i] else { continue }
+                    let mime = String(cString: ptr)
+                    guard seen.insert(mime).inserted else { continue }
+                    requestedMimes.append(mime)
+                }
+            }
 
             // Get our pasteboard
             guard let pasteboard = NSPasteboard.ghostty(location) else {
                 return GHOSTTY_CLIPBOARD_READ_UNSUPPORTED
+            }
+
+            // Clipboard reads are the shared paste path for keybindings, menu
+            // actions, and context menus. For a managed SSH session, upload a
+            // local clipboard image before completing the original paste with
+            // its remote path. A mode-5522 MIME listing remains untouched so
+            // clients that support rich clipboard events receive image bytes.
+            if location == GHOSTTY_CLIPBOARD_STANDARD,
+               !list,
+               requestedMimes.contains("text/plain"),
+               surfaceView.uploadClipboardImageToSSH(completion: { [weak surfaceView] text in
+                   guard let surfaceView,
+                         let currentSurface = surfaceView.surface,
+                         currentSurface == surface else { return }
+                   let contents: [Ghostty.ClipboardContent] = text.map {
+                       [.init(mime: "text/plain", data: Data($0.utf8))]
+                   } ?? []
+                   completeClipboardRequest(
+                       currentSurface,
+                       contents: contents,
+                       available: [],
+                       state: state)
+               }) {
+                return GHOSTTY_CLIPBOARD_READ_STARTED
             }
 
             // Gather the representation for each requested MIME type that
@@ -327,16 +361,9 @@ extension Ghostty {
             // representations so unrelated (potentially large) clipboard
             // contents are never loaded.
             var contents: [Ghostty.ClipboardContent] = []
-            var seen = Set<String>()
-            if let mimes {
-                for i in 0..<mimesLen {
-                    guard let ptr = mimes[i] else { continue }
-                    let mime = String(cString: ptr)
-                    guard !seen.contains(mime) else { continue }
-                    seen.insert(mime)
-                    guard let data = pasteboard.ghosttyData(forMime: mime) else { continue }
-                    contents.append(.init(mime: mime, data: data))
-                }
+            for mime in requestedMimes {
+                guard let data = pasteboard.ghosttyData(forMime: mime) else { continue }
+                contents.append(.init(mime: mime, data: data))
             }
 
             // The listing of available types, only gathered when requested.

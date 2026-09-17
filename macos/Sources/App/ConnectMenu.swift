@@ -272,8 +272,7 @@ final class ConnectMenuController: NSObject, NSMenuDelegate {
             let updated = SettingsFileEditor.replacingSettings(
                 in: existing,
                 values: ["ssh-menu-use-niftty": newValue ? "true" : "false"],
-                orderedNames: [],
-                repeatableNames: [])
+                orderedNames: [])
             try updated.write(toFile: path, atomically: true, encoding: .utf8)
             ghostty.reloadConfig()
             sender.state = newValue ? .on : .off

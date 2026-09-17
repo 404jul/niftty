@@ -31,8 +31,7 @@ struct SettingsFileEditor {
     static func replacingSettings(
         in text: String,
         values: [String: String],
-        orderedNames: [String],
-        repeatableNames: Set<String>
+        orderedNames: [String]
     ) -> String {
         var lines = text.components(separatedBy: "\n")
         if let begin = lines.firstIndex(of: beginMarker),
@@ -48,13 +47,14 @@ struct SettingsFileEditor {
         let extras = values.keys.filter { !orderedNames.contains($0) }.sorted()
         for name in known + extras {
             guard let value = values[name] else { continue }
-            var replacement: [String] = repeatableNames.contains(name) ? ["\(name) ="] : []
-            replacement += value.components(separatedBy: "\n")
+            let items = value.components(separatedBy: "\n")
                 .filter { !$0.isEmpty }
-                .map { "\(name) = \($0)" }
-            if replacement.isEmpty {
-                replacement = ["\(name) ="]
-            }
+            // Value lines append (repeatables may appear multiple times). An
+            // empty value writes one explicit reset (`name =`), which clears
+            // repeatable lists and unsets plain keys.
+            let replacement = items.isEmpty
+                ? ["\(name) ="]
+                : items.map { "\(name) = \($0)" }
 
             var firstMatch: Int?
             var index = 0
@@ -73,6 +73,9 @@ struct SettingsFileEditor {
             }
 
             if firstMatch == nil {
+                // Clearing a name that has no occurrence in this file: nothing
+                // to clear, so write nothing.
+                guard !items.isEmpty else { continue }
                 if lines.last?.isEmpty == false { lines.append("") }
                 lines.append(contentsOf: replacement)
             }
@@ -239,8 +242,7 @@ final class SettingsModel: ObservableObject {
             let updated = SettingsFileEditor.replacingSettings(
                 in: existing,
                 values: values,
-                orderedNames: rows.map(\.id),
-                repeatableNames: Set(rows.filter { $0.metadata.repeatable }.map(\.id)))
+                orderedNames: rows.map(\.id))
 
             try updated.write(toFile: path, atomically: true, encoding: .utf8)
             appDelegate.ghostty.reloadConfig()

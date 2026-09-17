@@ -24,15 +24,44 @@ struct SettingsFileEditorTests {
                 "font-family": "Menlo\nMonaco",
                 "theme": "dark",
             ],
-            orderedNames: ["font-size", "font-family", "theme"],
-            repeatableNames: ["font-family"])
+            orderedNames: ["font-size", "font-family", "theme"])
 
         #expect(updated.contains("# Hand-written setting\nfont-size = 18"))
-        #expect(updated.contains("font-family =\nfont-family = Menlo\nfont-family = Monaco"))
+        #expect(updated.contains("font-family = Menlo\nfont-family = Monaco"))
         #expect(updated.contains("theme = dark"))
         #expect(!updated.contains(SettingsFileEditor.beginMarker))
         #expect(!updated.contains("This block is maintained"))
         #expect(updated.components(separatedBy: "\n").filter { $0 == "font-size = 18" }.count == 1)
+    }
+
+    @Test func emptyValueClearsInPlaceButNeverAppendsResetNoise() {
+        // Clearing a name that exists collapses it to a single reset line.
+        let withOccurrence = """
+        # Appearance
+        theme = Flexoki Dark
+
+        custom-shader = /tmp/a.glsl
+        """
+        let cleared = SettingsFileEditor.replacingSettings(
+            in: withOccurrence,
+            values: ["custom-shader": ""],
+            orderedNames: ["theme", "custom-shader"])
+        #expect(cleared == """
+        # Appearance
+        theme = Flexoki Dark
+
+        custom-shader =
+        """)
+
+        // Clearing a name that does not exist writes nothing.
+        let withoutOccurrence = """
+        theme = Flexoki Dark
+        """
+        let untouched = SettingsFileEditor.replacingSettings(
+            in: withoutOccurrence,
+            values: ["custom-shader": ""],
+            orderedNames: ["theme", "custom-shader"])
+        #expect(untouched == "theme = Flexoki Dark")
     }
 
     @Test func duplicateScalarSettingsCollapseAtTheirOriginalPosition() {
@@ -49,8 +78,7 @@ struct SettingsFileEditorTests {
         let updated = SettingsFileEditor.replacingSettings(
             in: original,
             values: ["theme": "0x96f", "background-opacity": "0.95"],
-            orderedNames: ["theme", "background-opacity"],
-            repeatableNames: [])
+            orderedNames: ["theme", "background-opacity"])
 
         #expect(updated == """
         # Appearance

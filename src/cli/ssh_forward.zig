@@ -9,11 +9,11 @@ const ssh_session = @import("ssh_session.zig");
 const ssh_tunnel = @import("ssh_tunnel.zig");
 
 const usage =
-    \\Usage: ghostty +ssh-forward --pid=<pid> [--list]
-    \\       ghostty +ssh-forward --pid=<pid> --add [--local=<port>] --remote=<port>
-    \\       ghostty +ssh-forward --pid=<pid> --cancel [--local=<port>] --remote=<port>
+    \\Usage: niftty ++ssh-forward --pid=<pid> [--list]
+    \\       niftty ++ssh-forward --pid=<pid> --add [--local=<port>] --remote=<port>
+    \\       niftty ++ssh-forward --pid=<pid> --cancel [--local=<port>] --remote=<port>
     \\
-    \\List, add, or close loopback tunnels on an active `ghostty +ssh` session.
+    \\List, add, or close loopback tunnels on an active `niftty ++ssh` session.
     \\`--pid` is the foreground `+ssh` process. List output is tab-separated:
     \\  D <destination>
     \\  T <local-host> <local-port> <remote-host> <remote-port>
@@ -41,7 +41,7 @@ pub const Options = struct {
 };
 
 /// List, add, or cancel local forwards on the multiplexed connection owned
-/// by an active `ghostty +ssh` process.
+/// by an active `niftty ++ssh` process.
 ///
 /// This action is normally launched by Ghostty's macOS SSH Ports panel.
 /// `--pid` identifies the foreground `+ssh` process. `--list` is the default

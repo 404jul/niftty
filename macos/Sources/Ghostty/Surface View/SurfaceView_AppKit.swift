@@ -224,7 +224,6 @@ extension Ghostty {
         private var sshUploadProcess: Process?
         private var sshUploadOutput = Data()
 
-
         // This is the title from the terminal. This is nil if we're currently using
         // the terminal title as the main title property. If the title is set manually
         // by the user, this is set to the prior value (which may be empty, but non-nil).
@@ -2426,13 +2425,92 @@ extension Ghostty.SurfaceView {
         SSHSessionStore.isActive(pid: pid)
     }
 
-    private func startSSHUpload(paths: [String], remoteDirectory: String, pid: Int) {
+    /// Uploads a clipboard image to `/tmp` on the active managed SSH session.
+    /// This is called from the clipboard read callback so keyboard shortcuts,
+    /// menu actions, and context-menu pastes all use the same path.
+    func uploadClipboardImageToSSH(
+        completion: @escaping (String?) -> Void
+    ) -> Bool {
+        guard let pid = surfaceModel?.foregroundPID,
+              hasActiveSSHSession(pid: pid) else { return false }
+
+        let pasteboard = NSPasteboard.general
+        guard let image = clipboardImage(from: pasteboard) else { return false }
+        guard let tiff = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff),
+              let png = bitmap.representation(using: .png, properties: [:]) else {
+            showSSHUploadFailure("Could not prepare the clipboard image")
+            completion(nil)
+            return true
+        }
+        guard png.count <= 10 * 1024 * 1024 else {
+            showSSHUploadFailure("Clipboard image exceeds 10 MB")
+            completion(nil)
+            return true
+        }
+
+        let filename = "niftty-clipboard-\(UUID().uuidString.lowercased()).png"
+        let localURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(filename, isDirectory: false)
+        do {
+            try png.write(to: localURL, options: .atomic)
+        } catch {
+            showSSHUploadFailure("Could not save the clipboard image: \(error.localizedDescription)")
+            completion(nil)
+            return true
+        }
+
+        let remotePath = "/tmp/\(filename)"
+        startSSHUpload(
+            paths: [localURL.path],
+            remoteDirectory: "/tmp",
+            pid: pid
+        ) { [weak self] succeeded in
+            try? FileManager.default.removeItem(at: localURL)
+            guard succeeded,
+                  let self,
+                  self.surfaceModel?.foregroundPID == pid,
+                  self.hasActiveSSHSession(pid: pid) else {
+                completion(nil)
+                return
+            }
+            completion(Ghostty.Shell.escape(remotePath))
+        }
+        return true
+    }
+
+    private func clipboardImage(from pasteboard: NSPasteboard) -> NSImage? {
+        if let image = NSImage(pasteboard: pasteboard) {
+            return image
+        }
+
+        for item in pasteboard.pasteboardItems ?? [] {
+            guard let plist = item.propertyList(forType: .fileURL),
+                  let url = NSURL(
+                      pasteboardPropertyList: plist,
+                      ofType: .fileURL
+                  ) as URL?,
+                  url.isFileURL,
+                  let image = NSImage(contentsOf: url) else { continue }
+            return image
+        }
+        return nil
+    }
+
+    private func startSSHUpload(
+        paths: [String],
+        remoteDirectory: String,
+        pid: Int,
+        completion: @escaping (Bool) -> Void = { _ in }
+    ) {
         guard sshUploadProcess?.isRunning != true else {
             showSSHUploadFailure("An upload is already running")
+            completion(false)
             return
         }
         guard let executable = Bundle.main.executableURL else {
             showSSHUploadFailure("Niftty executable is unavailable")
+            completion(false)
             return
         }
 
@@ -2476,10 +2554,15 @@ extension Ghostty.SurfaceView {
             let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
             let stderr = String(data: errorData, encoding: .utf8)
             DispatchQueue.main.async {
-                guard let self, let process, self.sshUploadProcess === process else { return }
+                guard let self, let process, self.sshUploadProcess === process else {
+                    outputPipe.fileHandleForReading.readabilityHandler = nil
+                    completion(false)
+                    return
+                }
                 outputPipe.fileHandleForReading.readabilityHandler = nil
                 self.sshUploadProcess = nil
-                if finished.terminationStatus == 0 {
+                let succeeded = finished.terminationStatus == 0
+                if succeeded {
                     self.sshUploadProgress = verbose ? .init(
                         completedBytes: self.sshUploadProgress?.totalBytes ?? 0,
                         totalBytes: self.sshUploadProgress?.totalBytes ?? 0,
@@ -2490,6 +2573,7 @@ extension Ghostty.SurfaceView {
                     self.showSSHUploadFailure(Self.sshUploadErrorMessage(stderr))
                 }
                 self.clearSSHUploadStatusLater()
+                completion(succeeded)
             }
         }
 
@@ -2499,6 +2583,7 @@ extension Ghostty.SurfaceView {
             outputPipe.fileHandleForReading.readabilityHandler = nil
             sshUploadProcess = nil
             showSSHUploadFailure(error.localizedDescription)
+            completion(false)
         }
     }
 

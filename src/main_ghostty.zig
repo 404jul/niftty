@@ -76,7 +76,7 @@ pub fn main(minimal: std.process.Init.Minimal) !MainReturn {
 
     if (comptime build_config.app_runtime == .none) {
         const stdout = std.io.getStdOut().writer();
-        try stdout.print("Usage: niftty +<action> [flags]\n\n", .{});
+        try stdout.print("Usage: niftty [<command>] [flags]\n\n", .{});
         try stdout.print(
             \\This is the Ghostty helper CLI that accompanies the graphical Ghostty app.
             \\To launch the terminal directly, please launch the graphical app
