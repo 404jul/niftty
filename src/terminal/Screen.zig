@@ -3257,9 +3257,12 @@ pub fn selectWordBetween(
     return null;
 }
 
-/// Select the word under the given point. A word is any consecutive series
-/// of characters that are exclusively whitespace or exclusively non-whitespace.
-/// A selection can span multiple physical lines if they are soft-wrapped.
+/// Select the word under the given point. A word is a consecutive series of
+/// characters that are exclusively word boundaries or exclusively
+/// non-boundaries. The boundary set comes entirely from boundary_codepoints;
+/// the defaults include all Unicode whitespace so prompt themes that emit
+/// non-breaking or other exotic spaces still split words. A selection can
+/// span multiple physical lines if they are soft-wrapped.
 ///
 /// This will return null if a selection is impossible. The only scenario
 /// this happens is if the point pt is outside of the written screen space.
@@ -3278,12 +3281,17 @@ pub fn selectWord(
     const start_cell = pin.rowAndCell().cell;
     if (!start_cell.hasText()) return null;
 
+    const isBoundary = struct {
+        fn isBoundary(cp: u21, boundaries: []const u21) bool {
+            return std.mem.indexOfScalar(u21, boundaries, cp) != null;
+        }
+    }.isBoundary;
+
     // Determine if we are a boundary or not to determine what our boundary is.
-    const expect_boundary = std.mem.indexOfScalar(
-        u21,
-        boundary_codepoints,
+    const expect_boundary = isBoundary(
         start_cell.content.codepoint.data,
-    ) != null;
+        boundary_codepoints,
+    );
 
     // Go forwards to find our end boundary
     const end: Pin = end: {
@@ -3297,11 +3305,10 @@ pub fn selectWord(
             if (!cell.hasText()) break :end prev;
 
             // If we do not match our expected set, we hit a boundary
-            const this_boundary = std.mem.indexOfScalar(
-                u21,
-                boundary_codepoints,
+            const this_boundary = isBoundary(
                 cell.content.codepoint.data,
-            ) != null;
+                boundary_codepoints,
+            );
             if (this_boundary != expect_boundary) break :end prev;
 
             // If we are going to the next row and it isn't wrapped, we
@@ -3334,11 +3341,10 @@ pub fn selectWord(
             if (!cell.hasText()) break :start prev;
 
             // If we do not match our expected set, we hit a boundary
-            const this_boundary = std.mem.indexOfScalar(
-                u21,
-                boundary_codepoints,
+            const this_boundary = isBoundary(
                 cell.content.codepoint.data,
-            ) != null;
+                boundary_codepoints,
+            );
             if (this_boundary != expect_boundary) break :start prev;
 
             prev = p;
@@ -10209,6 +10215,52 @@ test "Screen: selectWord whitespace across soft-wrap" {
             .y = 1,
         } }, s.pages.pointFromPin(.screen, sel.end()).?);
     }
+}
+
+test "Screen: selectWord stops at non-breaking space" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+    const io = testing.io;
+
+    var s = try init(io, alloc, .{ .cols = 15, .rows = 10, .max_scrollback_bytes = 0 });
+    defer s.deinit();
+    // Prompt-style line where the separator is a non-breaking space (U+00A0)
+    // rather than a plain space, and the prompt arrow is not a boundary char.
+    try s.testWriteString("19\u{00A0}❯ asdasd");
+
+    // Default boundaries include all Unicode whitespace, including U+00A0.
+    // A custom selection-word-chars list replaces the whole set.
+    const boundary_codepoints = &selection_codepoints.default_word_boundaries;
+
+    // Clicking inside "asdasd" must not extend across the NBSP into the prompt
+    var sel = s.selectWord(s.pages.pin(.{ .active = .{
+        .x = 6,
+        .y = 0,
+    } }).?, boundary_codepoints).?;
+    defer sel.deinit(&s);
+    try testing.expectEqual(point.Point{ .screen = .{
+        .x = 5,
+        .y = 0,
+    } }, s.pages.pointFromPin(.screen, sel.start()).?);
+    try testing.expectEqual(point.Point{ .screen = .{
+        .x = 10,
+        .y = 0,
+    } }, s.pages.pointFromPin(.screen, sel.end()).?);
+
+    // Clicking the NBSP itself selects just the whitespace run
+    var nbsp_sel = s.selectWord(s.pages.pin(.{ .active = .{
+        .x = 2,
+        .y = 0,
+    } }).?, boundary_codepoints).?;
+    defer nbsp_sel.deinit(&s);
+    try testing.expectEqual(point.Point{ .screen = .{
+        .x = 2,
+        .y = 0,
+    } }, s.pages.pointFromPin(.screen, nbsp_sel.start()).?);
+    try testing.expectEqual(point.Point{ .screen = .{
+        .x = 2,
+        .y = 0,
+    } }, s.pages.pointFromPin(.screen, nbsp_sel.end()).?);
 }
 
 test "Screen: selectWord with character boundary" {

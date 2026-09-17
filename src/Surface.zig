@@ -322,6 +322,7 @@ const DerivedConfig = struct {
     macos_option_as_alt: ?input.OptionAsAlt,
     selection_clear_on_copy: bool,
     selection_clear_on_typing: bool,
+    selection_double_click: bool,
     selection_word_chars: []const u21,
     vt_kam_allowed: bool,
     wait_after_command: bool,
@@ -402,6 +403,7 @@ const DerivedConfig = struct {
             .macos_option_as_alt = config.@"macos-option-as-alt",
             .selection_clear_on_copy = config.@"selection-clear-on-copy",
             .selection_clear_on_typing = config.@"selection-clear-on-typing",
+            .selection_double_click = config.@"selection-double-click",
             .selection_word_chars = try alloc.dupe(u21, config.@"selection-word-chars".codepoints),
             .vt_kam_allowed = config.@"vt-kam-allowed",
             .wait_after_command = config.@"wait-after-command",
@@ -4019,7 +4021,7 @@ pub fn mouseButtonCallback(
             .word_boundary_codepoints = self.config.selection_word_chars,
             .behaviors = &.{
                 .cell,
-                .word,
+                if (self.config.selection_double_click) .word else .cell,
                 if (mods.ctrlOrSuper()) .output else .line,
             },
         });
@@ -4031,7 +4033,11 @@ pub fn mouseButtonCallback(
 
             // Double click on a URL selects the entire URL instead of the
             // standard word selection returned by the gesture.
-            2 => {
+            2 => url: {
+                // Disabled double-click word selection disables this
+                // override too.
+                if (!self.config.selection_double_click) break :url;
+
                 // Try link detection without requiring modifier keys.
                 if (self.linkAtPin(
                     pin,

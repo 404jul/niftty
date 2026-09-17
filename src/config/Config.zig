@@ -747,8 +747,8 @@ foreground: Color = .{ .r = 0xFF, .g = 0xFF, .b = 0xFF },
 @"selection-clear-on-copy": bool = false,
 
 /// Characters that mark word boundaries during text selection operations such
-/// as double-clicking. When selecting a word, the selection will stop at any
-/// of these characters.
+/// as double-clicking to select (and, with `copy-on-select`, copy) a word.
+/// When selecting a word, the selection will stop at any of these characters.
 ///
 /// This is similar to the `WORDCHARS` environment variable in zsh, except this
 /// specifies the boundary characters rather than the word characters. The
@@ -762,7 +762,14 @@ foreground: Color = .{ .r = 0xFF, .g = 0xFF, .b = 0xFF },
 /// The null character (U+0000) is always treated as a boundary and does not
 /// need to be included in this configuration.
 ///
-/// Default: ``\t '"│`|:;,()[]{}<>$``
+/// Default: all Unicode whitespace (`\t`, space, no-break space, thin space,
+/// ideographic space, etc.) plus `'`, `"`, `` ` ``, `│`, `|`, `:`, `;`, `,`,
+/// `(`, `)`, `[`, `]`, `{`, `}`, `<`, `>`, and `$`. Including all Unicode
+/// whitespace means prompt themes that emit non-breaking or other exotic
+/// spaces still split words.
+///
+/// Setting a custom value replaces the entire default set, including
+/// the Unicode whitespace entries.
 ///
 /// To add or remove specific characters, you can set this to a custom value.
 /// For example, to treat semicolons as part of words:
@@ -771,6 +778,22 @@ foreground: Color = .{ .r = 0xFF, .g = 0xFF, .b = 0xFF },
 ///
 /// Available since: 1.3.0
 @"selection-word-chars": SelectionWordChars = .{},
+
+/// Whether a double-click (double left-click) of the mouse selects a word.
+///
+/// When `true`, double-clicking selects the word under the cursor, including
+/// the whole URL if the cursor is on a link. If `copy-on-select` is enabled,
+/// the selected word is also copied to the clipboard. Double-click-and-drag
+/// extends the selection by whole words.
+///
+/// When `false`, a double-click behaves like a regular single click: it only
+/// clears or starts a cell-wise (character) drag selection.
+///
+/// This does not affect triple-click line selection or the `copy-on-select`
+/// behavior of manually dragged selections.
+///
+/// Default: `true`
+@"selection-double-click": bool = true,
 
 /// The minimum contrast ratio between the foreground and background colors.
 /// The contrast ratio is a value between 1 and 21. A value of 1 allows for no
