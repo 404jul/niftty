@@ -64,6 +64,24 @@ struct SettingsFileEditorTests {
         #expect(untouched == "theme = Flexoki Dark")
     }
 
+    @Test func restoreDefaultDeletesTheKey() {
+        let original = """
+        theme = Flexoki Dark
+        selection-word-chars = broken
+        ssh-menu-use-niftty = true
+        """
+        let updated = SettingsFileEditor.replacingSettings(
+            in: original,
+            values: ["selection-word-chars": "should-not-be-written"],
+            orderedNames: ["theme", "selection-word-chars", "ssh-menu-use-niftty"],
+            removeNames: ["selection-word-chars"])
+        #expect(updated == """
+        theme = Flexoki Dark
+        ssh-menu-use-niftty = true
+        """)
+        #expect(!updated.contains("selection-word-chars"))
+    }
+
     @Test func duplicateScalarSettingsCollapseAtTheirOriginalPosition() {
         let original = """
         # Appearance

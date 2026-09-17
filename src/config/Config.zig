@@ -762,14 +762,13 @@ foreground: Color = .{ .r = 0xFF, .g = 0xFF, .b = 0xFF },
 /// The null character (U+0000) is always treated as a boundary and does not
 /// need to be included in this configuration.
 ///
-/// Default: all Unicode whitespace (`\t`, space, no-break space, thin space,
-/// ideographic space, etc.) plus `'`, `"`, `` ` ``, `│`, `|`, `:`, `;`, `,`,
-/// `(`, `)`, `[`, `]`, `{`, `}`, `<`, `>`, and `$`. Including all Unicode
-/// whitespace means prompt themes that emit non-breaking or other exotic
-/// spaces still split words.
+/// Unicode whitespace (space, tab, NBSP, etc.) always splits words and does
+/// not need to be listed here. This setting is the extra punctuation set.
 ///
-/// Setting a custom value replaces the entire default set, including
-/// the Unicode whitespace entries.
+/// Default: ``\t '"│`|:;,()[]{}<>$``
+///
+/// Setting a custom value replaces the punctuation set. Whitespace still
+/// splits.
 ///
 /// To add or remove specific characters, you can set this to a custom value.
 /// For example, to treat semicolons as part of words:
@@ -6380,20 +6379,31 @@ pub const SelectionWordChars = struct {
 
     /// Used by Formatter
     pub fn formatEntry(self: Self, formatter: formatterpkg.EntryFormatter) !void {
-        // Convert codepoints back to UTF-8 string for display
+        // Quoted so leading space/tab survive config trim. Printable glyphs
+        // (including │) stay literal; only controls/unicode spaces are \u{}.
         var buf: [4096]u8 = undefined;
-        var pos: usize = 0;
-
-        // Skip the null character at index 0
+        var w: std.Io.Writer = .fixed(&buf);
+        try w.writeByte('"');
         for (self.codepoints[1..]) |codepoint| {
-            var utf8_buf: [4]u8 = undefined;
-            const len = std.unicode.utf8Encode(codepoint, &utf8_buf) catch continue;
-            if (pos + len > buf.len) break;
-            @memcpy(buf[pos..][0..len], utf8_buf[0..len]);
-            pos += len;
+            switch (codepoint) {
+                '\t' => try w.writeAll("\\t"),
+                '\n' => try w.writeAll("\\n"),
+                '\r' => try w.writeAll("\\r"),
+                '"' => try w.writeAll("\\\""),
+                '\\' => try w.writeAll("\\\\"),
+                else => if (codepoint >= ' ' and codepoint <= '~') {
+                    try w.writeByte(@intCast(codepoint));
+                } else if (terminal.selection_codepoints.isWhitespace(codepoint) or codepoint < 0x20) {
+                    try w.print("\\u{{{x}}}", .{codepoint});
+                } else {
+                    var utf8_buf: [4]u8 = undefined;
+                    const len = std.unicode.utf8Encode(codepoint, &utf8_buf) catch continue;
+                    try w.writeAll(utf8_buf[0..len]);
+                },
+            }
         }
-
-        try formatter.formatEntry([]const u8, buf[0..pos]);
+        try w.writeByte('"');
+        try formatter.formatEntry([]const u8, w.buffered());
     }
 
     test "parseCLI" {
@@ -6462,6 +6472,36 @@ pub const SelectionWordChars = struct {
         try testing.expectEqual(@as(u21, 0), chars.codepoints[0]);
         try testing.expectEqual(@as(u21, '│'), chars.codepoints[1]);
         try testing.expectEqual(@as(u21, ';'), chars.codepoints[2]);
+    }
+
+    test "formatEntry default is readable and roundtrips space" {
+        const testing = std.testing;
+        var arena = ArenaAllocator.init(testing.allocator);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+
+        var buf: std.Io.Writer.Allocating = .init(testing.allocator);
+        defer buf.deinit();
+        const chars: Self = .{};
+        try chars.formatEntry(formatterpkg.entryFormatter("selection-word-chars", &buf.writer));
+        const written = buf.written();
+
+        try testing.expectEqualStrings(
+            "selection-word-chars = \"\\t '\\\"│`|:;,()[]{}<>$\"\n",
+            written,
+        );
+
+        const eq = std.mem.indexOfScalar(u8, written, '=').?;
+        var value = std.mem.trim(u8, written[eq + 1 ..], " \t\r\n");
+        try testing.expect(value.len >= 2 and value[0] == '"' and value[value.len - 1] == '"');
+        value = value[1 .. value.len - 1];
+
+        var parsed: Self = .{};
+        try parsed.parseCLI(alloc, value);
+        try testing.expect(std.mem.indexOfScalar(u21, parsed.codepoints, ' ') != null);
+        try testing.expect(std.mem.indexOfScalar(u21, parsed.codepoints, '\t') != null);
+        try testing.expect(std.mem.indexOfScalar(u21, parsed.codepoints, '│') != null);
+        try testing.expect(std.mem.indexOfScalar(u21, parsed.codepoints, 0xA0) == null);
     }
 };
 

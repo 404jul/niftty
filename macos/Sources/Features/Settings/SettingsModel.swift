@@ -31,7 +31,8 @@ struct SettingsFileEditor {
     static func replacingSettings(
         in text: String,
         values: [String: String],
-        orderedNames: [String]
+        orderedNames: [String],
+        removeNames: Set<String> = []
     ) -> String {
         var lines = text.components(separatedBy: "\n")
         if let begin = lines.firstIndex(of: beginMarker),
@@ -43,8 +44,16 @@ struct SettingsFileEditor {
             }
         }
 
-        let known = orderedNames.filter { values[$0] != nil }
-        let extras = values.keys.filter { !orderedNames.contains($0) }.sorted()
+        if !removeNames.isEmpty {
+            lines.removeAll { line in
+                guard let name = settingName(in: line) else { return false }
+                return removeNames.contains(name)
+            }
+        }
+        let known = orderedNames.filter { values[$0] != nil && !removeNames.contains($0) }
+        let extras = values.keys.filter {
+            !orderedNames.contains($0) && !removeNames.contains($0)
+        }.sorted()
         for name in known + extras {
             guard let value = values[name] else { continue }
             let items = value.components(separatedBy: "\n")
@@ -116,6 +125,7 @@ final class SettingsModel: ObservableObject {
     private weak var appDelegate: AppDelegate?
     private var legacyValues: [String: String] = [:]
     private var pendingValues: [String: String] = [:]
+    private var restoredDefaults: Set<String> = []
 
     init(appDelegate: AppDelegate) {
         self.appDelegate = appDelegate
@@ -173,6 +183,7 @@ final class SettingsModel: ObservableObject {
     func set(_ value: String, for name: String) {
         guard let index = rows.firstIndex(where: { $0.id == name }) else { return }
         rows[index].value = value
+        restoredDefaults.remove(name)
         // SwiftUI text fields fire their binding setter on focus/commit even
         // when the text is unchanged, so compare against the loaded config
         // value: an identical value is not a change, and reverting a value
@@ -183,16 +194,23 @@ final class SettingsModel: ObservableObject {
         } else {
             pendingValues[name] = value
         }
-        hasUnsavedChanges = !pendingValues.isEmpty || !legacyValues.isEmpty
+        hasUnsavedChanges = !pendingValues.isEmpty || !legacyValues.isEmpty ||
+            !restoredDefaults.isEmpty
     }
 
     func isModified(_ name: String) -> Bool {
-        pendingValues[name] != nil
+        pendingValues[name] != nil || restoredDefaults.contains(name)
     }
 
     func restoreDefault(_ name: String) {
-        guard let row = rows.first(where: { $0.id == name }) else { return }
-        set(row.metadata.defaultValue, for: name)
+        guard let index = rows.firstIndex(where: { $0.id == name }) else { return }
+        // Drop the override on save so Ghostty uses in-memory defaults.
+        // Writing defaultValue would re-serialize it and can round-trip wrong
+        // (selection-word-chars trimming leading space).
+        rows[index].value = rows[index].metadata.defaultValue
+        pendingValues.removeValue(forKey: name)
+        restoredDefaults.insert(name)
+        hasUnsavedChanges = true
     }
 
     func reload() {
@@ -202,6 +220,7 @@ final class SettingsModel: ObservableObject {
             let text = try String(contentsOfFile: appDelegate.ghostty.configFilePath, encoding: .utf8)
             legacyValues = SettingsFileEditor.legacyOverrides(in: text)
             pendingValues.removeAll()
+            restoredDefaults.removeAll()
             rows = metadata.map { setting in
                 Row(
                     metadata: setting,
@@ -238,11 +257,15 @@ final class SettingsModel: ObservableObject {
         do {
             let path = appDelegate.ghostty.configFilePath
             let existing = try String(contentsOfFile: path, encoding: .utf8)
-            let values = legacyValues.merging(pendingValues) { _, pending in pending }
+            var values = legacyValues.merging(pendingValues) { _, pending in pending }
+            for name in restoredDefaults {
+                values.removeValue(forKey: name)
+            }
             let updated = SettingsFileEditor.replacingSettings(
                 in: existing,
                 values: values,
-                orderedNames: rows.map(\.id))
+                orderedNames: rows.map(\.id),
+                removeNames: restoredDefaults)
 
             try updated.write(toFile: path, atomically: true, encoding: .utf8)
             appDelegate.ghostty.reloadConfig()

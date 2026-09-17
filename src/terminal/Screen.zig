@@ -3259,9 +3259,8 @@ pub fn selectWordBetween(
 
 /// Select the word under the given point. A word is a consecutive series of
 /// characters that are exclusively word boundaries or exclusively
-/// non-boundaries. The boundary set comes entirely from boundary_codepoints;
-/// the defaults include all Unicode whitespace so prompt themes that emit
-/// non-breaking or other exotic spaces still split words. A selection can
+/// non-boundaries. Unicode whitespace always splits. Additional boundaries
+/// come from `boundary_codepoints` (punctuation by default). A selection can
 /// span multiple physical lines if they are soft-wrapped.
 ///
 /// This will return null if a selection is impossible. The only scenario
@@ -3283,7 +3282,8 @@ pub fn selectWord(
 
     const isBoundary = struct {
         fn isBoundary(cp: u21, boundaries: []const u21) bool {
-            return std.mem.indexOfScalar(u21, boundaries, cp) != null;
+            return selection_codepoints.isWhitespace(cp) or
+                std.mem.indexOfScalar(u21, boundaries, cp) != null;
         }
     }.isBoundary;
 
@@ -10228,8 +10228,7 @@ test "Screen: selectWord stops at non-breaking space" {
     // rather than a plain space, and the prompt arrow is not a boundary char.
     try s.testWriteString("19\u{00A0}❯ asdasd");
 
-    // Default boundaries include all Unicode whitespace, including U+00A0.
-    // A custom selection-word-chars list replaces the whole set.
+    // Unicode whitespace always splits, even if omitted from the configured list.
     const boundary_codepoints = &selection_codepoints.default_word_boundaries;
 
     // Clicking inside "asdasd" must not extend across the NBSP into the prompt
