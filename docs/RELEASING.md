@@ -20,6 +20,31 @@ How a release goes from your machine to every installed copy of the app.
 - **`.github/workflows/release.yml`** — does all of the above
   automatically when you push a version tag.
 
+## One-time setup: Sparkle update-signing key
+
+Updates are signed with an EdDSA (ed25519) key. The **private** key lives in
+the `SPARKLE_PRIVATE_KEY` repository secret; the matching **public** key is
+`SUPublicEDKey` in `macos/Ghostty-Info.plist`.
+
+1. On a Mac (interactive GUI session — the tools use the Keychain):
+   download the
+   [Sparkle for Swift Package Manager zip](https://github.com/sparkle-project/Sparkle/releases/latest)
+   and run `bin/generate_keys`. It stores the private key in your Keychain
+   and prints the public key.
+2. Put the printed public key into `SUPublicEDKey` in
+   `macos/Ghostty-Info.plist`.
+3. Export the private key: `bin/generate_keys -x sparkle-private-key.txt`.
+   The file contains a single base64 line (44 characters for a modern key).
+4. Set the `SPARKLE_PRIVATE_KEY` repository secret to that line — paste
+   exactly the file contents, nothing else. Invisible characters (BOM,
+   zero-width spaces) make Sparkle's decoder reject the key; the release
+   workflow validates the secret format and fails fast with a message
+   instead of publishing a broken appcast.
+
+If you lose the private key you must generate a new pair, update
+`SUPublicEDKey`, and ship one release installed manually before updates
+work again.
+
 ## One-time setup: Apple code signing and notarization
 
 The app is signed with a **Developer ID Application** certificate and
@@ -31,7 +56,7 @@ notarized by Apple, so downloads open without Gatekeeper warnings.
    the CSR, download the `.cer`.
 2. Combine the `.cer` and its private key into a `.p12`:
    `openssl x509 -in cert.cer -inform DER -out cert.pem && openssl pkcs12
-   -export -inkey key.pem -in cert.pem -out signing.p12`
+-export -inkey key.pem -in cert.pem -out signing.p12`
 3. Create an **App Store Connect API key** (developer.apple.com → Users
    and Access → Integrations, role Developer) for `notarytool`; note the
    Key ID, Issuer ID, and keep the `.p8`.
@@ -81,6 +106,7 @@ install updates: Settings → General → Danger Zone → Change visibility.
 Going public requires no other changes.
 
 ## Caveats
+
 - Releases are Developer ID signed and notarized, so fresh downloads
   open without Gatekeeper prompts.
 - After publishing, `releases/latest/download/...` points at the new

@@ -197,20 +197,39 @@ jobs:
             "https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VERSION}/Sparkle-for-Swift-Package-Manager.zip"
           mkdir -p /tmp/sparkle-bin
           unzip -q -j /tmp/sparkle.zip 'bin/sign_update' -d /tmp/sparkle-bin
-          printf '%s' "$SPARKLE_PRIVATE_KEY" > /tmp/sparkle-eddsa.key
+          # Sanity-check the key before signing. After stripping whitespace it
+          # must contain only base64 alphabet characters (an invisible BOM or
+          # stray character makes Sparkle's strict decoder fail with an error
+          # that historically got pasted straight into the appcast), and must
+          # decode to exactly 32 bytes (Ed25519 seed, as exported by Sparkle's
+          # `generate_keys -x`) or 96 bytes (legacy private+public format).
+          key_clean=$(printf '%s' "$SPARKLE_PRIVATE_KEY" | tr -d '[:space:]')
+          if [[ ! "$key_clean" =~ ^[A-Za-z0-9+/]+={0,2}$ ]]; then
+            echo "::error::SPARKLE_PRIVATE_KEY contains characters outside the base64 alphabet (check for invisible characters or stray text). It must be the single base64 line exported by Sparkle's './generate_keys -x <file>'."
+            exit 1
+          fi
+          key_bytes=$(printf '%s' "$key_clean" | base64 -d 2>/dev/null | wc -c | tr -d ' ')
+          if [[ "$key_bytes" != 32 && "$key_bytes" != 96 ]]; then
+            echo "::error::SPARKLE_PRIVATE_KEY decodes to $key_bytes bytes; expected 32 (Ed25519 seed) or 96 (legacy format). Export the signing key with Sparkle's './generate_keys -x <file>' and put that file's single base64 line in the secret. If you regenerated the key pair, also update SUPublicEDKey in macos/Ghostty-Info.plist."
+            exit 1
+          fi
+          printf '%s' "$key_clean" > /tmp/sparkle-eddsa.key
 
           base_url="https://github.com/404jul/niftty/releases/download/$TAG"
           pub_date=$(date -u +"%a, %d %b %Y %H:%M:%S +0000")
 
           for arch in arm64 x86_64; do
             zip="dist/Niftty-v$VERSION-$arch.zip"
+            # sign_update prints errors on stdout too, so anchor the match and
+            # require the full "signature + length" line; anything else fails.
+            sig_output=$(/tmp/sparkle-bin/sign_update \
+              --ed-key-file /tmp/sparkle-eddsa.key "$zip")
             read -r ed_sig length < <(
-              /tmp/sparkle-bin/sign_update \
-                --ed-key-file /tmp/sparkle-eddsa.key "$zip" \
-                | sed -E 's/sparkle:edSignature="([^"]+)" length="([0-9]+)"/\1 \2/'
+              printf '%s\n' "$sig_output" \
+                | sed -nE 's/^sparkle:edSignature="([A-Za-z0-9+/=]+)" length="([0-9]+)"$/\1 \2/p'
             )
             if [[ -z "$ed_sig" || -z "$length" ]]; then
-              echo "::error::Failed to sign $zip"
+              echo "::error::Failed to sign $zip. sign_update output: $sig_output"
               exit 1
             fi
 
