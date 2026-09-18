@@ -15,6 +15,7 @@ final class SettingsController: NSWindowController, NSWindowDelegate {
 
         window.title = "Niftty Settings"
         window.minSize = NSSize(width: 800, height: 560)
+        window.collectionBehavior = [.moveToActiveSpace]
         window.center()
         window.setFrameAutosaveName("NifttySettings")
         window.contentView = NSHostingView(rootView: SettingsView(model: model))
