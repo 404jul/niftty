@@ -287,5 +287,7 @@ jobs:
           The app is signed with a Developer ID certificate and notarized by Apple, so it opens on any Mac without Gatekeeper warnings." \
             dist/Niftty-v"$VERSION"-arm64.dmg \
             dist/Niftty-v"$VERSION"-x86_64.dmg \
+            dist/Niftty-v"$VERSION"-arm64.zip \
+            dist/Niftty-v"$VERSION"-x86_64.zip \
             dist/appcast-arm64.xml \
             dist/appcast-x86_64.xml
