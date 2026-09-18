@@ -916,6 +916,52 @@ typedef struct {
   uint64_t duration;
 } ghostty_action_command_finished_s;
 
+// apprt.action.PredictionPromptReady.C
+typedef struct {
+  // the prediction context revision this event belongs to
+  uint64_t revision;
+} ghostty_action_prediction_prompt_ready_s;
+
+// apprt.action.PredictionCommandStarted.C
+typedef struct {
+  // decoded command line; valid only for the duration of the action
+  const char* command;
+  uintptr_t len;
+  // the prediction context revision this event belongs to
+  uint64_t revision;
+} ghostty_action_prediction_command_started_s;
+
+// apprt.action.PredictionCandidateAccepted.C
+typedef struct {
+  // the prediction context revision of the accepted candidate
+  uint64_t revision;
+  // number of UTF-8 bytes written to the pty
+  uint32_t inserted_bytes;
+  // number of Unicode codepoints written to the pty
+  uint32_t inserted_codepoints;
+} ghostty_action_prediction_candidate_accepted_s;
+
+// apprt.action.PredictionCandidateDismissed.DismissReason
+typedef enum {
+  GHOSTTY_PREDICTION_DISMISS_KEY,
+  GHOSTTY_PREDICTION_DISMISS_TEXT,
+  GHOSTTY_PREDICTION_DISMISS_MOUSE,
+  GHOSTTY_PREDICTION_DISMISS_PREEDIT,
+  GHOSTTY_PREDICTION_DISMISS_FOCUS,
+  GHOSTTY_PREDICTION_DISMISS_SECURE_INPUT,
+  GHOSTTY_PREDICTION_DISMISS_COMMAND,
+  GHOSTTY_PREDICTION_DISMISS_PROMPT,
+  GHOSTTY_PREDICTION_DISMISS_CHILD_EXIT,
+  GHOSTTY_PREDICTION_DISMISS_DISABLED,
+} ghostty_prediction_dismiss_reason_e;
+
+// apprt.action.PredictionCandidateDismissed.C
+typedef struct {
+  // the prediction context revision of the dismissed candidate
+  uint64_t revision;
+  ghostty_prediction_dismiss_reason_e reason;
+} ghostty_action_prediction_candidate_dismissed_s;
+
 // apprt.action.StartSearch.C
 typedef struct {
   const char* needle;
@@ -1010,6 +1056,10 @@ typedef enum {
   GHOSTTY_ACTION_READONLY,
   GHOSTTY_ACTION_COPY_TITLE_TO_CLIPBOARD,
   GHOSTTY_ACTION_MOVE_TAB_TO_NEW_WINDOW,
+  GHOSTTY_ACTION_PREDICTION_PROMPT_READY,
+  GHOSTTY_ACTION_PREDICTION_COMMAND_STARTED,
+  GHOSTTY_ACTION_PREDICTION_CANDIDATE_ACCEPTED,
+  GHOSTTY_ACTION_PREDICTION_CANDIDATE_DISMISSED,
 } ghostty_action_tag_e;
 
 typedef union {
@@ -1050,6 +1100,12 @@ typedef union {
   ghostty_action_progress_report_s progress_report;
   ghostty_action_command_finished_s command_finished;
   ghostty_action_start_search_s start_search;
+  ghostty_action_prediction_prompt_ready_s prediction_prompt_ready;
+  ghostty_action_prediction_command_started_s prediction_command_started;
+  ghostty_action_prediction_candidate_accepted_s
+      prediction_candidate_accepted;
+  ghostty_action_prediction_candidate_dismissed_s
+      prediction_candidate_dismissed;
   ghostty_action_search_total_s search_total;
   ghostty_action_search_selected_s search_selected;
   ghostty_action_readonly_e readonly;
@@ -1215,6 +1271,29 @@ GHOSTTY_API void ghostty_surface_mouse_scroll(ghostty_surface_t,
                                                  double,
                                                  ghostty_input_scroll_mods_t);
 GHOSTTY_API void ghostty_surface_mouse_pressure(ghostty_surface_t, uint32_t, double);
+
+// Set the prediction candidate for the surface. The candidate is
+// rendered as faint ghost text at the cursor while the shell sits at an
+// empty prompt. `id` identifies the candidate for outcome reporting,
+// `revision` must exactly match the surface's current prediction context
+// revision (see the prediction_prompt_ready action), and `text` is the
+// insertion text that will be written to the pty when the candidate is
+// accepted. The text must be non-empty valid UTF-8 with no C0/C1
+// controls and at most 4096 bytes. Returns true if the candidate was
+// accepted for display, false if the submission was rejected.
+GHOSTTY_API bool ghostty_surface_prediction_set(
+    ghostty_surface_t,
+    const char* id,
+    uintptr_t id_len,
+    uint64_t revision,
+    const char* text,
+    uintptr_t text_len);
+
+// Clear the prediction candidate for the surface, if any. This does not
+// change the prediction context revision and reports no outcome; it is
+// the embedding application's own lever for withdrawing a candidate.
+GHOSTTY_API void ghostty_surface_prediction_clear(ghostty_surface_t);
+
 GHOSTTY_API void ghostty_surface_ime_point(ghostty_surface_t, double*, double*, double*, double*);
 GHOSTTY_API void ghostty_surface_request_close(ghostty_surface_t);
 GHOSTTY_API void ghostty_surface_split(ghostty_surface_t, ghostty_action_split_direction_e);

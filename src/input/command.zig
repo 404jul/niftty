@@ -735,6 +735,9 @@ fn actionCommands(action: Action.Key) []const Command {
         .deactivate_all_key_tables,
         .end_key_sequence,
         .crash,
+        // No command because accepting a prediction is only meaningful
+        // when a candidate is visible; it is directly bound to a key.
+        .accept_prediction,
         => comptime &.{},
 
         // No commands because I'm not sure they make sense in a command

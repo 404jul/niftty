@@ -728,6 +728,21 @@ pub const Action = union(enum) {
     /// of the `confirm-close-surface` configuration setting.
     close_surface,
 
+    /// Accept the visible prediction candidate.
+    ///
+    /// Inserts the currently displayed inline prediction (if any) at the
+    /// cursor as if it were typed, without pressing Enter. The text is
+    /// written as ordinary keyboard input, so the shell or program in the
+    /// terminal sees exactly the candidate text and nothing more.
+    ///
+    /// This action has no effect and reports not performable when no
+    /// prediction candidate is showing (for example when the `prediction`
+    /// configuration is disabled, the terminal is not sitting at a shell
+    /// prompt, or a candidate was already invalidated by other input).
+    /// Binding this action with the `performable:` flag (the default for
+    /// Tab) makes the key fall through to the terminal in those cases.
+    accept_prediction,
+
     /// Close the specified tabs and all splits therein.
     ///
     /// Valid values:
@@ -1440,6 +1455,7 @@ pub const Action = union(enum) {
             .deactivate_all_key_tables,
             .end_key_sequence,
             .crash,
+            .accept_prediction,
             => .surface,
 
             // These are less obvious surface actions. They're surface
@@ -3362,6 +3378,36 @@ test "parse: action no parameters" {
         try parseSingle("a=ignore"),
     );
     try testing.expectError(Error.InvalidFormat, parseSingle("a=ignore:A"));
+}
+
+test "parse: accept_prediction performable tab" {
+    const testing = std.testing;
+
+    // The default prediction acceptance binding: a performable, plain Tab
+    // so the key falls through to the terminal when no candidate shows.
+    try testing.expectEqual(
+        Binding{
+            .trigger = .{ .key = .{ .physical = .tab } },
+            .action = .{ .accept_prediction = {} },
+            .flags = .{ .performable = true },
+        },
+        try parseSingle("performable:tab=accept_prediction"),
+    );
+
+    // The action takes no parameters.
+    try testing.expectError(Error.InvalidFormat, parseSingle("a=accept_prediction:A"));
+
+    // Freely remappable without the performable prefix.
+    try testing.expectEqual(
+        Binding{
+            .trigger = .{
+                .mods = .{ .ctrl = true },
+                .key = .{ .unicode = 'p' },
+            },
+            .action = .{ .accept_prediction = {} },
+        },
+        try parseSingle("ctrl+p=accept_prediction"),
+    );
 }
 
 test "parse: action with string" {

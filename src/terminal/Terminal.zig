@@ -229,6 +229,11 @@ pub const Dirty = packed struct {
     /// Set when the pre-edit is modified.
     preedit: bool = false,
 
+    /// Set when the prediction candidate is modified. Like the preedit
+    /// flag, this requires a full render-state rebuild because the ghost
+    /// text overlay can span rows.
+    prediction: bool = false,
+
     /// Set when Glyph Protocol registrations may have changed. Registered
     /// glyphs can affect already-visible PUA cells, so this requires a full
     /// render-state rebuild.

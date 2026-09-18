@@ -1288,6 +1288,29 @@ command: ?Command = null,
 /// Available since 1.3.0
 @"notify-on-command-finish-after": Duration = .{ .duration = 5 * std.time.ns_per_s },
 
+/// Enable Niftty's inline prediction layer.
+///
+/// When enabled, Niftty tracks the terminal's shell prompt lifecycle (via
+/// OSC 133 semantic prompt markers), accepts prediction candidates supplied
+/// by the embedding application, and renders the candidate as faint "ghost"
+/// text at the cursor while the shell is sitting at an empty prompt. The
+/// candidate can then be accepted as ordinary typed input with the
+/// `accept_prediction` keybinding action (`performable:tab` by default;
+/// when no candidate is visible the key falls through to the program in
+/// the terminal as usual).
+///
+/// Disabling this at runtime immediately clears any visible candidate,
+/// stops observing command lines, and rejects any further candidate
+/// submissions. Shells are told about this feature through the
+/// `GHOSTTY_PREDICTION` environment variable, which is only set to `1`
+/// for shells started while this configuration is enabled.
+///
+/// This has no effect on remote sessions beyond what the local renderer
+/// displays: no prediction-related sequences are ever sent to the terminal,
+/// and accepting a candidate only writes the candidate text as ordinary
+/// keyboard input.
+prediction: bool = true,
+
 /// Extra environment variables to pass to commands launched in a terminal
 /// surface. The format is `env=KEY=VALUE`.
 ///
@@ -4169,6 +4192,54 @@ test "handle bom in config files" {
     }
 }
 
+test "prediction config default and disable" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    // The default is enabled.
+    {
+        var cfg = try Config.default(alloc);
+        defer cfg.deinit();
+        try cfg.finalize();
+        try testing.expect(cfg._diagnostics.empty());
+        try testing.expect(cfg.prediction);
+    }
+
+    // Explicit disable parses.
+    {
+        const data = "prediction = false\n";
+        var reader: std.Io.Reader = .fixed(data);
+        var cfg = try Config.default(alloc);
+        defer cfg.deinit();
+        try cfg.loadReader(
+            alloc,
+            &reader,
+            "/home/ghostty/.config/ghostty/config.ghostty",
+        );
+        try cfg.finalize();
+
+        try testing.expect(cfg._diagnostics.empty());
+        try testing.expect(!cfg.prediction);
+    }
+
+    // Explicit enable parses.
+    {
+        const data = "prediction = true\n";
+        var reader: std.Io.Reader = .fixed(data);
+        var cfg = try Config.default(alloc);
+        defer cfg.deinit();
+        try cfg.loadReader(
+            alloc,
+            &reader,
+            "/home/ghostty/.config/ghostty/config.ghostty",
+        );
+        try cfg.finalize();
+
+        try testing.expect(cfg._diagnostics.empty());
+        try testing.expect(cfg.prediction);
+    }
+}
+
 pub const OptionalFileAction = enum { loaded, not_found, @"error" };
 
 /// Load optional configuration file from `path`. All errors are ignored.
@@ -6736,6 +6807,16 @@ pub const Keybinds = struct {
                 .{ .performable = true },
             );
         }
+
+        // Predictions: accept the visible prediction candidate with Tab.
+        // This is performable so that Tab reaches the shell or TUI as
+        // normal whenever no candidate is showing.
+        try self.set.putFlags(
+            alloc,
+            .{ .key = .{ .physical = .tab } },
+            .accept_prediction,
+            .{ .performable = true },
+        );
 
         // Increase font size mapping for keyboards with dedicated plus keys (like german)
         // Note: this order matters below because the C API will only return

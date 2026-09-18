@@ -360,6 +360,25 @@ pub const Action = union(Key) {
 
     /// Move a tab to a new window.
     move_tab_to_new_window,
+    /// A shell prompt became ready for input (OSC 133 B) and a new
+    /// prediction context started. The revision identifies the context;
+    /// candidates submitted for any other revision are rejected as stale.
+    prediction_prompt_ready: PredictionPromptReady,
+
+    /// A command started in the shell (OSC 133 C) with the decoded
+    /// command line reported by shell integration. This is only sent
+    /// while the `prediction` configuration is enabled. The embedding
+    /// application can pair this with the `command_finished` action to
+    /// assemble a full command observation.
+    prediction_command_started: PredictionCommandStarted,
+
+    /// The visible prediction candidate was accepted by the user and its
+    /// insertion text was written to the pty as ordinary input.
+    prediction_candidate_accepted: PredictionCandidateAccepted,
+
+    /// The visible prediction candidate was dismissed by core because its
+    /// context was invalidated.
+    prediction_candidate_dismissed: PredictionCandidateDismissed,
 
     /// Sync with: ghostty_action_tag_e
     pub const Key = enum(c_int) {
@@ -433,6 +452,10 @@ pub const Action = union(Key) {
         readonly,
         copy_title_to_clipboard,
         move_tab_to_new_window,
+        prediction_prompt_ready,
+        prediction_command_started,
+        prediction_candidate_accepted,
+        prediction_candidate_dismissed,
 
         test "ghostty.h Action.Key" {
             try lib.checkGhosttyHEnum(Key, "GHOSTTY_ACTION_");
@@ -1011,6 +1034,112 @@ pub const CommandFinished = struct {
             .duration = self.duration.duration,
         };
     }
+};
+
+pub const PredictionPromptReady = struct {
+    revision: u64,
+
+    /// sync with ghostty_action_prediction_prompt_ready_s in ghostty.h
+    pub const C = extern struct {
+        revision: u64,
+    };
+
+    pub fn cval(self: PredictionPromptReady) C {
+        return .{ .revision = self.revision };
+    }
+};
+
+pub const PredictionCommandStarted = struct {
+    /// The decoded command line. The pointer is only valid for the
+    /// duration of the action.
+    command: []const u8,
+    revision: u64,
+
+    /// sync with ghostty_action_prediction_command_started_s in ghostty.h
+    pub const C = extern struct {
+        command: [*]const u8,
+        len: usize,
+        revision: u64,
+    };
+
+    pub fn cval(self: PredictionCommandStarted) C {
+        return .{
+            .command = self.command.ptr,
+            .len = self.command.len,
+            .revision = self.revision,
+        };
+    }
+};
+
+pub const PredictionCandidateAccepted = struct {
+    revision: u64,
+
+    /// The number of UTF-8 bytes written to the pty.
+    inserted_bytes: u32,
+
+    /// The number of Unicode codepoints written to the pty.
+    inserted_codepoints: u32,
+
+    /// sync with ghostty_action_prediction_candidate_accepted_s in ghostty.h
+    pub const C = extern struct {
+        revision: u64,
+        inserted_bytes: u32,
+        inserted_codepoints: u32,
+    };
+
+    pub fn cval(self: PredictionCandidateAccepted) C {
+        return .{
+            .revision = self.revision,
+            .inserted_bytes = self.inserted_bytes,
+            .inserted_codepoints = self.inserted_codepoints,
+        };
+    }
+};
+
+pub const PredictionCandidateDismissed = struct {
+    revision: u64,
+    reason: DismissReason,
+
+    /// sync with ghostty_action_prediction_candidate_dismissed_s in ghostty.h
+    pub const C = extern struct {
+        revision: u64,
+        reason: DismissReason,
+    };
+
+    pub fn cval(self: PredictionCandidateDismissed) C {
+        return .{
+            .revision = self.revision,
+            .reason = self.reason,
+        };
+    }
+
+    /// Why the candidate was dismissed.
+    pub const DismissReason = enum(c_int) {
+        /// Any key event that didn't accept the candidate.
+        key,
+        /// Text input or a paste.
+        text,
+        /// A mouse button press or scroll.
+        mouse,
+        /// A non-empty IME preedit started.
+        preedit,
+        /// The surface lost focus.
+        focus,
+        /// Password/secure input was detected.
+        secure_input,
+        /// A command started in the shell.
+        command,
+        /// A new prompt context started.
+        prompt,
+        /// The child process exited.
+        child_exit,
+        /// The `prediction` configuration was disabled.
+        disabled,
+
+        test "ghostty.h PredictionDismissReason" {
+            try lib.checkGhosttyHEnum(DismissReason, "GHOSTTY_PREDICTION_DISMISS_");
+        }
+    };
 };
 
 pub const StartSearch = struct {

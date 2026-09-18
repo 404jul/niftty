@@ -1302,6 +1302,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 links: terminal.RenderState.CellSet,
                 mouse: renderer.State.Mouse,
                 preedit: ?renderer.State.Preedit,
+                prediction: ?[]const renderer.State.Prediction.Codepoint,
                 scrollbar: terminal.Scrollbar,
                 overlay_features: []const Overlay.Feature,
             };
@@ -1374,6 +1375,14 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 const preedit: ?renderer.State.Preedit = preedit: {
                     const p = state.preedit orelse break :preedit null;
                     break :preedit try p.clone(arena_alloc);
+                };
+
+                // Get our prediction ghost text view. Only the codepoint
+                // view is cloned into the frame arena; the rest of the
+                // candidate stays render-owned.
+                const prediction: ?[]const renderer.State.Prediction.Codepoint = prediction: {
+                    const p = state.prediction orelse break :prediction null;
+                    break :prediction try p.cloneView(arena_alloc);
                 };
 
                 // Advance any running Kitty graphics animations to the
@@ -1456,6 +1465,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     .links = links,
                     .mouse = state.mouse,
                     .preedit = preedit,
+                    .prediction = prediction,
                     .scrollbar = scrollbar,
                     .overlay_features = overlay_features,
                 };
@@ -1547,9 +1557,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 self.draw_mutex.lockUncancelable(global.io());
                 defer self.draw_mutex.unlock(global.io());
 
-                // Build our GPU cells
                 self.rebuildCells(
                     critical.preedit,
+                    critical.prediction,
                     renderer.cursorStyle(&self.terminal_state, .{
                         .preedit = critical.preedit != null,
                         .focused = self.focused,
@@ -2525,10 +2535,10 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         ///
         /// This requires the draw mutex.
         ///
-        /// Dirty state on terminal state won't be reset by this.
         fn rebuildCells(
             self: *Self,
             preedit: ?renderer.State.Preedit,
+            prediction: ?[]const renderer.State.Prediction.Codepoint,
             cursor_style_: ?renderer.CursorStyle,
             links: *const terminal.RenderState.CellSet,
         ) Allocator.Error!void {
@@ -2571,10 +2581,6 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 }
             }
 
-            // From this point on we never fail. We produce some kind of
-            // working terminal state, even if incorrect.
-            errdefer comptime unreachable;
-
             // Get our row data from our state
             const row_data = state.row_data.slice();
             const row_raws = row_data.items(.raw);
@@ -2591,6 +2597,23 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 state.rows,
                 self.cells.size.rows,
             );
+
+            // When we have a prediction overlay and we're not doing a full
+            // rebuild, remember which rows are being rebuilt this frame:
+            // ghost text cells on rows that aren't rebuilt persist in the
+            // cell buffer from a prior frame and must not be re-added.
+            // This allocates before the no-fail errdefer below.
+            var prediction_rebuilt_rows: ?[]bool = null;
+            defer if (prediction_rebuilt_rows) |r| self.alloc.free(r);
+            if (prediction != null and !rebuild) {
+                const rows = try self.alloc.alloc(bool, row_len);
+                @memcpy(rows, row_dirty[0..row_len]);
+                prediction_rebuilt_rows = rows;
+            }
+
+            // From this point on we never fail. We produce some kind of
+            // working terminal state, even if incorrect.
+            errdefer comptime unreachable;
 
             // Determine our x/y range for preedit. We don't want to render anything
             // here because we will render the preedit separately.
@@ -2809,6 +2832,62 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     };
 
                     x += if (cp.wide) 2 else 1;
+                }
+            }
+
+            // Setup our prediction ghost text. This draws faint regular
+            // terminal glyphs starting at the cursor, wrapping at the
+            // right grid edge and clipping at the bottom of the viewport.
+            // It is suppressed while an IME preedit is active, on the
+            // alternate screen, while a password input is detected, when
+            // the cursor is outside the viewport, or when the cursor is
+            // not at a shell prompt. Unlike the preedit, underlying cells
+            // are not masked: at an empty prompt the cells after the
+            // cursor are blank anyway.
+            if (prediction) |codepoints| prediction: {
+                if (preedit != null) break :prediction;
+                if (state.screen != .primary) break :prediction;
+                if (state.cursor.password_input) break :prediction;
+                if (!state.cursor.at_prompt) break :prediction;
+                const cursor_vp = state.cursor.viewport orelse
+                    break :prediction;
+
+                var pos: renderer.State.Prediction.Position = .{
+                    .x = cursor_vp.x,
+                    .y = cursor_vp.y,
+                };
+                for (codepoints) |cp| {
+                    const placed = renderer.State.Prediction.placeNext(
+                        pos,
+                        cp.wide,
+                        state.cols,
+                        state.rows,
+                    );
+                    pos = placed.next;
+                    const cell = switch (placed.advance) {
+                        .clipped => break :prediction,
+                        .cell => |c| c,
+                    };
+
+                    // Only add cells on rows that were rebuilt this frame.
+                    // Rows that weren't rebuilt still hold the ghost text
+                    // cells added by a prior frame; re-adding them would
+                    // double-draw the glyphs.
+                    if (prediction_rebuilt_rows) |rebuilt| {
+                        if (!rebuilt[cell.y]) continue;
+                    }
+
+                    self.addPredictionCell(
+                        cp,
+                        .{ .x = @intCast(cell.x), .y = @intCast(cell.y) },
+                        state.colors.foreground,
+                    ) catch |err| {
+                        log.warn("error building prediction cell, will be invalid x={} y={}, err={}", .{
+                            cell.x,
+                            cell.y,
+                            err,
+                        });
+                    };
                 }
             }
 
@@ -3512,6 +3591,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
             self.cells.setCursor(.{
                 .atlas = .grayscale,
+
                 .bools = .{ .is_cursor_glyph = true },
                 .grid_pos = .{ x, cursor_vp.y },
                 .color = .{ cursor_color.r, cursor_color.g, cursor_color.b, alpha },
@@ -3564,6 +3644,50 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             if (cp.wide and coord.x < self.cells.size.columns - 1) {
                 try self.addUnderline(@intCast(coord.x + 1), @intCast(coord.y), .single, screen_fg, 255);
             }
+        }
+        /// Add a single faint ghost text cell for the prediction
+        /// candidate. This is the same glyph rendering as the preedit but
+        /// with the configured faint opacity and no underline, so the
+        /// candidate reads as inline ghost text.
+        fn addPredictionCell(
+            self: *Self,
+            cp: renderer.State.Prediction.Codepoint,
+            coord: terminal.Coordinate,
+            screen_fg: terminal.color.RGB,
+        ) !void {
+            // Render the glyph for our ghost text
+            const render_ = self.font_grid.renderCodepoint(
+                self.alloc,
+                @intCast(cp.codepoint),
+                .regular,
+                .text,
+                .{ .grid_metrics = self.grid_metrics },
+            ) catch |err| {
+                log.warn("error rendering prediction glyph err={}", .{err});
+                return;
+            };
+            const render = render_ orelse {
+                log.warn("failed to find font for prediction codepoint={X}", .{cp.codepoint});
+                return;
+            };
+
+            // Add our text using the configured faint opacity.
+            try self.cells.add(self.alloc, .text, .{
+                .atlas = .grayscale,
+                .grid_pos = .{ @intCast(coord.x), @intCast(coord.y) },
+                .color = .{
+                    screen_fg.r,
+                    screen_fg.g,
+                    screen_fg.b,
+                    self.config.faint_opacity,
+                },
+                .glyph_pos = .{ render.glyph.atlas_x, render.glyph.atlas_y },
+                .glyph_size = .{ render.glyph.width, render.glyph.height },
+                .bearings = .{
+                    @intCast(render.glyph.offset_x),
+                    @intCast(render.glyph.offset_y),
+                },
+            });
         }
 
         /// Sync the atlas data to the given texture. This copies the bytes

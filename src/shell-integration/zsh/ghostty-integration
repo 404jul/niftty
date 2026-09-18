@@ -226,8 +226,38 @@ _ghostty_deferred_init() {
         # its preexec hook before us, we'll incorrectly mark its output as
         # belonging to the command (as if the user typed it into zle) rather
         # than command output.
-        builtin print -nu $_ghostty_fd '\e]133;C\a'
+
+        # End of input, start of output. When prediction is enabled,
+        # also report the command line to the terminal as a
+        # percent-encoded `cmdline_url` option on the same OSC 133 C
+        # mark. Percent-encoding guarantees the argument contains no
+        # backslashes, so print's escape processing only sees our own.
+        if [[ "$GHOSTTY_PREDICTION" == "1" ]]; then
+            builtin print -nu $_ghostty_fd '\e]133;C;cmdline_url='"$(_ghostty_urlencode "$1")"$'\a'
+        else
+            builtin print -nu $_ghostty_fd '\e]133;C\a'
+        fi
         (( _ghostty_state = 1 ))
+    }
+
+
+    # Dependency-free byte-wise percent encoder used to report the
+    # command line to the terminal (OSC 133 C `cmdline_url`) when
+    # prediction is enabled. Encodes every byte except RFC 3986
+    # unreserved characters. no_multibyte makes all indexing and
+    # arithmetic below byte-wise.
+    _ghostty_urlencode() {
+        builtin emulate -L zsh -o no_warn_create_global -o no_aliases -o no_multibyte
+        builtin local input="$1" out="" i char
+        for (( i = 1; i <= $#input; i++ )); do
+            char=$input[i]
+            if [[ $char == [A-Za-z0-9._~-] ]]; then
+                out+=$char
+            else
+                out+=%$(( [##16] #char ))
+            fi
+        done
+        builtin printf '%s' "$out"
     }
 
     # Enable reporting current working dir to terminal. Ghostty supports

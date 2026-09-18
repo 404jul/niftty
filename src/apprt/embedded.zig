@@ -2147,6 +2147,35 @@ pub const CAPI = struct {
         surface.mousePressureCallback(stage, pressure);
     }
 
+    /// Set the prediction candidate for the surface. The candidate is
+    /// rendered as faint ghost text at the cursor while the shell sits
+    /// at an empty prompt. See the ghostty_surface_prediction_set docs
+    /// in ghostty.h for the full contract. Returns true if the
+    /// candidate was accepted for display.
+    export fn ghostty_surface_prediction_set(
+        surface: *Surface,
+        id_ptr: [*]const u8,
+        id_len: usize,
+        revision: u64,
+        text_ptr: [*]const u8,
+        text_len: usize,
+    ) bool {
+        return surface.core_surface.predictionSubmit(.{
+            .id = id_ptr[0..id_len],
+            .revision = revision,
+            .text = text_ptr[0..text_len],
+        }) catch |err| {
+            log.err("error submitting prediction candidate err={}", .{err});
+            return false;
+        };
+    }
+
+    /// Clear the prediction candidate for the surface, if any. This does
+    /// not change the prediction context revision.
+    export fn ghostty_surface_prediction_clear(surface: *Surface) void {
+        surface.core_surface.predictionClear();
+    }
+
     export fn ghostty_surface_ime_point(
         surface: *Surface,
         x: *f64,

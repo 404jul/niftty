@@ -39,6 +39,12 @@ extension Ghostty {
             }
         }
 
+        /// The app-scoped prediction engine. It owns no history; it
+        /// bridges core prediction events to the replaceable provider
+        /// seam and publishes observations. See
+        /// Features/Prediction/PredictionEngine.swift.
+        let predictionEngine = PredictionEngine()
+
         /// True if we need to confirm before quitting.
         var needsConfirmQuit: Bool {
             guard let app = app else { return false }
@@ -807,6 +813,18 @@ extension Ghostty {
 
             case GHOSTTY_ACTION_COMMAND_FINISHED:
                 commandFinished(app, target: target, v: action.action.command_finished)
+
+            case GHOSTTY_ACTION_PREDICTION_PROMPT_READY:
+                predictionPromptReady(app, target: target, v: action.action.prediction_prompt_ready)
+
+            case GHOSTTY_ACTION_PREDICTION_COMMAND_STARTED:
+                predictionCommandStarted(app, target: target, v: action.action.prediction_command_started)
+
+            case GHOSTTY_ACTION_PREDICTION_CANDIDATE_ACCEPTED:
+                predictionCandidateAccepted(app, target: target, v: action.action.prediction_candidate_accepted)
+
+            case GHOSTTY_ACTION_PREDICTION_CANDIDATE_DISMISSED:
+                predictionCandidateDismissed(app, target: target, v: action.action.prediction_candidate_dismissed)
 
             case GHOSTTY_ACTION_PRESENT_TERMINAL:
                 return presentTerminal(app, target: target)
@@ -1654,6 +1672,16 @@ extension Ghostty {
                 guard let surface = target.target.surface else { return }
                 guard let surfaceView = self.surfaceView(from: surface) else { return }
 
+                // Feed the prediction engine's command observation. This
+                // is independent of the notification configuration below.
+                if let ghosttyApp = appInstance(app), ghosttyApp.config.prediction {
+                    ghosttyApp.predictionEngine.commandFinished(
+                        surfaceView,
+                        exitCode: Int32(v.exit_code),
+                        durationNs: v.duration
+                    )
+                }
+
                 // Determine if we even care about command finish notifications
                 guard let config = (NSApplication.shared.delegate as? AppDelegate)?.ghostty.config else { return }
                 switch config.notifyOnCommandFinish {
@@ -1716,6 +1744,80 @@ extension Ghostty {
                 assertionFailure()
             }
         }
+        /// Returns the App instance for a ghostty_app_t, if resolvable.
+        private static func appInstance(_ app: ghostty_app_t) -> App? {
+            guard let app_ud = ghostty_app_userdata(app) else { return nil }
+            return Unmanaged<App>.fromOpaque(app_ud).takeUnretainedValue()
+        }
+
+        private static func predictionPromptReady(
+            _ app: ghostty_app_t,
+            target: ghostty_target_s,
+            v: ghostty_action_prediction_prompt_ready_s
+        ) {
+            guard target.tag == GHOSTTY_TARGET_SURFACE,
+                  let surface = target.target.surface,
+                  let surfaceView = self.surfaceView(from: surface)
+            else { return }
+            appInstance(app)?.predictionEngine.promptReady(
+                surfaceView,
+                revision: v.revision
+            )
+        }
+
+        private static func predictionCommandStarted(
+            _ app: ghostty_app_t,
+            target: ghostty_target_s,
+            v: ghostty_action_prediction_command_started_s
+        ) {
+            guard target.tag == GHOSTTY_TARGET_SURFACE,
+                  let surface = target.target.surface,
+                  let surfaceView = self.surfaceView(from: surface)
+            else { return }
+            let command = String(decoding: UnsafeRawBufferPointer(
+                start: v.command,
+                count: Int(v.len)
+            ), as: UTF8.self)
+            appInstance(app)?.predictionEngine.commandStarted(
+                surfaceView,
+                command: command,
+                revision: v.revision
+            )
+        }
+
+        private static func predictionCandidateAccepted(
+            _ app: ghostty_app_t,
+            target: ghostty_target_s,
+            v: ghostty_action_prediction_candidate_accepted_s
+        ) {
+            guard target.tag == GHOSTTY_TARGET_SURFACE,
+                  let surface = target.target.surface,
+                  let surfaceView = self.surfaceView(from: surface)
+            else { return }
+            appInstance(app)?.predictionEngine.candidateAccepted(
+                surfaceView,
+                revision: v.revision,
+                insertedBytes: v.inserted_bytes,
+                insertedCodepoints: v.inserted_codepoints
+            )
+        }
+
+        private static func predictionCandidateDismissed(
+            _ app: ghostty_app_t,
+            target: ghostty_target_s,
+            v: ghostty_action_prediction_candidate_dismissed_s
+        ) {
+            guard target.tag == GHOSTTY_TARGET_SURFACE,
+                  let surface = target.target.surface,
+                  let surfaceView = self.surfaceView(from: surface)
+            else { return }
+            appInstance(app)?.predictionEngine.candidateDismissed(
+                surfaceView,
+                revision: v.revision,
+                reason: PredictionEngine.DismissReason(cReason: v.reason)
+            )
+        }
+
 
         private static func toggleFloatWindow(
             _ app: ghostty_app_t,
@@ -2362,7 +2464,6 @@ extension Ghostty {
                 return false
             }
         }
-
         private static func searchTotal(
             _ app: ghostty_app_t,
             target: ghostty_target_s,
@@ -2461,6 +2562,13 @@ extension Ghostty {
                     guard let app_ud = ghostty_app_userdata(app) else { return }
                     let ghostty = Unmanaged<App>.fromOpaque(app_ud).takeUnretainedValue()
                     ghostty.config = config
+
+                    // Keep the prediction engine in sync with the runtime
+                    // prediction configuration. Disabling cancels in-flight
+                    // provider work; core clears candidates on its side.
+                    if !config.prediction {
+                        ghostty.predictionEngine.configDidChange(predictionEnabled: false)
+                    }
 
                     return
 

@@ -142,8 +142,16 @@ pub const Message = union(enum) {
     /// Report the progress of an action using a GUI element
     progress_report: terminal.osc.Command.ProgressReport,
 
-    /// A command has started in the shell, start a timer.
-    start_command,
+    /// A command has started in the shell, start a timer. The payload is
+    /// the decoded command line reported by shell integration (OSC 133 C
+    /// `cmdline_url`/`cmdline`), empty when the shell didn't report one.
+    /// The receiver takes ownership and must call `deinit`.
+    start_command: WriteReq,
+
+    /// The shell finished drawing its prompt and input can begin
+    /// (OSC 133 B). This is the boundary where a new prediction context
+    /// starts.
+    prompt_ready: void,
 
     /// A command has finished in the shell, stop the timer and send out
     /// notifications as appropriate. The optional u8 is the exit code

@@ -133,6 +133,28 @@ fi
 _ghostty_executing=""
 _ghostty_last_reported_cwd=""
 
+# Dependency-free byte-wise percent encoder used to report the command
+# line to the terminal (OSC 133 C `cmdline_url`) when prediction is
+# enabled. Encodes every byte except RFC 3986 unreserved characters.
+function __ghostty_urlencode() {
+  builtin local input="$1" out="" i char
+  builtin local LC_ALL=C
+  for ((i = 0; i < ${#input}; i++)); do
+    char="${input:i:1}"
+    case "$char" in
+      [A-Za-z0-9._~-]) out+="$char" ;;
+      *)
+        # Bytes >= 0x80 report as negative char codes in the C locale,
+        # so mask to the unsigned byte value.
+        builtin printf -v code '%d' "'$char"
+        builtin printf -v char '%%%02X' "$(( code & 255 ))"
+        out+="$char"
+        ;;
+    esac
+  done
+  builtin printf '%s' "$out"
+}
+
 function __ghostty_precmd() {
   local ret="$?"
   if test "$_ghostty_executing" != "0"; then
@@ -210,8 +232,14 @@ function __ghostty_preexec() {
     builtin printf "\e]2;%s\a" "${cmd//[[:cntrl:]]/}"
   fi
 
-  # End of input, start of output.
-  builtin printf "\e]133;C;\a"
+  # End of input, start of output. When prediction is enabled, also
+  # report the command line to the terminal as a percent-encoded
+  # `cmdline_url` option on the same OSC 133 C mark.
+  if [[ "$GHOSTTY_PREDICTION" == "1" ]]; then
+    builtin printf "\e]133;C;cmdline_url=%s\a" "$(__ghostty_urlencode "$cmd")"
+  else
+    builtin printf "\e]133;C;\a"
+  fi
   _ghostty_executing=1
 }
 

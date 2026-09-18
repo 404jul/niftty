@@ -334,6 +334,12 @@ extension Notification.Name {
 
     /// Focus the search field
     static let ghosttySearchFocus = Notification.Name("com.niftty.app.searchFocus")
+
+    /// A prediction event (context, command observation, or candidate
+    /// outcome). The typed PredictionEngine.Event value is in the
+    /// userInfo under PredictionEventKey.
+    static let nifttyPredictionObservation = Notification.Name("com.niftty.app.predictionObservation")
+    static let PredictionEventKey = nifttyPredictionObservation.rawValue + ".event"
 }
 
 // NOTE: I am moving all of these to Notification.Name extensions over time. This

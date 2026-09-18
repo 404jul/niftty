@@ -616,6 +616,42 @@ test "OSC 133: end_input_start_output with cmdline_url 2" {
     try testing.expectEqualStrings("echo bobr kurwa", w.written());
 }
 
+test "OSC 133: end_input_start_output with cmdline_url quotes" {
+    const testing = std.testing;
+
+    var w: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer w.deinit();
+
+    var p: Parser = .init(null);
+    const input = "133;C;cmdline_url=git%20commit%20-m%20%22a%3B%20b%22%20%27c%27";
+    for (input) |ch| p.next(ch);
+
+    const cmd = p.end(null).?.*;
+    try testing.expect(cmd == .semantic_prompt);
+    try testing.expect(cmd.semantic_prompt.action == .end_input_start_output);
+
+    try cmd.semantic_prompt.writeCommandLine(&w.writer);
+    try testing.expectEqualStrings("git commit -m \"a; b\" 'c'", w.written());
+}
+
+test "OSC 133: end_input_start_output with cmdline_url unicode" {
+    const testing = std.testing;
+
+    var w: std.Io.Writer.Allocating = .init(testing.allocator);
+    defer w.deinit();
+
+    var p: Parser = .init(null);
+    const input = "133;C;cmdline_url=echo%20caf%C3%A9%20%E4%BD%A0%E5%A5%BD";
+    for (input) |ch| p.next(ch);
+
+    const cmd = p.end(null).?.*;
+    try testing.expect(cmd == .semantic_prompt);
+    try testing.expect(cmd.semantic_prompt.action == .end_input_start_output);
+
+    try cmd.semantic_prompt.writeCommandLine(&w.writer);
+    try testing.expectEqualStrings("echo café 你好", w.written());
+}
+
 test "OSC 133: end_input_start_output with cmdline_url 3" {
     const testing = std.testing;
 

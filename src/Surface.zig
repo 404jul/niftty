@@ -175,6 +175,22 @@ readonly: bool = false,
 /// the wall clock time that has elapsed between timestamps.
 command_timer: ?std.Io.Timestamp = null,
 
+/// Monotonic revision of the prediction context. Every event that
+/// invalidates the context (a new prompt, any input, focus loss, command
+/// lifecycle, disabling the configuration) increments this. Candidate
+/// submissions and acceptance require an exact match against it so stale
+/// candidates can never be displayed or inserted.
+prediction_revision: u64 = 0,
+
+/// The active command line reported by shell integration (OSC 133 C),
+/// kept while the command runs. Owned by this surface.
+prediction_active_command: ?[]u8 = null,
+
+/// Set for the duration of a key event whose binding successfully
+/// accepted the prediction candidate, so the key event itself does not
+/// also invalidate the (now consumed) candidate. See keyCallback.
+prediction_skip_key_invalidation: bool = false,
+
 /// Search state
 search: ?Search = null,
 
@@ -343,6 +359,7 @@ const DerivedConfig = struct {
     notify_on_command_finish_action: configpkg.Config.NotifyOnCommandFinishAction,
     notify_on_command_finish_after: Duration,
     key_remaps: input.KeyRemapSet,
+    prediction: bool,
 
     const Link = struct {
         regex: oni.Regex,
@@ -423,6 +440,8 @@ const DerivedConfig = struct {
             .notify_on_command_finish = config.@"notify-on-command-finish",
             .notify_on_command_finish_action = config.@"notify-on-command-finish-action",
             .notify_on_command_finish_after = config.@"notify-on-command-finish-after",
+            .prediction = config.prediction,
+
             .key_remaps = try config.@"key-remap".clone(alloc),
 
             // Assignments happen sequentially so we have to do this last
@@ -669,6 +688,7 @@ pub fn init(
             .ssh_upload_verbose = config.@"ssh-upload-verbose",
             .cursor_blink = config.@"cursor-style-blink",
             .working_directory = if (config.@"working-directory") |wd| wd.value() else null,
+            .prediction = config.prediction,
             .resources_dir = global.resourcesDir().host(),
             .term = config.term,
             .rt_pre_exec_info = .init(config),
@@ -840,6 +860,10 @@ pub fn deinit(self: *Surface) void {
     for (self.keyboard.sequence_queued.items) |req| req.deinit();
     self.keyboard.sequence_queued.deinit(self.alloc);
     self.keyboard.table_stack.deinit(self.alloc);
+
+    // Clean up our prediction state
+    if (self.renderer_state.prediction) |p| p.deinit(self.alloc);
+    if (self.prediction_active_command) |cmd| self.alloc.free(cmd);
 
     // Clean up our font grid
     self.app.font_grid_set.deref(self.font_grid_key);
@@ -1163,8 +1187,77 @@ pub fn handleMessage(self: *Surface, msg: Message) !void {
             try self.selectionScrollTick();
         },
 
-        .start_command => {
+        .start_command => |command| {
+            defer command.deinit();
+
             self.command_timer = .now(global.io(), .awake);
+
+            // A command starting always invalidates the prediction
+            // context and dismisses any visible candidate.
+            self.predictionInvalidate(.command);
+
+            // Keep the active command for observation. When prediction is
+            // disabled we drop it: no observation is ever sent.
+            if (self.prediction_active_command) |old| {
+                self.alloc.free(old);
+                self.prediction_active_command = null;
+            }
+
+            if (self.config.prediction) {
+                if (command.slice().len > 0) {
+                    self.prediction_active_command = self.alloc.dupe(
+                        u8,
+                        command.slice(),
+                    ) catch |err| {
+                        log.warn(
+                            "error storing active command for prediction err={}",
+                            .{err},
+                        );
+                        return;
+                    };
+                }
+
+                _ = self.rt_app.performAction(
+                    .{ .surface = self },
+                    .prediction_command_started,
+                    .{
+                        .command = self.prediction_active_command orelse "",
+                        .revision = self.prediction_revision,
+                    },
+                ) catch |err| {
+                    log.warn(
+                        "apprt failed to notify prediction command start={}",
+                        .{err},
+                    );
+                };
+            }
+        },
+
+        .prompt_ready => {
+            // A new prompt starts a new prediction context.
+            self.predictionInvalidate(.prompt);
+
+            // The command that was running (if any) has finished; clear
+            // the retained command line.
+            if (self.prediction_active_command) |old| {
+                self.alloc.free(old);
+                self.prediction_active_command = null;
+            }
+
+            log.info("prediction prompt ready revision={}", .{self.prediction_revision});
+
+            if (self.config.prediction) {
+                _ = self.rt_app.performAction(
+                    .{ .surface = self },
+                    .prediction_prompt_ready,
+                    .{ .revision = self.prediction_revision },
+                ) catch |err| {
+                    log.warn(
+                        "apprt failed to notify prediction prompt ready={}",
+                        .{err},
+                    );
+                };
+            }
         },
 
         .stop_command => |v| timer: {
@@ -1269,6 +1362,8 @@ fn selectionScrollTick(self: *Surface) !void {
 fn childExited(self: *Surface, info: apprt.surface.Message.ChildExited) void {
     // Mark our flag that we exited immediately
     self.child_exited = true;
+    // The child exiting invalidates the prediction context.
+    self.predictionInvalidate(.child_exit);
 
     // If our runtime was below some threshold then we assume that this
     // was an abnormal exit and we show an error message.
@@ -1438,6 +1533,11 @@ fn passwordInput(self: *Surface, v: bool) !void {
 
         self.io.terminal.flags.password_input = v;
     }
+
+    // Password input invalidates the prediction context: ghost text has
+    // no business sitting at a hidden prompt. This must run outside the
+    // renderer mutex above since invalidation takes it too.
+    if (v) self.predictionInvalidate(.secure_input);
 
     // Notify our apprt so it can do whatever it wants.
     _ = self.rt_app.performAction(
@@ -1793,6 +1893,19 @@ pub fn updateConfig(
     // If our mouse is hidden but we disabled mouse hiding, then show it again.
     if (!self.config.mouse_hide_while_typing and self.mouse.hidden) {
         self.showMouse();
+    }
+
+    // If prediction was disabled, immediately clear all prediction
+    // state: dismiss any visible candidate, drop the retained command
+    // line, and invalidate the context. New submissions are rejected by
+    // the config check in predictionSubmit and observations stop being
+    // sent, since every sender below is gated on the config.
+    if (!self.config.prediction) {
+        self.predictionInvalidate(.disabled);
+        if (self.prediction_active_command) |old| {
+            self.alloc.free(old);
+            self.prediction_active_command = null;
+        }
     }
 
     // If we are in the middle of a key sequence, clear it.
@@ -2551,6 +2664,8 @@ fn balancePaddingIfNeeded(self: *Surface) void {
 /// with dead key states, for example, when typing an accent character.
 /// This should be called with null to reset the preedit state.
 ///
+/// A non-empty preedit invalidates the prediction context.
+///
 /// The core surface will NOT reset the preedit state on charCallback or
 /// keyCallback and we rely completely on the apprt implementation to track
 /// the preedit state correctly.
@@ -2562,6 +2677,13 @@ pub fn preeditCallback(self: *Surface, preedit_: ?[]const u8) !void {
     // Crash metadata in case we crash in here
     crash.sentry.thread_state = self.crashThreadState();
     defer crash.sentry.thread_state = null;
+
+    // A non-empty IME preedit invalidates the prediction context. This
+    // must happen before the mutex is taken below since invalidation
+    // takes it too.
+    if (preedit_) |text| {
+        if (text.len > 0) self.predictionInvalidate(.preedit);
+    }
 
     self.renderer_state.mutex.lockUncancelable(global.io());
     defer self.renderer_state.mutex.unlock(global.io());
@@ -2625,6 +2747,243 @@ pub fn preeditCallback(self: *Surface, preedit_: ?[]const u8) !void {
         .codepoints = try codepoints.toOwnedSlice(self.alloc),
     };
     try self.queueRender();
+}
+
+/// A prediction candidate submission from the embedding application.
+pub const PredictionSubmission = struct {
+    /// Identifies the candidate for outcome reporting. Non-empty.
+    id: []const u8,
+
+    /// The prediction context revision this candidate belongs to. Must
+    /// exactly match the surface's current revision.
+    revision: u64,
+
+    /// The insertion text. Must be non-empty valid UTF-8 with no C0/C1
+    /// controls and at most `rendererpkg.State.Prediction.max_text_len`
+    /// bytes.
+    text: []const u8,
+};
+
+/// Submit a prediction candidate for display. Returns true if the
+/// candidate was accepted and is now rendered as ghost text at the
+/// cursor; false if the submission was rejected (stale revision,
+/// prediction disabled, ineligible terminal state, or invalid text).
+///
+/// A successful submission replaces any prior candidate without changing
+/// the context revision. This must be called from the GUI thread.
+pub fn predictionSubmit(self: *Surface, sub: PredictionSubmission) !bool {
+    // These checks don't need the terminal lock.
+    if (!self.config.prediction) {
+        log.info("prediction submission rejected: prediction disabled", .{});
+        return false;
+    }
+    if (self.child_exited) {
+        log.info("prediction submission rejected: child exited", .{});
+        return false;
+    }
+    if (self.readonly) {
+        log.info("prediction submission rejected: readonly", .{});
+        return false;
+    }
+    if (!self.focused) {
+        log.info("prediction submission rejected: surface not focused", .{});
+        return false;
+    }
+
+    // Validate and build the candidate before taking any locks.
+    var candidate = rendererpkg.State.Prediction.init(
+        self.alloc,
+        sub.id,
+        sub.revision,
+        sub.text,
+    ) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => {
+            log.info("prediction submission rejected: invalid candidate err={}", .{err});
+            return false;
+        },
+    };
+    errdefer candidate.deinit(self.alloc);
+
+    self.renderer_state.mutex.lockUncancelable(global.io());
+    defer self.renderer_state.mutex.unlock(global.io());
+
+    // A submission requires the exact current revision and an eligible
+    // terminal state.
+    if (sub.revision != self.prediction_revision) {
+        log.info("prediction submission rejected: stale revision={} expected={}", .{ sub.revision, self.prediction_revision });
+        return false;
+    }
+    const t: *terminal.Terminal = &self.io.terminal;
+    if (t.flags.password_input) {
+        log.info("prediction submission rejected: password input", .{});
+        return false;
+    }
+    if (self.renderer_state.preedit != null) {
+        log.info("prediction submission rejected: preedit active", .{});
+        return false;
+    }
+    if (!t.cursorIsAtPrompt()) {
+        log.info("prediction submission rejected: cursor not at prompt", .{});
+        return false;
+    }
+    if (t.screens.active_key != .primary) {
+        log.info("prediction submission rejected: alternate screen", .{});
+        return false;
+    }
+
+    log.info("prediction candidate accepted for display id={s} revision={} len={}", .{ sub.id, sub.revision, sub.text.len });
+
+    // Store the candidate, replacing (and freeing) any prior one. The
+    // context revision is intentionally unchanged.
+    if (self.renderer_state.prediction) |old| old.deinit(self.alloc);
+    self.renderer_state.prediction = candidate;
+
+    // Mark the frame fully dirty: the overlay can span rows.
+    t.flags.dirty.prediction = true;
+
+    // A failed wake only delays drawing until the next frame, so it is
+    // not an error condition for the submission.
+    self.queueRender() catch |err| {
+        log.warn("failed to wake renderer for prediction err={}", .{err});
+    };
+    return true;
+}
+
+/// Clear the prediction candidate without changing the context revision.
+/// This is the embedding application's own lever (e.g. replacing or
+/// withdrawing a candidate); it reports no dismissal outcome.
+pub fn predictionClear(self: *Surface) void {
+    {
+        self.renderer_state.mutex.lockUncancelable(global.io());
+        defer self.renderer_state.mutex.unlock(global.io());
+
+        const candidate = self.renderer_state.prediction orelse return;
+        candidate.deinit(self.alloc);
+        self.renderer_state.prediction = null;
+        self.io.terminal.flags.dirty.prediction = true;
+    }
+
+    self.queueRender() catch {};
+}
+
+/// Accept the visible prediction candidate, if it is still valid, and
+/// write its insertion text to the pty as ordinary input. No Enter is
+/// ever appended. Returns false (after invalidating the context) when
+/// there is no still-valid candidate, so a performable keybinding falls
+/// through to the terminal.
+fn predictionAccept(self: *Surface) !bool {
+    const accepted = accepted: {
+        self.renderer_state.mutex.lockUncancelable(global.io());
+        defer self.renderer_state.mutex.unlock(global.io());
+
+        const candidate = self.renderer_state.prediction orelse
+            break :accepted null;
+
+        // Revalidate everything the render path suppresses on. If any
+        // check fails there is no still-valid candidate.
+        if (candidate.revision != self.prediction_revision) break :accepted null;
+        const t: *terminal.Terminal = &self.io.terminal;
+        if (t.flags.password_input) break :accepted null;
+        if (self.renderer_state.preedit != null) break :accepted null;
+        if (!t.cursorIsAtPrompt()) break :accepted null;
+        if (t.screens.active_key != .primary) break :accepted null;
+
+        // Atomically copy the text and clear the candidate. An
+        // allocation failure leaves the candidate intact; the mutex is
+        // released by the defer above.
+        const text = try self.alloc.dupe(u8, candidate.text);
+        const revision = candidate.revision;
+        const codepoint_count: u32 = @intCast(candidate.codepoints.len);
+        candidate.deinit(self.alloc);
+        self.renderer_state.prediction = null;
+        t.flags.dirty.prediction = true;
+
+        break :accepted .{
+            .text = text,
+            .revision = revision,
+            .codepoint_count = codepoint_count,
+        };
+    } orelse {
+        // No valid candidate: invalidate whatever is left so nothing
+        // stale can be accepted later, and report not performed so the
+        // key falls through to the terminal.
+        self.predictionInvalidate(.key);
+        return false;
+    };
+    defer self.alloc.free(accepted.text);
+
+    // Queue exactly the candidate bytes through the normal (readonly
+    // checked) write path. No Enter is synthesized.
+    self.queueIo(
+        try termio.Message.writeReq(self.alloc, accepted.text),
+        .unlocked,
+    );
+
+    _ = self.rt_app.performAction(
+        .{ .surface = self },
+        .prediction_candidate_accepted,
+        .{
+            .revision = accepted.revision,
+            .inserted_bytes = @intCast(accepted.text.len),
+            .inserted_codepoints = accepted.codepoint_count,
+        },
+    ) catch |err| {
+        log.warn("apprt failed to notify prediction acceptance={}", .{err});
+    };
+
+    return true;
+}
+
+/// Dismiss the current prediction candidate, reporting the outcome to
+/// the apprt. Does nothing if no candidate is showing. The context
+/// revision is not changed by this; use `predictionInvalidate` for that.
+fn predictionDismissLocked(
+    self: *Surface,
+    reason: apprt.action.PredictionCandidateDismissed.DismissReason,
+) void {
+    const revision = revision: {
+        self.renderer_state.mutex.lockUncancelable(global.io());
+        defer self.renderer_state.mutex.unlock(global.io());
+
+        const candidate = self.renderer_state.prediction orelse
+            break :revision null;
+        const revision = candidate.revision;
+        candidate.deinit(self.alloc);
+        self.renderer_state.prediction = null;
+        self.io.terminal.flags.dirty.prediction = true;
+        break :revision revision;
+    } orelse return;
+
+    self.queueRender() catch {};
+
+    _ = self.rt_app.performAction(
+        .{ .surface = self },
+        .prediction_candidate_dismissed,
+        .{ .revision = revision, .reason = reason },
+    ) catch |err| {
+        log.warn("apprt failed to notify prediction dismissal={}", .{err});
+    };
+}
+
+/// Invalidate the prediction context: bump the revision so in-flight or
+/// stored candidates for the old revision become stale, and dismiss any
+/// visible candidate with the given reason.
+fn predictionInvalidate(
+    self: *Surface,
+    reason: apprt.action.PredictionCandidateDismissed.DismissReason,
+) void {
+    self.prediction_revision += 1;
+    self.predictionDismissLocked(reason);
+}
+
+/// Invalidate the prediction context for a key event, unless the event's
+/// binding just accepted the candidate (in which case the candidate is
+/// already consumed). Release events never invalidate.
+fn predictionKeyInvalidated(self: *Surface, event: input.KeyEvent) void {
+    if (event.action == .release) return;
+    if (self.prediction_skip_key_invalidation) return;
+    self.predictionInvalidate(.key);
 }
 
 /// Returns true if the given key event would trigger a keybinding
@@ -2692,6 +3051,11 @@ pub fn keyCallback(
         event.mods = self.config.key_remaps.apply(event_orig.mods);
     }
 
+    // Reset the one-shot skip flag for this event. A successful
+    // accept_prediction binding re-sets it below so the accepting key
+    // itself doesn't invalidate the candidate it just consumed.
+    self.prediction_skip_key_invalidation = false;
+
     // Crash metadata in case we crash in here
     crash.sentry.thread_state = self.crashThreadState();
     defer crash.sentry.thread_state = null;
@@ -2727,7 +3091,19 @@ pub fn keyCallback(
     if (try self.maybeHandleBinding(
         event,
         if (insp_ev) |*ev| ev else null,
-    )) |v| return v;
+    )) |v| {
+        // Any key press invalidates the prediction context unless the
+        // binding just accepted the prediction candidate. This runs
+        // after binding handling so acceptance can consume the candidate
+        // first. A closing action means this surface is gone, so don't
+        // touch it.
+        if (v != .closed) self.predictionKeyInvalidated(event);
+        return v;
+    }
+
+    // The key wasn't consumed by a binding; it will become terminal
+    // input, which invalidates the prediction context.
+    self.predictionKeyInvalidated(event);
     // If we allow KAM and KAM is enabled then we do nothing.
     if (self.config.vt_kam_allowed) {
         self.renderer_state.mutex.lockUncancelable(global.io());
@@ -3312,11 +3688,13 @@ fn encodeKeyOpts(self: *const Surface) input.key_encode.Options {
 /// protocol. This will treat the input text as if it was pasted
 /// from the clipboard so the same logic will be applied. Namely,
 /// if bracketed mode is on this will do a bracketed paste. Otherwise,
-/// this will filter newlines to '\r'.
 pub fn textCallback(self: *Surface, text: []const u8) !void {
     // Crash metadata in case we crash in here
     crash.sentry.thread_state = self.crashThreadState();
     defer crash.sentry.thread_state = null;
+
+    // Any text input or paste invalidates the prediction context.
+    self.predictionInvalidate(.text);
 
     try self.completeClipboardPaste(text, true);
 }
@@ -3357,6 +3735,11 @@ pub fn focusCallback(self: *Surface, focused: bool) !void {
     // Crash metadata in case we crash in here
     crash.sentry.thread_state = self.crashThreadState();
     defer crash.sentry.thread_state = null;
+
+    // Losing focus invalidates the prediction context. Submissions also
+    // require a focused surface, so a stale in-flight provider result is
+    // rejected regardless.
+    if (!focused) self.predictionInvalidate(.focus);
 
     // Always update the app focused surface, otherwise we miss
     // the first surface created.
@@ -3823,6 +4206,7 @@ pub fn mouseButtonCallback(
     }
 
     // Always record our latest mouse state
+
     self.mouse.click_state[@intCast(@intFromEnum(button))] = action;
 
     // Always show the mouse again if it is hidden
@@ -4872,6 +5256,16 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
                     log.warn("error scrolling to bottom err={}", .{err});
                 };
             }
+        },
+
+        .accept_prediction => {
+            const accepted = try self.predictionAccept();
+            if (accepted) {
+                // The key that performed this action must not also
+                // invalidate the context; see keyCallback.
+                self.prediction_skip_key_invalidation = true;
+            }
+            return accepted;
         },
 
         .text => |data| {

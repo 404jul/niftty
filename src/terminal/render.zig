@@ -141,6 +141,7 @@ pub const RenderState = struct {
             .style = undefined,
             .visual_style = .block,
             .password_input = false,
+            .at_prompt = false,
             .visible = true,
             .blinking = false,
         },
@@ -187,6 +188,12 @@ pub const RenderState = struct {
 
         /// Cursor blink state determined by the terminal mode.
         blinking: bool,
+
+        /// True if the cursor is currently sitting at a shell prompt
+        /// according to semantic prompt state (OSC 133). This mirrors
+        /// Terminal.cursorIsAtPrompt for render-time use, e.g. to
+        /// suppress overlays such as prediction ghost text.
+        at_prompt: bool,
 
         pub const Viewport = struct {
             /// The x/y position of the cursor within the viewport.
@@ -424,6 +431,14 @@ pub const RenderState = struct {
         self.cursor.password_input = t.flags.password_input;
         self.cursor.visible = t.modes.get(.cursor_visible);
         self.cursor.blinking = t.modes.get(.cursor_blinking);
+        self.cursor.at_prompt = cursor_at_prompt: {
+            const page_row = s.cursor.page_row;
+            if (page_row.semantic_prompt != .none) break :cursor_at_prompt true;
+            break :cursor_at_prompt switch (s.cursor.semantic_content) {
+                .input, .prompt => true,
+                .output => false,
+            };
+        };
 
         // Always reset the cursor viewport position. In the future we can
         // probably cache this by comparing the cursor pin and viewport pin

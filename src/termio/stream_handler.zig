@@ -1428,8 +1428,42 @@ pub const StreamHandler = struct {
         cmd: Stream.Action.SemanticPrompt,
     ) !void {
         switch (cmd.action) {
+            .end_prompt_start_input => {
+                // OSC 133 B: the shell finished drawing its prompt and
+                // input can begin. This is the boundary where a new
+                // prediction context starts.
+                self.surfaceMessageWriter(.prompt_ready);
+            },
+
             .end_input_start_output => {
-                self.surfaceMessageWriter(.start_command);
+                // Decode the command line the shell reported (if any) so
+                // the surface can observe it. Shells without a cmdline
+                // option report an empty line.
+                const command: apprt.surface.Message.WriteReq = command: {
+                    var stream: std.Io.Writer.Allocating = .init(self.alloc);
+                    defer stream.deinit();
+
+                    cmd.writeCommandLine(&stream.writer) catch |err| {
+                        log.warn(
+                            "failed to decode OSC 133 command line err={}",
+                            .{err},
+                        );
+                        break :command .{ .stable = "" };
+                    };
+
+                    break :command apprt.surface.Message.WriteReq.init(
+                        self.alloc,
+                        stream.written(),
+                    ) catch |err| {
+                        log.warn(
+                            "error allocating command line write req err={}",
+                            .{err},
+                        );
+                        break :command .{ .stable = "" };
+                    };
+                };
+
+                self.surfaceMessageWriter(.{ .start_command = command });
             },
 
             .end_command => {
@@ -1445,7 +1479,6 @@ pub const StreamHandler = struct {
             },
 
             // Handled by Terminal, no special handling by us
-            .end_prompt_start_input,
             .end_prompt_start_input_terminate_eol,
             .fresh_line,
             .fresh_line_new_prompt,

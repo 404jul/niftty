@@ -575,6 +575,7 @@ pub const Config = struct {
     ssh_auto_forward_notify: bool = true,
     ssh_upload_verbose: bool = true,
     cursor_blink: ?bool = null,
+    prediction: bool = true,
     working_directory: ?[]const u8 = null,
     resources_dir: ?[]const u8,
     term: []const u8,
@@ -788,6 +789,10 @@ const Subprocess = struct {
             try env.put(
                 "GHOSTTY_SSH_UPLOAD_VERBOSE",
                 if (cfg.ssh_upload_verbose) "1" else "0",
+            );
+            try env.put(
+                "GHOSTTY_PREDICTION",
+                if (cfg.prediction) "1" else "0",
             );
 
             const force: ?shell_integration.Shell = switch (cfg.shell_integration) {
