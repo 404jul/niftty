@@ -72,7 +72,7 @@ fn runInner(
     // print a message, otherwise we do nothing.
     if (reports.items.len == 0) {
         if (try stdout_file.isTty(global.io())) {
-            try stdout.writeAll("No crash reports! 👻\n");
+            try stdout.writeAll("No crash reports! 😭\n");
         }
         return 0;
     }

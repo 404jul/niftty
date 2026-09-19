@@ -150,7 +150,7 @@ final class KeybindsModel: ObservableObject {
                       let actions = parse.actions,
                       !actions.isEmpty
                 else {
-                    let message = parse.error ?? "not valid Ghostty keybind syntax"
+                    let message = parse.error ?? "not valid Niftty keybind syntax"
                     newAdvanced.append(AdvancedLine(
                         id: index,
                         raw: raw,

@@ -756,6 +756,10 @@ fn runInteractiveSession(
     );
 
     const pid = ssh_session.currentPid();
+    const ledger_path: ?[]const u8 = if (mux) |m| (if (m.key) |key|
+        ssh_mux.tunnelsPath(gpa, key) catch null
+    else
+        ssh_session.tunnelsPathForPid(gpa, pid) catch null) else null;
     if (mux) |m| {
         ssh_session.write(gpa, pid, .{
             .control_path = m.control_path,
@@ -764,20 +768,19 @@ fn runInteractiveSession(
             .key = m.key,
         }) catch |err| log.warn("unable to publish SSH session: {t}", .{err});
     }
+    ssh_session.sweepStale(gpa);
+    if (mux) |m| if (ledger_path) |lp| pruneStaleForwards(gpa, opts.ssh, m.control_path, m.destination, lp);
     var watch_pid = std.atomic.Value(i32).init(0);
     var running = std.atomic.Value(bool).init(true);
     const monitor = if (mux) |m| blk: {
-        const ledger_path = if (m.key) |key|
-            ssh_mux.tunnelsPath(gpa, key) catch break :blk null
-        else
-            ssh_session.tunnelsPathForPid(gpa, pid) catch break :blk null;
+        const lp = ledger_path orelse break :blk null;
         break :blk std.Thread.spawn(.{}, monitorRemotePorts, .{
             MonitorArgs{
                 .ssh = opts.ssh,
                 .control_path = m.control_path,
                 .destination = m.destination,
                 .notify = forward_notify,
-                .ledger_path = ledger_path,
+                .ledger_path = lp,
                 .key = m.key,
                 .lock_dir = m.lock_dir,
                 .auto_forward = auto_forward,
@@ -862,6 +865,10 @@ const port_watch_script =
     \\      [ -z "$line" ] && continue
     \\      grep -F -x -q "$line" "$old" || printf 'P %s\n' "$line"
     \\    done < "$old.new"
+    \\    while IFS= read -r line; do
+    \\      [ -z "$line" ] && continue
+    \\      grep -F -x -q "$line" "$old.new" || printf 'R %s\n' "$line"
+    \\    done < "$old"
     \\  fi
     \\  mv "$old.new" "$old"
     \\  sleep 5
@@ -1017,6 +1024,12 @@ test "cwd reporter watches child not parent" {
     try testing.expect(std.mem.indexOf(u8, cwd_reporter_command, "/proc/$PPID/cwd") == null);
 }
 
+test "port watch script reports both additions and removals" {
+    const testing = std.testing;
+    try testing.expect(std.mem.indexOf(u8, port_watch_script, "'P %s\\n'") != null);
+    try testing.expect(std.mem.indexOf(u8, port_watch_script, "'R %s\\n'") != null);
+}
+
 const MonitorArgs = struct {
     ssh: []const u8,
     control_path: []const u8,
@@ -1110,8 +1123,10 @@ fn runWatcher(args: MonitorArgs, alloc: Allocator) void {
                 continue;
             },
         };
-        const port = parseWatchLine(line) orelse continue;
-        applyForward(args, alloc, port);
+        switch (parseWatchEvent(line) orelse continue) {
+            .add => |port| applyForward(args, alloc, port),
+            .remove => |port| removeForward(args, alloc, port),
+        }
     }
 }
 
@@ -1158,14 +1173,85 @@ fn applyForward(args: MonitorArgs, alloc: Allocator, remote_port: u16) void {
     if (args.notify) notifyForward(remote_port, local_port);
 }
 
-fn parseWatchLine(raw: []const u8) ?u16 {
+/// Close and forget a forward whose remote listener disappeared. Unlike
+/// `Ledger.remove`, this deliberately does not mark the remote port
+/// ignored: if the remote service restarts, auto-forward re-opens it.
+fn removeForward(args: MonitorArgs, alloc: Allocator, remote_port: u16) void {
+    var ledger = ssh_tunnel.load(alloc, args.ledger_path) catch return;
+    defer ledger.deinit();
+    const tunnel = for (ledger.tunnels.items) |tunnel| {
+        if (tunnel.remote_port == remote_port) break tunnel;
+    } else return;
+    _ = ssh_tunnel.closeLocal(
+        alloc,
+        args.ssh,
+        args.control_path,
+        args.destination,
+        tunnel.local_port,
+        remote_port,
+    ) catch {};
+    _ = ledger.dropRemote(remote_port);
+    ssh_tunnel.save(alloc, args.ledger_path, ledger) catch return;
+}
+
+/// Drop ledger entries that no longer reflect reality: when the master is
+/// gone everything goes, otherwise only tunnels whose local listener died.
+/// Never marks remotes ignored so auto-forward can re-open them later.
+fn pruneStaleForwards(
+    gpa: Allocator,
+    ssh: []const u8,
+    control_path: []const u8,
+    destination: []const u8,
+    ledger_path: []const u8,
+) void {
+    var ledger = ssh_tunnel.load(gpa, ledger_path) catch |err| {
+        log.warn("unable to load tunnel ledger: {t}", .{err});
+        return;
+    };
+    defer ledger.deinit();
+    if (ledger.tunnels.items.len == 0) return;
+
+    // Snapshot before mutating: dropRemote edits the list while iterating.
+    const remote_ports = gpa.alloc(u16, ledger.tunnels.items.len) catch return;
+    defer gpa.free(remote_ports);
+    const local_ports = gpa.alloc(u16, ledger.tunnels.items.len) catch return;
+    defer gpa.free(local_ports);
+    for (ledger.tunnels.items, remote_ports, local_ports) |tunnel, *remote_port, *local_port| {
+        remote_port.* = tunnel.remote_port;
+        local_port.* = tunnel.local_port;
+    }
+
+    var dropped = false;
+    if (!checkMaster(gpa, ssh, control_path, destination)) {
+        for (remote_ports) |remote_port| dropped = ledger.dropRemote(remote_port) or dropped;
+    } else {
+        for (remote_ports, local_ports) |remote_port, local_port| {
+            if (!ssh_tunnel.listenerAlive(local_port)) dropped = ledger.dropRemote(remote_port) or dropped;
+        }
+    }
+    if (!dropped) return;
+    ssh_tunnel.save(gpa, ledger_path, ledger) catch |err| {
+        log.warn("unable to save tunnel ledger: {t}", .{err});
+    };
+}
+
+const WatchEvent = union(enum) { add: u16, remove: u16 };
+
+fn parseWatchEvent(raw: []const u8) ?WatchEvent {
     const trimmed = std.mem.trim(u8, raw, " \t\r\n");
-    const payload = if (std.mem.startsWith(u8, trimmed, "P ")) trimmed[2..] else trimmed;
+    var payload = trimmed;
+    var removed = false;
+    if (std.mem.startsWith(u8, payload, "R ")) {
+        removed = true;
+        payload = payload[2..];
+    } else if (std.mem.startsWith(u8, payload, "P ")) {
+        payload = payload[2..];
+    }
     const addr = stripListenSuffix(payload);
     if (!isLoopbackOrAllInterfaces(addr)) return null;
     const port = portFromListenAddr(addr) orelse return null;
     if (isIgnoredPort(port)) return null;
-    return port;
+    return if (removed) .{ .remove = port } else .{ .add = port };
 }
 
 fn checkMaster(
@@ -1326,13 +1412,14 @@ test "stripListenSuffix: lsof optional suffix" {
     try testing.expectEqualStrings("*:3000", stripListenSuffix("*:3000"));
 }
 
-test "parseWatchLine: P-prefixed listen addresses" {
+test "parseWatchEvent: add and remove listen addresses" {
     const testing = std.testing;
-    try testing.expectEqual(@as(?u16, 3000), parseWatchLine("P 127.0.0.1:3000"));
-    try testing.expectEqual(@as(?u16, 43210), parseWatchLine("P *:43210 (LISTEN)"));
-    try testing.expectEqual(@as(?u16, null), parseWatchLine("P 127.0.0.1:80"));
-    try testing.expectEqual(@as(?u16, null), parseWatchLine("P 192.168.1.10:3000"));
-    try testing.expectEqual(@as(?u16, 8080), parseWatchLine("0.0.0.0:8080"));
+    try testing.expectEqual(WatchEvent{ .add = 3000 }, parseWatchEvent("P 127.0.0.1:3000"));
+    try testing.expectEqual(WatchEvent{ .add = 43210 }, parseWatchEvent("P *:43210 (LISTEN)"));
+    try testing.expectEqual(@as(?WatchEvent, null), parseWatchEvent("P 127.0.0.1:80"));
+    try testing.expectEqual(@as(?WatchEvent, null), parseWatchEvent("P 192.168.1.10:3000"));
+    try testing.expectEqual(WatchEvent{ .add = 8080 }, parseWatchEvent("0.0.0.0:8080"));
+    try testing.expectEqual(WatchEvent{ .remove = 3000 }, parseWatchEvent("R 127.0.0.1:3000\n"));
 }
 
 fn notifyForward(remote_port: u16, local_port: u16) void {

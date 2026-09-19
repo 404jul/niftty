@@ -27,6 +27,9 @@ class TerminalWindow: NSWindow {
     /// SSH ports button in titlebar
     private let sshPortsAccessory = NSTitlebarAccessoryViewController()
 
+    /// SSH upload button in titlebar
+    private let sshUploadAccessory = NSTitlebarAccessoryViewController()
+
     /// Visual indicator that mirrors the selected tab color.
     private lazy var tabColorIndicator: NSHostingView<TabColorIndicatorView> = {
         let view = NSHostingView(rootView: TabColorIndicatorView(tabColor: tabColor))
@@ -163,6 +166,13 @@ class TerminalWindow: NSWindow {
             ))
             addTitlebarAccessoryViewController(sshPortsAccessory)
             sshPortsAccessory.view.translatesAutoresizingMaskIntoConstraints = false
+
+            sshUploadAccessory.layoutAttribute = .right
+            sshUploadAccessory.view = NonDraggableHostingView(rootView: SSHUploadAccessoryView(
+                viewModel: viewModel
+            ))
+            addTitlebarAccessoryViewController(sshUploadAccessory)
+            sshUploadAccessory.view.translatesAutoresizingMaskIntoConstraints = false
         }
 
         // Setup the accessory view for tabs that shows our keyboard shortcuts,

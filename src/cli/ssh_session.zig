@@ -186,6 +186,30 @@ pub fn anyWithKey(alloc: Allocator, key: []const u8) bool {
     return false;
 }
 
+/// Remove state files for sessions whose pid no longer exists. Best
+/// effort: any failure to list, parse, or signal is skipped, mirroring
+/// `anyWithKey`'s defensive style. `<pid>.tunnels` sidecars are removed
+/// together with their pid by `remove`.
+pub fn sweepStale(alloc: Allocator) void {
+    var environ = global.environMap() catch return;
+    defer environ.deinit();
+    const dir_path = stateDir(alloc, &environ) catch return;
+    defer alloc.free(dir_path);
+    var dir = std.Io.Dir.openDirAbsolute(global.io(), dir_path, .{ .iterate = true }) catch return;
+    defer dir.close(global.io());
+    var it = dir.iterate();
+    while (it.next(global.io()) catch return) |entry| {
+        if (entry.kind != .file) continue;
+        if (std.mem.indexOfScalar(u8, entry.name, '.') != null) continue;
+        const pid = std.fmt.parseUnsigned(u64, entry.name, 10) catch continue;
+        const alive = std.posix.kill(
+            @intCast(@min(pid, std.math.maxInt(std.posix.pid_t))),
+            @enumFromInt(0),
+        ) catch |err| err == error.PermissionDenied;
+        if (!alive) remove(alloc, pid);
+    }
+}
+
 test "session state round trip" {
     const testing = std.testing;
     const pid = currentPid();

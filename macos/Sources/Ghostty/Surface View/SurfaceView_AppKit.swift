@@ -305,7 +305,7 @@ extension Ghostty {
             // Set a timer to show the ghost emoji after 500ms if no title is set
             titleFallbackTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { [weak self] _ in
                 if let self = self, self.title.isEmpty {
-                    self.title = "👻"
+                    self.title = "😭"
                 }
             }
 
@@ -622,7 +622,7 @@ extension Ghostty {
                     // Empty means that user wants the title to be set automatically
                     // We also need to reload the config for the "title" property to be
                     // used again by this tab.
-                    let prevTitle = titleFromTerminal ?? "👻"
+                    let prevTitle = titleFromTerminal ?? "😭"
                     titleFromTerminal = nil
                     setTitle(prevTitle)
                 } else {
@@ -2432,6 +2432,18 @@ extension Ghostty.SurfaceView {
     /// path must match what `+ssh` computes from HOME in the shell.
     private func hasActiveSSHSession(pid: Int) -> Bool {
         SSHSessionStore.isActive(pid: pid)
+    }
+
+    /// Upload local files or directories through the active SSH session using
+    /// the same transport as drag-and-drop. Returns false when there is no
+    /// active session or no usable remote working directory.
+    func uploadFilesToSSH(paths: [String]) -> Bool {
+        guard let pid = surfaceModel?.foregroundPID,
+              SSHSessionStore.isActive(pid: pid),
+              let remoteDirectory = sshRemoteDirectory,
+              !paths.isEmpty else { return false }
+        startSSHUpload(paths: paths, remoteDirectory: remoteDirectory, pid: pid)
+        return true
     }
 
     /// Uploads a clipboard image to `/tmp` on the active managed SSH session.

@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 enum SSHSessionStore {
@@ -12,7 +13,9 @@ enum SSHSessionStore {
     }
 
     static func isActive(pid: Int) -> Bool {
-        FileManager.default.fileExists(atPath: stateURL(pid: pid).path)
+        guard FileManager.default.fileExists(atPath: stateURL(pid: pid).path) else { return false }
+        // A session that died without cleanup leaves its state file behind.
+        return kill(pid_t(pid), 0) == 0 || errno == EPERM
     }
 
     struct Tunnel: Identifiable, Equatable {

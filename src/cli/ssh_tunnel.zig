@@ -104,6 +104,24 @@ pub const Ledger = struct {
         }
         return found;
     }
+
+    /// Remove every tunnel for `remote_port` without recording it as
+    /// ignored, so auto-forward may re-open it later (e.g. after the
+    /// remote service restarts).
+    pub fn dropRemote(self: *Ledger, remote_port: u16) bool {
+        var found = false;
+        var i: usize = 0;
+        while (i < self.tunnels.items.len) {
+            if (self.tunnels.items[i].remote_port != remote_port) {
+                i += 1;
+                continue;
+            }
+            var removed = self.tunnels.orderedRemove(i);
+            removed.deinit(self.alloc);
+            found = true;
+        }
+        return found;
+    }
 };
 
 pub fn load(alloc: Allocator, path: []const u8) !Ledger {
@@ -219,6 +237,22 @@ pub fn closeLocal(
     return request(alloc, ssh, control_path, destination, .cancel, local_port, remote_port);
 }
 
+/// Whether something is still listening on `local_port` on this machine.
+/// Used to detect stale ledger entries whose local forward died. Uncertain
+/// outcomes (unexpected errors) report `true` so nothing is pruned wrongly.
+pub fn listenerAlive(local_port: u16) bool {
+    const address = std.Io.net.IpAddress.parseIp4(loopback, local_port) catch return true;
+    var stream = address.connect(global.io(), .{
+        .mode = .stream,
+        .timeout = .{ .duration = .{ .raw = .fromMilliseconds(250), .clock = .awake } },
+    }) catch |err| switch (err) {
+        error.ConnectionRefused, error.Timeout, error.ConnectionResetByPeer, error.AddressUnavailable => return false,
+        else => return true,
+    };
+    stream.close(global.io());
+    return true;
+}
+
 const MuxOp = enum { forward, cancel };
 
 fn request(
@@ -309,6 +343,21 @@ test "Ledger.remove records ignore so auto-forward will not reopen" {
     try testing.expect(ledger.remove(3000, 3000));
     try testing.expectEqual(@as(usize, 0), ledger.tunnels.items.len);
     try testing.expect(ledger.ignores(3000));
+}
+
+test "Ledger.dropRemote removes without recording ignore" {
+    const testing = std.testing;
+    const data =
+        \\1
+        \\F 127.0.0.1 3000 127.0.0.1 3000
+        \\F 127.0.0.1 8081 127.0.0.1 8080
+        \\
+    ;
+    var ledger = try parseLedger(testing.allocator, data);
+    defer ledger.deinit();
+    try testing.expect(ledger.dropRemote(3000));
+    try testing.expectEqual(@as(usize, 1), ledger.tunnels.items.len);
+    try testing.expect(!ledger.ignores(3000));
 }
 
 test "writeLedger round trip" {

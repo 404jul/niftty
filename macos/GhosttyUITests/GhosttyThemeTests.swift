@@ -154,7 +154,7 @@ final class GhosttyThemeTests: GhosttyCustomConfigCase {
         // open quick terminal
         app.menuBarItems["View"].firstMatch.click()
         app.menuItems["Quick Terminal"].firstMatch.click()
-        let title = "Debug builds of Ghostty are very slow and you may experience performance problems. Debug builds are only recommended during development."
+        let title = "Debug builds of Niftty are very slow and you may experience performance problems. Debug builds are only recommended during development."
         try assertTitlebarAppearance(.light, for: app, title: title, colorLocation: CGPoint(x: 5, y: 5)) // to avoid dark edge
         XCUIDevice.shared.appearance = .dark
         try await Task.sleep(for: .seconds(0.5))

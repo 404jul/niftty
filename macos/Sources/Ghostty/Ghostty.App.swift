@@ -1622,7 +1622,7 @@ extension Ghostty {
                 let panel = NSSavePanel()
                 panel.allowedContentTypes = [.plainText]
                 panel.canCreateDirectories = true
-                panel.nameFieldStringValue = "ghostty-terminal-io.txt"
+                panel.nameFieldStringValue = "niftty-terminal-io.txt"
                 panel.beginSheetModal(for: window) { response in
                     guard response == .OK, let url = panel.url else { return }
                     do {

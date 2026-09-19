@@ -394,7 +394,7 @@ private struct KeybindEditorSheet: View {
                 } header: {
                     Text("Keys")
                 } footer: {
-                    Text("Ghostty syntax: modifiers (cmd, ctrl, alt, shift), a key, and sequences joined with >. Example: cmd+shift+c")
+                    Text("Niftty syntax: modifiers (cmd, ctrl, alt, shift), a key, and sequences joined with >. Example: cmd+shift+c")
                 }
 
                 Section {
