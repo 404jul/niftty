@@ -202,10 +202,12 @@ pub const Preedit = struct {
 };
 
 /// The prediction candidate for the surface. This is the render-owned
-/// data for Niftty's inline prediction layer: a candidate supplied by the
-/// embedding application that is rendered as faint ghost text at the
-/// cursor while the shell sits at an empty prompt. See
-/// Surface.predictionSubmit for the submission and validation flow.
+/// data for Niftty's inline prediction layer: a candidate supplied by
+/// the embedding application that is rendered as faint ghost text at
+/// the cursor while the shell sits at a prompt. The text is the
+/// remaining suffix of the predicted line when the user has already
+/// typed a prefix. See Surface.predictionSubmit for the submission and
+/// validation flow.
 pub const Prediction = struct {
     /// The maximum length in bytes of the candidate insertion text.
     pub const max_text_len = 4096;

@@ -27,6 +27,11 @@ final class PredictionEngine {
         let surfaceID: UUID
         let revision: UInt64
 
+        /// The typed input line at the prompt when the candidate was
+        /// requested. Empty at a fresh prompt; a prefix of the desired
+        /// line once the user has typed.
+        let input: String
+
         /// The host the shell is running on. Local machines report the
         /// local host name; remotes (e.g. an SSH session) report nil
         /// because the host cannot be identified without probing.
@@ -214,15 +219,20 @@ final class PredictionEngine {
 
     // MARK: Events from core
 
-    /// A shell prompt became ready (OSC 133 B): start a new prediction
-    /// context and request a candidate for it.
-    func promptReady(_ surface: Ghostty.SurfaceView, revision: UInt64) {
-        predictionLogger.info("prompt ready surface=\(surface.id) revision=\(revision)")
+    /// A shell prompt became ready (OSC 133 B), or the typed input line
+    /// changed at the prompt: start a new prediction context and
+    /// request a candidate for it. `input` is the current typed line
+    /// ("" for an empty prompt); candidates for a non-empty input
+    /// should be the remaining suffix of the predicted line.
+    func promptReady(_ surface: Ghostty.SurfaceView, revision: UInt64, input: String) {
+        predictionLogger.info(
+            "prompt ready surface=\(surface.id) revision=\(revision) input=\(input, privacy: .public)"
+        )
 
         // A new context supersedes any in-flight request for this surface.
         cancelPending(surface.id)
 
-        let context = Self.makeContext(surface, revision: revision)
+        let context = Self.makeContext(surface, revision: revision, input: input)
         post(.context(context))
 
         guard let provider else { return }
@@ -365,22 +375,30 @@ final class PredictionEngine {
         predictionLogger.info("submitting candidate id=\(candidate.id, privacy: .public) revision=\(context.revision)")
         let id = Array(candidate.id.utf8)
         let text = Array(candidate.text.utf8)
+        let input = Array(context.input.utf8)
         let accepted = id.withUnsafeBufferPointer { idBuf in
-            text.withUnsafeBufferPointer { textBuf in
-                ghostty_surface_prediction_set(
-                    cSurface,
-                    idBuf.baseAddress?.withMemoryRebound(
-                        to: CChar.self,
-                        capacity: idBuf.count
-                    ) { $0 },
-                    UInt(idBuf.count),
-                    context.revision,
-                    textBuf.baseAddress?.withMemoryRebound(
-                        to: CChar.self,
-                        capacity: textBuf.count
-                    ) { $0 },
-                    UInt(textBuf.count)
-                )
+            input.withUnsafeBufferPointer { inputBuf in
+                text.withUnsafeBufferPointer { textBuf in
+                    ghostty_surface_prediction_set(
+                        cSurface,
+                        idBuf.baseAddress?.withMemoryRebound(
+                            to: CChar.self,
+                            capacity: idBuf.count
+                        ) { $0 },
+                        UInt(idBuf.count),
+                        context.revision,
+                        inputBuf.baseAddress?.withMemoryRebound(
+                            to: CChar.self,
+                            capacity: inputBuf.count
+                        ) { $0 },
+                        UInt(inputBuf.count),
+                        textBuf.baseAddress?.withMemoryRebound(
+                            to: CChar.self,
+                            capacity: textBuf.count
+                        ) { $0 },
+                        UInt(textBuf.count)
+                    )
+                }
             }
         }
         predictionLogger.info("core submission result accepted=\(accepted)")
@@ -435,11 +453,13 @@ final class PredictionEngine {
     /// identified without probing.
     private static func makeContext(
         _ surface: Ghostty.SurfaceView,
-        revision: UInt64
+        revision: UInt64,
+        input: String
     ) -> PredictionContext {
         PredictionContext(
             surfaceID: surface.id,
             revision: revision,
+            input: input,
             host: host(for: surface),
             localPath: surface.pwd,
             remotePath: surface.remotePwd?.path,

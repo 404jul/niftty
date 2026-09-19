@@ -920,6 +920,10 @@ typedef struct {
 typedef struct {
   // the prediction context revision this event belongs to
   uint64_t revision;
+  // the current typed input line at the prompt (empty at a fresh
+  // prompt); valid only for the duration of the action
+  const char* input;
+  uintptr_t input_len;
 } ghostty_action_prediction_prompt_ready_s;
 
 // apprt.action.PredictionCommandStarted.C
@@ -1273,12 +1277,15 @@ GHOSTTY_API void ghostty_surface_mouse_scroll(ghostty_surface_t,
 GHOSTTY_API void ghostty_surface_mouse_pressure(ghostty_surface_t, uint32_t, double);
 
 // Set the prediction candidate for the surface. The candidate is
-// rendered as faint ghost text at the cursor while the shell sits at an
-// empty prompt. `id` identifies the candidate for outcome reporting,
+// rendered as faint ghost text at the cursor while the shell sits at a
+// prompt. `id` identifies the candidate for outcome reporting,
 // `revision` must exactly match the surface's current prediction context
-// revision (see the prediction_prompt_ready action), and `text` is the
-// insertion text that will be written to the pty when the candidate is
-// accepted. The text must be non-empty valid UTF-8 with no C0/C1
+// revision (see the prediction_prompt_ready action), `input` must exactly
+// match the typed input line the candidate was computed for (empty for a
+// fresh empty prompt), and `text` is the insertion text that will be
+// written to the pty when the candidate is accepted (the remaining
+// suffix of the predicted line, not the whole line, when `input` is
+// non-empty). The text must be non-empty valid UTF-8 with no C0/C1
 // controls and at most 4096 bytes. Returns true if the candidate was
 // accepted for display, false if the submission was rejected.
 GHOSTTY_API bool ghostty_surface_prediction_set(
@@ -1286,6 +1293,8 @@ GHOSTTY_API bool ghostty_surface_prediction_set(
     const char* id,
     uintptr_t id_len,
     uint64_t revision,
+    const char* input,
+    uintptr_t input_len,
     const char* text,
     uintptr_t text_len);
 

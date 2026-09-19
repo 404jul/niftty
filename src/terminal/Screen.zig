@@ -83,6 +83,12 @@ else
 /// Semantic prompt (OSC133) state.
 semantic_prompt: SemanticPrompt = .disabled,
 
+/// The position where the current input region begins: recorded when
+/// shell integration marks the start of user input (OSC 133 B) and
+/// cleared when output begins (OSC 133 C/D). The prediction layer uses
+/// this to distinguish an empty prompt from a partially typed line.
+input_origin: ?struct { row: *pagepkg.Row, x: size.CellCountInt } = null,
+
 /// Dirty flags for the renderer.
 dirty: Dirty = .{},
 
@@ -2844,6 +2850,7 @@ pub fn cursorSetSemanticContent(self: *Screen, t: union(enum) {
         .output => {
             cursor.semantic_content = .output;
             cursor.semantic_content_clear_eol = false;
+            self.input_origin = null;
         },
 
         .input => |clear| {
@@ -2852,6 +2859,7 @@ pub fn cursorSetSemanticContent(self: *Screen, t: union(enum) {
                 .clear_explicit => false,
                 .clear_eol => true,
             };
+            self.input_origin = .{ .row = cursor.page_row, .x = cursor.x };
         },
 
         .prompt => |kind| {
@@ -2864,6 +2872,16 @@ pub fn cursorSetSemanticContent(self: *Screen, t: union(enum) {
             };
         },
     }
+}
+
+/// True when the cursor is exactly at the recorded start of the
+/// current input region. This distinguishes an empty prompt from a
+/// partially typed line: both are "at a prompt" (see cursorIsAtPrompt
+/// on Terminal), but only the former is at the input origin. See
+/// `input_origin`.
+pub fn cursorAtInputOrigin(self: *const Screen) bool {
+    const origin = self.input_origin orelse return false;
+    return self.cursor.page_row == origin.row and self.cursor.x == origin.x;
 }
 
 /// Set the selection to the given selection. If this is a tracked selection

@@ -45,6 +45,12 @@ extension Ghostty {
         /// Features/Prediction/PredictionEngine.swift.
         let predictionEngine = PredictionEngine()
 
+        /// Durable prediction history: records observed commands and
+        /// serves local candidates through the engine's provider seam.
+        /// nil only when the DEBUG preview provider was already
+        /// installed at init.
+        private var predictionHistoryRecorder: HistoryRecorder?
+
         /// True if we need to confirm before quitting.
         var needsConfirmQuit: Bool {
             guard let app = app else { return false }
@@ -113,6 +119,23 @@ extension Ghostty {
                 name: NSApplication.didResignActiveNotification,
                 object: nil)
             self.readiness = .ready
+
+            // Prediction history: record every observed command
+            // durably and serve local candidates through the engine's
+            // replaceable provider seam. The DEBUG preview provider
+            // (NIFFTY_PREDICTION_PREVIEW) wins if already installed.
+            let historyRecorder = MainActor.assumeIsolated {
+                HistoryRecorder(
+                    store: HistoryStore(),
+                    enabled: config.prediction
+                )
+            }
+            self.predictionHistoryRecorder = historyRecorder
+            if predictionEngine.provider == nil {
+                predictionEngine.provider = { [weak historyRecorder] context in
+                    await historyRecorder?.predict(context)
+                }
+            }
         }
 
         deinit {
@@ -1759,9 +1782,14 @@ extension Ghostty {
                   let surface = target.target.surface,
                   let surfaceView = self.surfaceView(from: surface)
             else { return }
+            let input = String(decoding: UnsafeRawBufferPointer(
+                start: v.input,
+                count: Int(v.input_len)
+            ), as: UTF8.self)
             appInstance(app)?.predictionEngine.promptReady(
                 surfaceView,
-                revision: v.revision
+                revision: v.revision,
+                input: input
             )
         }
 

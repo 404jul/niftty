@@ -2841,9 +2841,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
             // It is suppressed while an IME preedit is active, on the
             // alternate screen, while a password input is detected, when
             // the cursor is outside the viewport, or when the cursor is
-            // not at a shell prompt. Unlike the preedit, underlying cells
-            // are not masked: at an empty prompt the cells after the
-            // cursor are blank anyway.
+            // not at a prompt. The cursor may be mid-line: the candidate
+            // is the suffix of the typed line, so ghost text renders
+            // right where the next inserted character would go.
             if (prediction) |codepoints| prediction: {
                 if (preedit != null) break :prediction;
                 if (state.screen != .primary) break :prediction;

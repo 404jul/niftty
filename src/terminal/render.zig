@@ -142,6 +142,7 @@ pub const RenderState = struct {
             .visual_style = .block,
             .password_input = false,
             .at_prompt = false,
+            .at_input_origin = false,
             .visible = true,
             .blinking = false,
         },
@@ -194,6 +195,13 @@ pub const RenderState = struct {
         /// Terminal.cursorIsAtPrompt for render-time use, e.g. to
         /// suppress overlays such as prediction ghost text.
         at_prompt: bool,
+
+        /// True if the cursor is exactly at the start of the input
+        /// region (the last OSC 133 B position): the prompt line is
+        /// empty and ready for input. Prediction ghost text can render
+        /// anywhere in the input region, but other overlays may use
+        /// this to restrict themselves to an empty line.
+        at_input_origin: bool,
 
         pub const Viewport = struct {
             /// The x/y position of the cursor within the viewport.
@@ -439,6 +447,7 @@ pub const RenderState = struct {
                 .output => false,
             };
         };
+        self.cursor.at_input_origin = s.cursorAtInputOrigin();
 
         // Always reset the cursor viewport position. In the future we can
         // probably cache this by comparing the cursor pin and viewport pin

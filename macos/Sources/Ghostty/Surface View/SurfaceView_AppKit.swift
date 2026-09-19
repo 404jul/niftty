@@ -421,6 +421,15 @@ extension Ghostty {
             // during deinit, so didSet passes this instance explicitly.
             pendingClipboardConfirmation = nil
 
+            // Announce actual teardown. Posted here rather than from the
+            // close-surface callback because that path is a request that
+            // confirmation can decline; deallocation is unambiguous.
+            // NotificationCenter post is thread-safe and `id` is an
+            // immutable Sendable value.
+            NotificationCenter.default.post(
+                name: .nifttySurfaceClosed,
+                object: id)
+
             // Remove all of our notificationcenter subscriptions
             let center = NotificationCenter.default
             center.removeObserver(self)

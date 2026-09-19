@@ -340,6 +340,12 @@ extension Notification.Name {
     /// userInfo under PredictionEventKey.
     static let nifttyPredictionObservation = Notification.Name("com.niftty.app.predictionObservation")
     static let PredictionEventKey = nifttyPredictionObservation.rawValue + ".event"
+
+    /// A terminal surface was torn down (its view deallocated). The
+    /// object is the closed surface's UUID; the view is gone by the
+    /// time this is delivered. Unlike `ghosttyCloseSurface` — a
+    /// closable *request* — this always means the surface is gone.
+    static let nifttySurfaceClosed = Notification.Name("com.niftty.app.surfaceClosed")
 }
 
 // NOTE: I am moving all of these to Notification.Name extensions over time. This

@@ -2258,6 +2258,15 @@ pub fn cursorIsAtPrompt(self: *Terminal) bool {
     };
 }
 
+/// True when the cursor is exactly at the start of the current input
+/// region as marked by shell integration (OSC 133 B). This is a
+/// stricter check than cursorIsAtPrompt: a partially typed line is
+/// still "at a prompt" but no longer at the input origin.
+pub fn cursorAtInputOrigin(self: *Terminal) bool {
+    if (self.screens.active_key == .alternate) return false;
+    return self.screens.active.cursorAtInputOrigin();
+}
+
 /// Horizontal tab moves the cursor to the next tabstop, clearing
 /// the screen to the left the tabstop.
 pub fn horizontalTab(self: *Terminal) void {
@@ -15105,6 +15114,44 @@ test "Terminal: semantic prompt" {
         const row = list_cell.row;
         try testing.expectEqual(.none, row.semantic_prompt);
     }
+}
+
+test "Terminal: cursor at input origin tracks empty prompt" {
+    const alloc = testing.allocator;
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 20, .rows = 5 });
+    defer t.deinit(alloc);
+
+    // Prompt text, then the start of input (OSC 133 B): the empty
+    // prompt is at the input origin.
+    try t.semanticPrompt(.init(.fresh_line_new_prompt));
+    for ("hello") |c| try t.print(c);
+    try t.semanticPrompt(.init(.end_prompt_start_input));
+    try testing.expect(t.cursorIsAtPrompt());
+    try testing.expect(t.cursorAtInputOrigin());
+
+    // Typing moves the cursor off the origin: still at a prompt, but
+    // no longer at the input origin (the line is being edited).
+    for ("ls") |c| try t.print(c);
+    try testing.expect(t.cursorIsAtPrompt());
+    try testing.expect(!t.cursorAtInputOrigin());
+
+    // Backspacing to the origin (empty line again) restores it.
+    t.backspace();
+    t.backspace();
+    try testing.expect(t.cursorAtInputOrigin());
+
+    // Cursor elsewhere on the row (e.g. arrow-left twice from the
+    // origin's neighbor) is not the origin.
+    for ("ab") |c| try t.print(c);
+    t.backspace();
+    try testing.expect(!t.cursorAtInputOrigin());
+    t.backspace();
+    try testing.expect(t.cursorAtInputOrigin());
+
+    // The command-start marker (OSC 133 C) clears the origin.
+    try t.semanticPrompt(.init(.end_input_start_output));
+    try testing.expect(!t.cursorAtInputOrigin());
 }
 
 test "Terminal: semantic prompt continuations" {
