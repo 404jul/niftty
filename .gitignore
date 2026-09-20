@@ -45,3 +45,7 @@ glad.zip
 vgcore.*
 
 /sprite_face_test*
+
+*.xcframework
+.v2c/
+.zcodeignore
