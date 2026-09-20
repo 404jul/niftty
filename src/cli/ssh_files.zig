@@ -9,14 +9,14 @@ const ssh_session = @import("ssh_session.zig");
 const ssh_sftp = @import("ssh_sftp.zig");
 
 const usage =
-    \\Usage: niftty ++ssh-files --pid=<pid> list <absolute-remote-directory>
-    \\       niftty ++ssh-files --pid=<pid> stat <absolute-remote-path>
-    \\       niftty ++ssh-files --pid=<pid> download <absolute-remote-file> <absolute-local-path>
-    \\       niftty ++ssh-files --pid=<pid> mkdir <absolute-remote-directory>
-    \\       niftty ++ssh-files --pid=<pid> rename <absolute-old-path> <absolute-new-path>
-    \\       niftty ++ssh-files --pid=<pid> delete <absolute-remote-path>
+    \\Usage: niftty +ssh-files --pid=<pid> list <absolute-remote-directory>
+    \\       niftty +ssh-files --pid=<pid> stat <absolute-remote-path>
+    \\       niftty +ssh-files --pid=<pid> download <absolute-remote-file> <absolute-local-path>
+    \\       niftty +ssh-files --pid=<pid> mkdir <absolute-remote-directory>
+    \\       niftty +ssh-files --pid=<pid> rename <absolute-old-path> <absolute-new-path>
+    \\       niftty +ssh-files --pid=<pid> delete <absolute-remote-path>
     \\
-    \\File operations over the SFTP subsystem of an active `niftty ++ssh` session.
+    \\File operations over the SFTP subsystem of an active `niftty +ssh` session.
     \\`--pid` is the foreground `+ssh` process. List and stat output is tab-separated
     \\with Base64-encoded names. Download emits `P` progress records then `D`.
     \\
@@ -105,7 +105,7 @@ fn parseCommand(args: []const []const u8) error{InvalidArgs}!Command {
 }
 
 /// File operations through the multiplexed connection owned by an active
-/// `niftty ++ssh` process.
+/// `niftty +ssh` process.
 ///
 /// `--pid` identifies the foreground `+ssh` process. Each invocation
 /// preflights that process's OpenSSH control master, then opens a

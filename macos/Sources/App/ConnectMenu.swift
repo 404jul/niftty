@@ -71,13 +71,14 @@ enum SSHConfig {
     }
 }
 
-/// Owns the Connect menu: SSH hosts from `~/.ssh/config` plus the active
-/// SSH port forwards. Rebuilt from scratch every time the menu opens.
+/// Owns the Remote menu (formerly Connect): SSH hosts from `~/.ssh/config`,
+/// active SSH port forwards, and file upload for the focused SSH session.
+/// Rebuilt from scratch every time the menu opens.
 final class ConnectMenuController: NSObject, NSMenuDelegate {
     private let ghostty: Ghostty.App
 
     lazy var menuItem: NSMenuItem = {
-        let item = NSMenuItem(title: "Connect", action: nil, keyEquivalent: "")
+        let item = NSMenuItem(title: "Remote", action: nil, keyEquivalent: "")
         item.submenu = menu
         return item
     }()
@@ -95,13 +96,13 @@ final class ConnectMenuController: NSObject, NSMenuDelegate {
 
     init(ghostty: Ghostty.App) {
         self.ghostty = ghostty
-        self.menu = NSMenu(title: "Connect")
+        self.menu = NSMenu(title: "Remote")
         super.init()
         self.menu.delegate = self
         refreshPortsCache()
     }
 
-    func menuNeedsUpdate(_ menu: NSMenu) {
+    @MainActor func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
 
         let hosts = SSHConfig.hosts()
@@ -131,6 +132,14 @@ final class ConnectMenuController: NSObject, NSMenuDelegate {
         fillPortsMenu(portsMenu)
         ports.submenu = portsMenu
         menu.addItem(ports)
+
+        let upload = NSMenuItem(
+            title: "Upload Files…",
+            action: #selector(uploadToRemote(_:)),
+            keyEquivalent: "")
+        upload.target = self
+        upload.isEnabled = focusedUploadSurface() != nil
+        menu.addItem(upload)
 
         menu.addItem(.separator())
 
@@ -234,6 +243,36 @@ final class ConnectMenuController: NSObject, NSMenuDelegate {
 
     // MARK: - Actions
 
+    /// The focused terminal's surface when it is running an active
+    /// `niftty +ssh` session that file upload can target. Must be called
+    /// on the main thread.
+    @MainActor private func focusedUploadSurface() -> Ghostty.SurfaceView? {
+        guard let surface = TerminalController.preferredParent?.focusedSurface,
+              let pid = surface.surfaceModel?.foregroundPID,
+              SSHSessionStore.isActive(pid: pid) else { return nil }
+        return surface
+    }
+
+    @MainActor @objc private func uploadToRemote(_ sender: NSMenuItem) {
+        guard let surface = focusedUploadSurface() else { return }
+        let panel = NSOpenPanel()
+        panel.title = "Upload to Remote"
+        panel.prompt = "Upload"
+        panel.canCreateDirectories = false
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = true
+
+        guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
+        if !surface.uploadFilesToSSH(paths: panel.urls.map(\.path)) {
+            let alert = NSAlert()
+            alert.messageText = "Upload unavailable"
+            alert.informativeText =
+                "The SSH session closed or no remote working directory has been reported yet."
+            alert.runModal()
+        }
+    }
+
     @objc private func openHost(_ sender: NSMenuItem) {
         guard let host = sender.representedObject as? String else { return }
 
@@ -260,7 +299,7 @@ final class ConnectMenuController: NSObject, NSMenuDelegate {
         NSWorkspace.shared.open(SSHConfig.configURL)
     }
 
-    @objc private func reloadSSHConfig(_ sender: NSMenuItem) {
+    @MainActor @objc private func reloadSSHConfig(_ sender: NSMenuItem) {
         menuNeedsUpdate(menu)
     }
 

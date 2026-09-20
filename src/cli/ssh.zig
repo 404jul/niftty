@@ -17,7 +17,7 @@ const global = @import("../global.zig");
 const log = std.log.scoped(.ssh);
 
 const usage =
-    \\Usage: niftty ++ssh [flags] [--] <ssh args...>
+    \\Usage: niftty +ssh [flags] [--] <ssh args...>
     \\
     \\Flags:
     \\  --forward-env[=bool]  Enable TERM / SendEnv forwarding. Default: true.
@@ -122,10 +122,10 @@ pub const Options = struct {
 /// This is typically called by every supported Ghostty shell integration.
 /// Each shell defines an `ssh` function that runs:
 ///
-///     niftty ++ssh <flags> -- "$@"
+///     niftty +ssh <flags> -- "$@"
 ///
-/// You can also run `niftty ++ssh` directly, or alias it yourself (e.g.
-/// `alias ssh='niftty ++ssh --'`) if you prefer not to use the shell
+/// You can also run `niftty +ssh` directly, or alias it yourself (e.g.
+/// `alias ssh='niftty +ssh --'`) if you prefer not to use the shell
 /// integration.
 ///
 /// `+ssh` also keeps one connection-scoped control socket for uploads.
@@ -147,12 +147,18 @@ pub const Options = struct {
 ///      `TERM` is set to `xterm-ghostty` instead of `xterm-256color`.
 ///
 ///   3. **Port forwarding** (`--auto-forward`). Detects listening
-///      unprivileged TCP ports on loopback or all-interfaces on the
-///      remote host, including ports that were already open when the
-///      session started, and forwards them to loopback locally. The
-///      same port is preferred; if it is occupied, Niftty chooses an
-///      available local port. On macOS, the SSH Ports overlay lists
-///      these tunnels and can add or close them.
+///      unprivileged TCP ports on the remote host, including ports that
+///      were already open when the session started, and forwards them to
+///      loopback locally. A port qualifies when its owning process is
+///      interactive (fd 0 is a TTY, so it was started from a user shell —
+///      any bind address) or when it listens on loopback / all-interfaces
+///      (covering daemonized dev services like docker-proxy); common infra
+///      ports (databases, rpcbind, ...) are skipped. The same port is
+///      preferred; if it is occupied, Niftty chooses an available local
+///      port. On macOS, the SSH Ports overlay lists these tunnels and can
+///      add or close them. Closing a tunnel suppresses its port only while
+///      it stays listening; once the remote listener is gone the port
+///      becomes eligible again.
 ///
 ///   4. **Working directory reporting**. Interactive logins (no remote
 ///      command) inject a POSIX middleman that runs the login shell as
@@ -175,8 +181,8 @@ pub const Options = struct {
 ///   * `--terminfo=<bool>`: Enable automatic terminfo install on first
 ///     connection. Default: `true`.
 ///
-///   * `--auto-forward=<bool>`: Enable automatic loopback-only forwarding
-///     of remote development ports. Default: `true`.
+///   * `--auto-forward=<bool>`: Enable automatic local forwarding of
+///     remote development ports. Default: `true`.
 ///
 ///   * `--forward-notify=<bool>`: Show a desktop notification when a
 ///     forward is created. Independent of `--auto-forward`. Default: `true`.
@@ -185,7 +191,7 @@ pub const Options = struct {
 ///     When `false`, both the cache read (skip-if-installed) and the
 ///     cache write (record-on-success) are bypassed, and every
 ///     connection performs the install. To one-shot reinstall a single
-///     host while keeping the cache in use, prefer `niftty ++ssh-cache
+///     host while keeping the cache in use, prefer `niftty +ssh-cache
 ///     --remove=<host>` followed by a normal connection.
 ///
 ///   * `--ssh=<path>`: Path to the `ssh` binary to execute. Default: the
@@ -197,19 +203,19 @@ pub const Options = struct {
 /// Examples:
 ///
 ///     # Basic invocation using defaults:
-///     niftty ++ssh user@example.com
+///     niftty +ssh user@example.com
 ///
 ///     # Forward Ghostty env vars but skip the terminfo install:
-///     niftty ++ssh --terminfo=false user@example.com
+///     niftty +ssh --terminfo=false user@example.com
 ///
 ///     # `ssh` flags (short-form `-p`, etc.) pass through unchanged:
-///     niftty ++ssh -p 2222 -i ~/.ssh/id_ed25519 user@example.com
+///     niftty +ssh -p 2222 -i ~/.ssh/id_ed25519 user@example.com
 ///
 ///     # Use `--` explicitly if your ssh args might collide with our flags:
-///     niftty ++ssh -- --some-rare-ssh-arg user@example.com
+///     niftty +ssh -- --some-rare-ssh-arg user@example.com
 ///
 /// Pass `--verbose` to see what `+ssh` is doing. For cache inspection
-/// and management, see `niftty ++ssh-cache`.
+/// and management, see `niftty +ssh-cache`.
 ///
 /// Available since: 1.4.0
 pub fn run(alloc_gpa: Allocator) !u8 {
@@ -830,31 +836,108 @@ fn exitCode(term: std.process.Child.Term) u8 {
         .stopped, .unknown => 1,
     };
 }
-const port_discovery_script =
-    \\if command -v ss >/dev/null 2>&1; then
-    \\  ss -ltn 2>/dev/null | awk 'NR==1 && $1 ~ /State|Netid/ { next } { print $4 }'
+/// One pass of remote listening-port discovery. Emits one candidate port per
+/// line, deduplicated by the caller. A port is a candidate when either:
+///
+///   * the owning process is interactive — its fd 0 is a TTY — so the
+///     listener was started from some user shell on the host (any bind
+///     address). This is the cmux-style TTY attribution, and it catches dev
+///     servers bound to a specific interface.
+///
+///   * or the listener is on loopback / all-interfaces and unprivileged,
+///     which keeps covering daemonized dev services with no TTY such as
+///     docker-proxy.
+///
+/// Toolchain: `ss -ltnp` + `readlink /proc/<pid>/fd/0` on Linux, `ps` +
+/// `lsof -Fpn` on BSD/macOS, `netstat` as an address-only last resort.
+/// Nothing is installed on the remote host; everything runs over the
+/// existing session channel. The infra denylist (`isIgnoredPort`) is applied
+/// by the local caller, not here.
+const port_scan_script =
+    \\if command -v ss >/dev/null 2>&1 && [ -d /proc ]; then
+    \\  ss -ltnp 2>/dev/null | awk '
+    \\    $1 ~ /^(State|Netid)$/ { next }
+    \\    {
+    \\      line = $0
+    \\      addr = $4
+    \\      pids = ""
+    \\      while (match(line, /pid=[0-9]+/)) {
+    \\        pids = pids " " substr(line, RSTART + 4, RLENGTH - 4)
+    \\        line = substr(line, RSTART + RLENGTH)
+    \\      }
+    \\      print addr pids
+    \\    }
+    \\  ' | while read -r addr pids; do
+    \\    port=${addr##*:}
+    \\    case $port in ''|*[!0-9]*) continue ;; esac
+    \\    [ "$port" -ge 1024 ] || continue
+    \\    for pid in $pids; do
+    \\      scan_tty=$(readlink "/proc/$pid/fd/0" 2>/dev/null)
+    \\      case $scan_tty in
+    \\        /dev/pts/*|/dev/tty*) printf '%s\n' "$port"; continue 2 ;;
+    \\      esac
+    \\    done
+    \\    case $addr in
+    \\      127.0.0.1:*|localhost:*|0.0.0.0:*|\*:*) printf '%s\n' "$port" ;;
+    \\      \[::\]:*|\[::1\]:*) printf '%s\n' "$port" ;;
+    \\    esac
+    \\  done
     \\elif command -v lsof >/dev/null 2>&1; then
-    \\  lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | awk 'NR>1 { print $9 }'
+    \\  scan_ps=$(ps -axo pid=,tty= 2>/dev/null)
+    \\  scan_ls=$(lsof -nP -iTCP -sTCP:LISTEN -Fpn 2>/dev/null)
+    \\  printf '%s\n%s\n' "$scan_ps" "$scan_ls" | awk '
+    \\    $1 ~ /^[0-9]+$/ && NF == 2 {
+    \\      if ($2 != "?" && $2 != "??" && $2 != "-") tty[$1] = $2
+    \\      next
+    \\    }
+    \\    /^p[0-9]+$/ { cur = tty[substr($0, 2)]; next }
+    \\    /^n/ {
+    \\      name = substr($0, 2)
+    \\      sub(/->.*/, "", name)
+    \\      port = name
+    \\      sub(/^.*:/, "", port)
+    \\      if (port !~ /^[0-9]+$/) next
+    \\      if (port + 0 < 1024) next
+    \\      if (cur != "") { print port; next }
+    \\      host = name
+    \\      sub(/:[0-9]+$/, "", host)
+    \\      if (host == "*" || host == "localhost" || host == "127.0.0.1" ||
+    \\          host == "0.0.0.0" || host == "[::]" || host == "[::1]" ||
+    \\          host == "::" || host == "::1") print port
+    \\    }
+    \\  '
     \\elif command -v netstat >/dev/null 2>&1; then
-    \\  netstat -lnt 2>/dev/null | awk '/LISTEN/ { print $4 }'
-    \\  netstat -an -p tcp 2>/dev/null | awk '/LISTEN/ { print $4 }'
+    \\  {
+    \\    netstat -lnt 2>/dev/null
+    \\    netstat -an -p tcp 2>/dev/null
+    \\  } | awk '
+    \\    /LISTEN/ {
+    \\      addr = $4
+    \\      port = addr
+    \\      sub(/^.*[.:]/, "", port)
+    \\      if (port !~ /^[0-9]+$/) next
+    \\      if (port + 0 < 1024) next
+    \\      host = addr
+    \\      sub(/[.:][0-9]+$/, "", host)
+    \\      if (host == "*" || host == "" || host == "localhost" ||
+    \\          host == "127.0.0.1" || host == "0.0.0.0" || host == "::" ||
+    \\          host == "::1") print port
+    \\    }
+    \\  '
     \\fi
 ;
 
-const port_watch_script =
+const port_watch_head =
     \\old=${TMPDIR:-/tmp}/niftty-ports-$$
     \\: > "$old"
     \\trap 'rm -f "$old" "$old.new"' EXIT
     \\while :; do
     \\  {
-    \\    if command -v ss >/dev/null 2>&1; then
-    \\      ss -ltn 2>/dev/null | awk 'NR==1 && $1 ~ /State|Netid/ { next } { print $4 }'
-    \\    elif command -v lsof >/dev/null 2>&1; then
-    \\      lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | awk 'NR>1 { print $9 }'
-    \\    elif command -v netstat >/dev/null 2>&1; then
-    \\      netstat -lnt 2>/dev/null | awk '/LISTEN/ { print $4 }'
-    \\      netstat -an -p tcp 2>/dev/null | awk '/LISTEN/ { print $4 }'
-    \\    fi
+    \\
+;
+
+const port_watch_tail =
+    \\
     \\  } | sort -u > "$old.new"
     \\  if ! [ -s "$old" ]; then
     \\    while IFS= read -r line; do
@@ -871,9 +954,11 @@ const port_watch_script =
     \\    done < "$old"
     \\  fi
     \\  mv "$old.new" "$old"
-    \\  sleep 5
+    \\  sleep 2
     \\done
 ;
+
+const port_watch_script = port_watch_head ++ port_scan_script ++ port_watch_tail;
 
 /// Injected as the remote command for interactive `niftty +ssh` logins.
 /// The login shell is a child; this process polls `/proc/<child>/cwd`
@@ -1062,18 +1147,24 @@ fn monitorRemotePorts(args: MonitorArgs) void {
         std.Io.sleep(global.io(), .fromMilliseconds(100), .awake) catch return;
     }
     if (args.lock_dir) |lock| ssh_mux.unlock(lock);
-    if (!args.running.load(.acquire) or !args.auto_forward) return;
+    if (!args.running.load(.acquire)) return;
 
     if (args.key == null) {
-        pollLegacy(args, alloc);
+        if (args.auto_forward) pollLegacy(args, alloc) else maintainSessionFile(args, alloc);
         return;
     }
 
     while (args.running.load(.acquire)) {
+        republishSession(args, alloc);
+        if (!args.auto_forward) {
+            if (!sleepWhileRunning(args.running, 2000)) return;
+            continue;
+        }
         if (!ssh_mux.tryClaimWatch(alloc, args.key.?, args.pid)) {
             if (!sleepWhileRunning(args.running, 5000)) return;
             continue;
         }
+        pruneIgnoredPorts(args, alloc);
         runWatcher(args, alloc);
         if (!args.running.load(.acquire)) return;
         if (!checkMaster(alloc, args.ssh, args.control_path, args.destination)) return;
@@ -1081,8 +1172,32 @@ fn monitorRemotePorts(args: MonitorArgs) void {
     }
 }
 
-fn pollLegacy(args: MonitorArgs, alloc: Allocator) void {
+/// Re-assert `ssh-sessions/<pid>`. The Ports panel and `+ssh-forward`
+/// resolve everything through that file, so if anything removes it
+/// mid-session (exit cleanup of an overlapping session, a stale sweep)
+/// they report no session even while the forwards are alive and working.
+fn republishSession(args: MonitorArgs, alloc: Allocator) void {
+    ssh_session.write(alloc, args.pid, .{
+        .control_path = args.control_path,
+        .destination = args.destination,
+        .ssh = args.ssh,
+        .key = args.key,
+    }) catch |err| log.warn("unable to publish SSH session: {t}", .{err});
+}
+
+/// With auto-forward disabled there is nothing to watch, but the Ports
+/// panel still needs the session file to list and add tunnels manually.
+fn maintainSessionFile(args: MonitorArgs, alloc: Allocator) void {
     while (args.running.load(.acquire)) {
+        republishSession(args, alloc);
+        if (!sleepWhileRunning(args.running, 2000)) return;
+    }
+}
+
+fn pollLegacy(args: MonitorArgs, alloc: Allocator) void {
+    pruneIgnoredPorts(args, alloc);
+    while (args.running.load(.acquire)) {
+        republishSession(args, alloc);
         const ports = discoverPorts(alloc, args.ssh, args.control_path, args.destination) catch {
             std.Io.sleep(global.io(), .fromMilliseconds(250), .awake) catch return;
             continue;
@@ -1091,6 +1206,29 @@ fn pollLegacy(args: MonitorArgs, alloc: Allocator) void {
         for (ports) |remote_port| applyForward(args, alloc, remote_port);
         std.Io.sleep(global.io(), .fromMilliseconds(750), .awake) catch return;
     }
+}
+
+/// Clear `ignored` ledger entries for remote ports that are no longer
+/// listening. Closing a tunnel from the Ports panel is a deliberate act
+/// against a live server, so a port that is still up stays ignored; once its
+/// listener is gone the port becomes eligible again and a restarted dev
+/// server is re-forwarded instead of being silently banned forever.
+fn pruneIgnoredPorts(args: MonitorArgs, alloc: Allocator) void {
+    var ledger = ssh_tunnel.load(alloc, args.ledger_path) catch return;
+    defer ledger.deinit();
+    if (ledger.ignored.items.len == 0) return;
+
+    const ports = discoverPorts(alloc, args.ssh, args.control_path, args.destination) catch return;
+    defer if (ports.len > 0) alloc.free(ports);
+    var dropped = false;
+    var i = ledger.ignored.items.len;
+    while (i > 0) {
+        i -= 1;
+        const port = ledger.ignored.items[i];
+        if (std.mem.indexOfScalar(u16, ports, port) == null)
+            dropped = ledger.dropIgnored(port) or dropped;
+    }
+    if (dropped) ssh_tunnel.save(alloc, args.ledger_path, ledger) catch {};
 }
 
 fn runWatcher(args: MonitorArgs, alloc: Allocator) void {
@@ -1237,6 +1375,8 @@ fn pruneStaleForwards(
 
 const WatchEvent = union(enum) { add: u16, remove: u16 };
 
+/// Watch lines are `P <port>` / `R <port>` with the port already filtered by
+/// the remote scan (TTY-attributed or address-eligible, unprivileged range).
 fn parseWatchEvent(raw: []const u8) ?WatchEvent {
     const trimmed = std.mem.trim(u8, raw, " \t\r\n");
     var payload = trimmed;
@@ -1247,10 +1387,8 @@ fn parseWatchEvent(raw: []const u8) ?WatchEvent {
     } else if (std.mem.startsWith(u8, payload, "P ")) {
         payload = payload[2..];
     }
-    const addr = stripListenSuffix(payload);
-    if (!isLoopbackOrAllInterfaces(addr)) return null;
-    const port = portFromListenAddr(addr) orelse return null;
-    if (isIgnoredPort(port)) return null;
+    const port = std.fmt.parseUnsigned(u16, payload, 10) catch return null;
+    if (!isForwardablePort(port) or isIgnoredPort(port)) return null;
     return if (removed) .{ .remove = port } else .{ .add = port };
 }
 
@@ -1275,7 +1413,7 @@ fn discoverPorts(
     destination: []const u8,
 ) ![]u16 {
     const result = try std.process.run(alloc, global.io(), .{
-        .argv = &.{ ssh, "-S", control_path, destination, port_discovery_script },
+        .argv = &.{ ssh, "-S", control_path, destination, port_scan_script },
     });
     defer alloc.free(result.stdout);
     defer alloc.free(result.stderr);
@@ -1283,25 +1421,15 @@ fn discoverPorts(
 
     var ports: std.ArrayList(u16) = .empty;
     errdefer ports.deinit(alloc);
-    var lines = std.mem.tokenizeAny(u8, result.stdout, "\r\n");
+    var lines = std.mem.tokenizeAny(u8, result.stdout, " \t\r\n");
     while (lines.next()) |raw| {
-        const addr = stripListenSuffix(raw);
-        if (!isLoopbackOrAllInterfaces(addr)) continue;
-        const port = portFromListenAddr(addr) orelse continue;
-        if (isIgnoredPort(port)) continue;
+        const port = std.fmt.parseUnsigned(u16, raw, 10) catch continue;
+        if (!isForwardablePort(port) or isIgnoredPort(port)) continue;
         if (std.mem.indexOfScalar(u16, ports.items, port) == null) {
             try ports.append(alloc, port);
         }
     }
     return ports.toOwnedSlice(alloc);
-}
-
-fn stripListenSuffix(addr: []const u8) []const u8 {
-    const trimmed = std.mem.trim(u8, addr, " \t");
-    if (std.mem.endsWith(u8, trimmed, "(LISTEN)")) {
-        return std.mem.trim(u8, trimmed[0 .. trimmed.len - "(LISTEN)".len], " \t");
-    }
-    return trimmed;
 }
 
 fn isForwardablePort(port: u16) bool {
@@ -1332,36 +1460,6 @@ fn isIgnoredPort(port: u16) bool {
     };
 }
 
-/// Last numeric field of a listen address. Handles Linux `ss` (`0.0.0.0:43210`),
-/// BSD `netstat` (`127.0.0.1.43210`, `*.43210`), and `lsof` (`*:43210`).
-fn portFromListenAddr(addr: []const u8) ?u16 {
-    const start = (std.mem.lastIndexOfAny(u8, addr, ".:") orelse return null) + 1;
-    const port = std.fmt.parseUnsigned(u16, addr[start..], 10) catch return null;
-    if (!isForwardablePort(port)) return null;
-    return port;
-}
-
-fn listenHost(addr: []const u8) ?[]const u8 {
-    const sep = std.mem.lastIndexOfAny(u8, addr, ".:") orelse return null;
-    if (sep == 0) return addr[0..0];
-    var host = addr[0..sep];
-    if (host.len >= 2 and host[0] == '[' and host[host.len - 1] == ']') {
-        host = host[1 .. host.len - 1];
-    }
-    return host;
-}
-
-fn isLoopbackOrAllInterfaces(addr: []const u8) bool {
-    const host = listenHost(addr) orelse return false;
-    return host.len == 0 or
-        std.mem.eql(u8, host, "*") or
-        std.mem.eql(u8, host, "0.0.0.0") or
-        std.mem.eql(u8, host, "127.0.0.1") or
-        std.mem.eql(u8, host, "::") or
-        std.mem.eql(u8, host, "::1") or
-        std.mem.startsWith(u8, host, "::ffff:127.0.0.1");
-}
-
 test "isForwardablePort: unprivileged including ephemeral" {
     const testing = std.testing;
     try testing.expect(!isForwardablePort(80));
@@ -1370,17 +1468,6 @@ test "isForwardablePort: unprivileged including ephemeral" {
     try testing.expect(isForwardablePort(43210));
     try testing.expect(isForwardablePort(50000));
     try testing.expect(isForwardablePort(65535));
-}
-
-test "portFromListenAddr: linux ss, bsd netstat, lsof" {
-    const testing = std.testing;
-    try testing.expectEqual(@as(?u16, 43210), portFromListenAddr("0.0.0.0:43210"));
-    try testing.expectEqual(@as(?u16, 43210), portFromListenAddr("*:43210"));
-    try testing.expectEqual(@as(?u16, 43210), portFromListenAddr("127.0.0.1.43210"));
-    try testing.expectEqual(@as(?u16, 43210), portFromListenAddr("*.43210"));
-    try testing.expectEqual(@as(?u16, 50000), portFromListenAddr("127.0.0.1:50000"));
-    try testing.expectEqual(@as(?u16, 43210), portFromListenAddr("[::]:43210"));
-    try testing.expectEqual(@as(?u16, null), portFromListenAddr("127.0.0.1:80"));
 }
 
 test "isIgnoredPort: infra skipped, web kept" {
@@ -1393,33 +1480,27 @@ test "isIgnoredPort: infra skipped, web kept" {
     try testing.expect(!isIgnoredPort(5173));
 }
 
-test "isLoopbackOrAllInterfaces: ss netstat lsof" {
+test "parseWatchEvent: add and remove port events" {
     const testing = std.testing;
-    try testing.expect(isLoopbackOrAllInterfaces("127.0.0.1:3000"));
-    try testing.expect(isLoopbackOrAllInterfaces("0.0.0.0:3000"));
-    try testing.expect(isLoopbackOrAllInterfaces("*:3000"));
-    try testing.expect(isLoopbackOrAllInterfaces("[::]:3000"));
-    try testing.expect(isLoopbackOrAllInterfaces("[::1]:3000"));
-    try testing.expect(isLoopbackOrAllInterfaces("*.43210"));
-    try testing.expect(isLoopbackOrAllInterfaces("127.0.0.1.43210"));
-    try testing.expect(!isLoopbackOrAllInterfaces("192.168.1.10:3000"));
-    try testing.expect(!isLoopbackOrAllInterfaces("10.0.0.5:8080"));
+    try testing.expectEqual(WatchEvent{ .add = 3000 }, parseWatchEvent("P 3000"));
+    try testing.expectEqual(WatchEvent{ .add = 43210 }, parseWatchEvent("P 43210\n"));
+    try testing.expectEqual(WatchEvent{ .add = 8080 }, parseWatchEvent("8080"));
+    try testing.expectEqual(WatchEvent{ .remove = 3000 }, parseWatchEvent("R 3000"));
+    try testing.expectEqual(@as(?WatchEvent, null), parseWatchEvent("P 80"));
+    try testing.expectEqual(@as(?WatchEvent, null), parseWatchEvent("P 5432"));
+    try testing.expectEqual(@as(?WatchEvent, null), parseWatchEvent("P notaport"));
 }
 
-test "stripListenSuffix: lsof optional suffix" {
+test "port scan script attributes listeners to tty owners" {
     const testing = std.testing;
-    try testing.expectEqualStrings("*:3000", stripListenSuffix("*:3000 (LISTEN)"));
-    try testing.expectEqualStrings("*:3000", stripListenSuffix("*:3000"));
-}
-
-test "parseWatchEvent: add and remove listen addresses" {
-    const testing = std.testing;
-    try testing.expectEqual(WatchEvent{ .add = 3000 }, parseWatchEvent("P 127.0.0.1:3000"));
-    try testing.expectEqual(WatchEvent{ .add = 43210 }, parseWatchEvent("P *:43210 (LISTEN)"));
-    try testing.expectEqual(@as(?WatchEvent, null), parseWatchEvent("P 127.0.0.1:80"));
-    try testing.expectEqual(@as(?WatchEvent, null), parseWatchEvent("P 192.168.1.10:3000"));
-    try testing.expectEqual(WatchEvent{ .add = 8080 }, parseWatchEvent("0.0.0.0:8080"));
-    try testing.expectEqual(WatchEvent{ .remove = 3000 }, parseWatchEvent("R 127.0.0.1:3000\n"));
+    // Linux: ss process info + fd 0 readlink decides attribution.
+    try testing.expect(std.mem.indexOf(u8, port_scan_script, "ss -ltnp") != null);
+    try testing.expect(std.mem.indexOf(u8, port_scan_script, "readlink \"/proc/$pid/fd/0\"") != null);
+    // BSD/macOS: ps tty map joined with lsof -Fpn output.
+    try testing.expect(std.mem.indexOf(u8, port_scan_script, "ps -axo pid=,tty=") != null);
+    try testing.expect(std.mem.indexOf(u8, port_scan_script, "lsof -nP -iTCP -sTCP:LISTEN -Fpn") != null);
+    // Address-only fallback keeps covering daemonized listeners.
+    try testing.expect(std.mem.indexOf(u8, port_scan_script, "netstat -an -p tcp") != null);
 }
 
 fn notifyForward(remote_port: u16, local_port: u16) void {

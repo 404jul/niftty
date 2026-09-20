@@ -15,7 +15,7 @@ struct SSHUploadAccessoryView: View {
                 Button {
                     showPopover.toggle()
                 } label: {
-                    Image(systemName: "arrow.up.circle")
+                    Image(systemName: "arrow.up.doc")
                         .frame(height: 20)
                         .contentShape(Rectangle())
                 }

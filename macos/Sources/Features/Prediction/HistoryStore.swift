@@ -14,8 +14,9 @@ private let SQLITE_TRANSIENT_DESTRUCTOR = unsafeBitCast(
 /// Durable, actor-isolated store for observed shell commands.
 ///
 /// One SQLite database under `~/.local/state/niftty/prediction/` holds
-/// normalized commands, prev→next transitions (scoped by directory),
-/// and per-extractor-version feature hashes. All access is serialized
+/// normalized commands, context transitions (scoped by directory,
+/// host, and exit code), per-command last-run occurrences, and
+/// per-extractor-version feature hashes. All access is serialized
 /// by the actor; WAL mode plus a busy timeout keeps concurrent readers
 /// (the sqlite3 CLI, tests) working. Every failure is logged and
 /// degrades to a no-op — the store never takes the app down.
@@ -24,10 +25,30 @@ actor HistoryStore {
     struct CandidateRow: Sendable {
         let id: Int64
         let text: String
-        /// Blended SQL-side relevance score plus use/recency/feedback
-        /// (success and acceptance) priors.
+        /// Primary rank within a tier: weighted transition score
+        /// (follow-ups), context transition count (context prefix),
+        /// or prior (recent prefix).
         let score: Double
+        /// Shared-feature mass with the previous command — a
+        /// tie-breaker only, never enough to rank a candidate on its
+        /// own.
+        let featureMass: Double
+        /// Use/recency/feedback (success and acceptance) prior.
+        let prior: Double
+        /// Raw SUM(count) over this candidate's context-matching
+        /// transitions, and that sum across the whole context pool:
+        /// the zero-state confidence-gate inputs.
+        let contextCount: Int
+        let contextTotal: Int
         let source: String
+
+        /// Cascade ordering: primary score, then feature mass, then
+        /// prior.
+        static func ranksBefore(_ lhs: CandidateRow, _ rhs: CandidateRow) -> Bool {
+            if lhs.score != rhs.score { return lhs.score > rhs.score }
+            if lhs.featureMass != rhs.featureMass { return lhs.featureMass > rhs.featureMass }
+            return lhs.prior > rhs.prior
+        }
     }
 
     private enum StoreError: Error, CustomStringConvertible {
@@ -94,10 +115,10 @@ actor HistoryStore {
     // MARK: Recording
 
     /// Record one executed command: upsert the normalized command, its
-    /// transition from `previousCommand` in `directory`, and its
-    /// feature rows for the current extractor version. Whitespace-only
-    /// commands are skipped. `host` is accepted for future host-scoped
-    /// transitions but not persisted in v1.
+    /// context transition from `previousCommand` (directory, host,
+    /// exit code), where it last ran (`occurrence`), and its feature
+    /// rows for the current extractor version. Whitespace-only
+    /// commands are skipped.
     func record(
         command: String,
         exitCode: Int32?,
@@ -134,7 +155,9 @@ actor HistoryStore {
                         bindInt(transition, 1, prevID)
                         bindInt(transition, 2, id)
                         bindText(transition, 3, directory ?? "")
-                        bindDouble(transition, 4, finishedAt.timeIntervalSince1970)
+                        bindText(transition, 4, host ?? "")
+                        bindInt(transition, 5, Int64(exitCode ?? 0))
+                        bindDouble(transition, 6, finishedAt.timeIntervalSince1970)
                         try stepDone(transition, Self.upsertTransitionSQL)
                     }
                 }
@@ -153,6 +176,13 @@ actor HistoryStore {
                     sqlite3_reset(insertFeature)
                     sqlite3_clear_bindings(insertFeature)
                 }
+
+                let occurrence = try prepare(Self.upsertOccurrenceSQL)
+                bindInt(occurrence, 1, id)
+                bindText(occurrence, 2, directory ?? "")
+                bindText(occurrence, 3, host ?? "")
+                bindDouble(occurrence, 4, finishedAt.timeIntervalSince1970)
+                try stepDone(occurrence, Self.upsertOccurrenceSQL)
 
                 try exec("COMMIT")
             } catch {
@@ -191,129 +221,267 @@ actor HistoryStore {
 
     // MARK: Retrieval
 
-    /// Rank stored commands as candidates. With no `prefix`, this ranks
-    /// follow-ups for the command that just ran: one SQL query combines
-    /// directory-weighted transitions (×3 on directory match, ×1 global)
-    /// with shared-feature mass, capped at ~200 rows SQL-side; Swift then
-    /// blends use/recency/feedback priors (successful runs and accepted
-    /// suggestions) and sorts. The previous command itself is never a
-    /// candidate.
-    ///
-    /// With a `prefix`, this instead ranks commands whose normalized
-    /// text starts with the prefix by the same priors — the typed-prefix
-    /// ("e" → "echo …") path. The prefix itself is matched against the
-    /// normalized column, so quoting differences in the stored raw text
-    /// do not hide matches.
+    /// Follow-up candidates for the command that just ran. The pool is
+    /// the transitions out of `previous` that match the current
+    /// context — exit code, host (or host-less rows), and directory —
+    /// weighted 3.0 x count on an exact directory match and 1.0 x
+    /// count otherwise, capped at 200 rows by weighted score. Feature
+    /// mass and priors only order within equal scores. The previous
+    /// command itself is never a candidate.
     func topCandidates(
         previous: String?,
         directory: String?,
+        host: String?,
+        exitCode: Int32?,
         extractor: Int,
-        prefix: String? = nil,
         limit: Int
     ) async -> [CandidateRow] {
         guard !disabled, db != nil else { return [] }
-        if let prefix, !prefix.isEmpty {
-            return await topCandidatesByPrefix(prefix, limit: limit)
-        }
         guard let previous else { return [] }
         let normalized = ShellLexer.normalize(previous)
         guard !normalized.isEmpty else { return [] }
 
-
         do {
             let stmt = try prepare(Self.topCandidatesSQL)
-            bindText(stmt, 1, normalized)
-            if let directory, !directory.isEmpty {
-                bindText(stmt, 2, directory)
-            } else {
-                sqlite3_bind_null(stmt, 2)
-            }
-            bindInt(stmt, 3, Int64(extractor))
+            bindTransitionContext(
+                stmt, normalized: normalized, directory: directory,
+                host: host, exitCode: exitCode)
 
-            var rows: [CandidateRow] = []
-            var rc = sqlite3_step(stmt)
-            while rc == SQLITE_ROW {
-                let id = sqlite3_column_int64(stmt, 0)
-                let text = columnText(stmt, 1)
-                let useCount = sqlite3_column_int64(stmt, 2)
-                let lastSeen = sqlite3_column_double(stmt, 3)
-                let successCount = sqlite3_column_int64(stmt, 4)
-                let sqlScore = sqlite3_column_double(stmt, 6)
-                let acceptedCount = sqlite3_column_int64(stmt, 5)
-                let prior =
-                    0.3 * log10(Double(max(useCount, 1)))
-                    + 0.2 * Self.recencyDecay(
-                        lastSeen: lastSeen, now: Date().timeIntervalSince1970)
-                    + 0.2 * Self.feedbackRate(
-                        successCount: successCount,
-                        acceptedCount: acceptedCount,
-                        useCount: useCount)
-                rows.append(CandidateRow(
-                    id: id,
-                    text: text,
-                    score: sqlScore + prior,
-                    source: "history"))
-                rc = sqlite3_step(stmt)
-            }
-            sqlite3_reset(stmt)
-            guard rc == SQLITE_DONE else {
-                throw StoreError.step(Self.topCandidatesSQL, rc)
-            }
-
-            rows.sort { $0.score > $1.score }
-            return Array(rows.prefix(limit))
+            let scanned = try scanContextRows(stmt, sql: Self.topCandidatesSQL)
+            guard !scanned.isEmpty else { return [] }
+            let prevID = try commandID(forNormalized: normalized)
+            let mass = try featureMass(
+                ids: scanned.map(\.id), previousID: prevID, extractor: extractor)
+            return finalize(scanned, featureMass: mass, limit: limit)
         } catch {
             historyLogger.error("topCandidates failed: \(String(describing: error), privacy: .public)")
             return []
         }
     }
 
-    /// Rank commands whose normalized text starts with `prefix` by the
-    /// use/recency/feedback priors. Exact matches (nothing left to
-    /// suggest) are excluded.
-    private func topCandidatesByPrefix(_ prefix: String, limit: Int) async -> [CandidateRow] {
+    /// Prefix tier 1: follow-ups of the command that just ran whose
+    /// normalized text starts with `prefix` (exact matches excluded —
+    /// there is nothing left to suggest), ranked by context transition
+    /// count, then feature mass, then priors.
+    func contextPrefixCandidates(
+        previous: String?,
+        directory: String?,
+        host: String?,
+        exitCode: Int32?,
+        prefix: String,
+        extractor: Int,
+        limit: Int
+    ) async -> [CandidateRow] {
+        guard !disabled, db != nil else { return [] }
+        guard let previous, !prefix.isEmpty else { return [] }
+        let normalized = ShellLexer.normalize(previous)
+        guard !normalized.isEmpty else { return [] }
+
         do {
-            let stmt = try prepare(Self.prefixCandidatesSQL)
+            let stmt = try prepare(Self.contextPrefixCandidatesSQL)
+            bindTransitionContext(
+                stmt, normalized: normalized, directory: directory,
+                host: host, exitCode: exitCode)
+            bindText(stmt, 5, prefix)
+
+            let scanned = try scanContextRows(stmt, sql: Self.contextPrefixCandidatesSQL)
+            guard !scanned.isEmpty else { return [] }
+            let prevID = try commandID(forNormalized: normalized)
+            let mass = try featureMass(
+                ids: scanned.map(\.id), previousID: prevID, extractor: extractor)
+            return finalize(scanned, featureMass: mass, limit: limit)
+        } catch {
+            historyLogger.error(
+                "contextPrefixCandidates failed: \(String(describing: error), privacy: .public)")
+            return []
+        }
+    }
+
+    /// Prefix tier 2: every command whose normalized text starts with
+    /// `prefix` (exact matches excluded), ordered by same-directory
+    /// occurrence, then recency, then use count — entirely SQL-side,
+    /// so rows are returned in query order without a Swift re-sort.
+    func recentPrefixCandidates(
+        prefix: String,
+        directory: String?,
+        limit: Int
+    ) async -> [CandidateRow] {
+        guard !disabled, db != nil else { return [] }
+        guard !prefix.isEmpty else { return [] }
+
+        do {
+            let stmt = try prepare(Self.recentPrefixCandidatesSQL)
             bindText(stmt, 1, prefix)
+            if let directory, !directory.isEmpty {
+                bindText(stmt, 2, directory)
+            } else {
+                sqlite3_bind_null(stmt, 2)
+            }
 
             var rows: [CandidateRow] = []
             var rc = sqlite3_step(stmt)
             while rc == SQLITE_ROW {
-                let id = sqlite3_column_int64(stmt, 0)
-                let text = columnText(stmt, 1)
-                let useCount = sqlite3_column_int64(stmt, 2)
-                let lastSeen = sqlite3_column_double(stmt, 3)
-                let successCount = sqlite3_column_int64(stmt, 4)
-                let acceptedCount = sqlite3_column_int64(stmt, 5)
-                let prior =
-                    0.3 * log10(Double(max(useCount, 1)))
-                    + 0.2 * Self.recencyDecay(
-                        lastSeen: lastSeen, now: Date().timeIntervalSince1970)
-                    + 0.2 * Self.feedbackRate(
-                        successCount: successCount,
-                        acceptedCount: acceptedCount,
-                        useCount: useCount)
+                let prior = Self.prior(
+                    useCount: sqlite3_column_int64(stmt, 2),
+                    lastSeen: sqlite3_column_double(stmt, 3),
+                    successCount: sqlite3_column_int64(stmt, 4),
+                    acceptedCount: sqlite3_column_int64(stmt, 5))
                 rows.append(CandidateRow(
-                    id: id,
-                    text: text,
+                    id: sqlite3_column_int64(stmt, 0),
+                    text: columnText(stmt, 1),
                     score: prior,
+                    featureMass: 0,
+                    prior: prior,
+                    contextCount: 0,
+                    contextTotal: 0,
                     source: "history"))
                 rc = sqlite3_step(stmt)
             }
             sqlite3_reset(stmt)
             guard rc == SQLITE_DONE else {
-                throw StoreError.step(Self.prefixCandidatesSQL, rc)
+                throw StoreError.step(Self.recentPrefixCandidatesSQL, rc)
             }
-
-            rows.sort { $0.score > $1.score }
             return Array(rows.prefix(limit))
         } catch {
-            historyLogger.error("topCandidatesByPrefix failed: \(String(describing: error), privacy: .public)")
+            historyLogger.error(
+                "recentPrefixCandidates failed: \(String(describing: error), privacy: .public)")
             return []
         }
     }
 
+    // MARK: Retrieval helpers
+
+    /// One row of the 8-column shape shared by both transition
+    /// queries.
+    private struct ContextRow {
+        let id: Int64
+        let text: String
+        let useCount: Int64
+        let lastSeen: Double
+        let successCount: Int64
+        let acceptedCount: Int64
+        /// Weighted score (follow-up tier) or context count (prefix
+        /// tier 1) — the tier's primary rank.
+        let score: Double
+        /// Raw SUM(count) across the candidate's context-matching
+        /// transition rows.
+        let rawCount: Int
+    }
+
+    /// Bind the context shared by both transition queries: previous
+    /// command (?1), directory (?2 — NULL matches every row at 1.0),
+    /// host (?3 — NULL matches only host-less rows), exit code (?4).
+    private func bindTransitionContext(
+        _ stmt: OpaquePointer,
+        normalized: String,
+        directory: String?,
+        host: String?,
+        exitCode: Int32?
+    ) {
+        bindText(stmt, 1, normalized)
+        if let directory, !directory.isEmpty {
+            bindText(stmt, 2, directory)
+        } else {
+            sqlite3_bind_null(stmt, 2)
+        }
+        if let host, !host.isEmpty {
+            bindText(stmt, 3, host)
+        } else {
+            sqlite3_bind_null(stmt, 3)
+        }
+        if let exitCode {
+            bindInt(stmt, 4, Int64(exitCode))
+        } else {
+            sqlite3_bind_null(stmt, 4)
+        }
+    }
+
+    /// Step a context query to completion, then reset it.
+    private func scanContextRows(
+        _ stmt: OpaquePointer, sql: String
+    ) throws -> [ContextRow] {
+        var rows: [ContextRow] = []
+        var rc = sqlite3_step(stmt)
+        while rc == SQLITE_ROW {
+            rows.append(ContextRow(
+                id: sqlite3_column_int64(stmt, 0),
+                text: columnText(stmt, 1),
+                useCount: sqlite3_column_int64(stmt, 2),
+                lastSeen: sqlite3_column_double(stmt, 3),
+                successCount: sqlite3_column_int64(stmt, 4),
+                acceptedCount: sqlite3_column_int64(stmt, 5),
+                score: sqlite3_column_double(stmt, 6),
+                rawCount: Int(sqlite3_column_int64(stmt, 7))))
+            rc = sqlite3_step(stmt)
+        }
+        sqlite3_reset(stmt)
+        guard rc == SQLITE_DONE else {
+            throw StoreError.step(sql, rc)
+        }
+        return rows
+    }
+
+    /// Blend feature mass and priors into final rows ordered by
+    /// (score, feature mass, prior).
+    private func finalize(
+        _ scanned: [ContextRow], featureMass: [Int64: Double], limit: Int
+    ) -> [CandidateRow] {
+        // The pool is capped at 200 rows, so summing in Swift is fine.
+        let total = scanned.reduce(0) { $0 + $1.rawCount }
+        var rows = scanned.map { s in
+            CandidateRow(
+                id: s.id,
+                text: s.text,
+                score: s.score,
+                featureMass: featureMass[s.id] ?? 0,
+                prior: Self.prior(
+                    useCount: s.useCount,
+                    lastSeen: s.lastSeen,
+                    successCount: s.successCount,
+                    acceptedCount: s.acceptedCount),
+                contextCount: s.rawCount,
+                contextTotal: total,
+                source: "history")
+        }
+        rows.sort(by: CandidateRow.ranksBefore)
+        return Array(rows.prefix(limit))
+    }
+
+    /// Shared-feature mass between each pooled command and the
+    /// previous command, for the current extractor version — a
+    /// tie-breaker signal only.
+    private func featureMass(
+        ids: [Int64], previousID: Int64?, extractor: Int
+    ) throws -> [Int64: Double] {
+        guard let previousID, !ids.isEmpty else { return [:] }
+        let sql = Self.featureMassSQL(ids: ids)
+        return try withStatement(sql) { stmt in
+            bindInt(stmt, 1, Int64(extractor))
+            bindInt(stmt, 2, previousID)
+            var mass: [Int64: Double] = [:]
+            var rc = sqlite3_step(stmt)
+            while rc == SQLITE_ROW {
+                mass[sqlite3_column_int64(stmt, 0)] = sqlite3_column_double(stmt, 1)
+                rc = sqlite3_step(stmt)
+            }
+            guard rc == SQLITE_DONE else {
+                throw StoreError.step(sql, rc)
+            }
+            return mass
+        }
+    }
+
     // MARK: Scoring
+
+    /// Use/recency/feedback prior shared by every retrieval tier.
+    private static func prior(
+        useCount: Int64, lastSeen: Double, successCount: Int64, acceptedCount: Int64
+    ) -> Double {
+        0.3 * log10(Double(max(useCount, 1)))
+            + 0.2 * recencyDecay(lastSeen: lastSeen, now: Date().timeIntervalSince1970)
+            + 0.2 * feedbackRate(
+                successCount: successCount, acceptedCount: acceptedCount, useCount: useCount)
+    }
 
     /// Exponential decay with a 14-day half-life: 1.0 when just seen,
     /// 0.5 after two weeks.
@@ -344,10 +512,17 @@ actor HistoryStore {
     """
 
     private static let upsertTransitionSQL = """
-    INSERT INTO transition (prev_id, next_id, directory, count, last_seen)
-    VALUES (?1, ?2, ?3, 1, ?4)
-    ON CONFLICT(prev_id, next_id, directory) DO UPDATE SET
+    INSERT INTO transition (prev_id, next_id, directory, host, exit_code, count, last_seen)
+    VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6)
+    ON CONFLICT(prev_id, next_id, directory, host, exit_code) DO UPDATE SET
         count = transition.count + 1,
+        last_seen = excluded.last_seen
+    """
+
+    private static let upsertOccurrenceSQL = """
+    INSERT INTO occurrence (command_id, directory, host, last_seen)
+    VALUES (?1, ?2, ?3, ?4)
+    ON CONFLICT(command_id, directory, host) DO UPDATE SET
         last_seen = excluded.last_seen
     """
 
@@ -362,59 +537,94 @@ actor HistoryStore {
 
     private static let lookupIDSQL = "SELECT id FROM command WHERE normalized = ?1"
 
-    /// Transition scores and feature-overlap mass, pooled and capped at
-    /// 200 rows by SQL-side score, excluding the previous command
-    /// itself.
+    /// Context-transition pool for the follow-up tier: transitions out
+    /// of ?1 matching the current context (?2 directory, ?3 host, ?4
+    /// exit code), weighted 3.0 on an exact directory match, capped at
+    /// 200 rows by weighted score. The previous command itself is
+    /// excluded.
     private static let topCandidatesSQL = """
-    WITH trans AS (
+    WITH pool AS (
         SELECT t.next_id AS cid,
-               SUM(t.count * (CASE WHEN t.directory = ?2 THEN 3.0 ELSE 1.0 END)) AS score
+               SUM(t.count * (CASE WHEN t.directory = ?2 THEN 3.0 ELSE 1.0 END)) AS score,
+               SUM(t.count) AS raw_count
         FROM transition t
         WHERE t.prev_id = (SELECT id FROM command WHERE normalized = ?1)
+          AND t.exit_code = ?4
+          AND (t.host = ?3 OR t.host = '')
           AND (?2 IS NULL OR t.directory = '' OR t.directory = ?2)
+          AND t.next_id != t.prev_id
         GROUP BY t.next_id
-    ),
-    feat AS (
-        SELECT f.command_id AS cid, SUM(f.weight) AS score
-        FROM feature f
-        WHERE f.extractor = ?3
-          AND f.hash IN (
-              SELECT p.hash FROM feature p
-              WHERE p.extractor = ?3
-                AND p.command_id = (SELECT id FROM command WHERE normalized = ?1))
-        GROUP BY f.command_id
-    ),
-    pool AS (
-        SELECT cid, SUM(score) AS sqlscore
-        FROM (
-            SELECT cid, score FROM trans
-            UNION ALL
-            SELECT cid, score FROM feat
-        )
-        WHERE cid != (SELECT id FROM command WHERE normalized = ?1)
-        GROUP BY cid
-        ORDER BY sqlscore DESC
+        ORDER BY score DESC
         LIMIT 200
     )
-    SELECT c.id, c.text, c.use_count, c.last_seen, c.success_count, c.accepted_count, pool.sqlscore
+    SELECT c.id, c.text, c.use_count, c.last_seen, c.success_count, c.accepted_count,
+           pool.score, pool.raw_count
     FROM pool JOIN command c ON c.id = pool.cid
-    ORDER BY pool.sqlscore DESC
+    ORDER BY pool.score DESC
     """
 
-    /// Prefix matches by prior mass, excluding exact matches: once the
-    /// typed line is the whole command there is nothing left to suggest.
-    /// The substr comparison is a scan, but history tables are small.
-    private static let prefixCandidatesSQL = """
-    SELECT id, text, use_count, last_seen, success_count, accepted_count
-    FROM command
-    WHERE substr(normalized, 1, length(?1)) = ?1
-      AND normalized != ?1
-    ORDER BY use_count DESC, last_seen DESC
+    /// Prefix tier 1: the same context-transition pool, restricted to
+    /// commands whose normalized text starts with ?5 (exact matches
+    /// excluded), ordered by raw context count. The count is cast to
+    /// REAL so the query shares the 8-column scan shape.
+    private static let contextPrefixCandidatesSQL = """
+    WITH pool AS (
+        SELECT t.next_id AS cid, SUM(t.count) AS raw_count
+        FROM transition t
+        JOIN command c ON c.id = t.next_id
+        WHERE t.prev_id = (SELECT id FROM command WHERE normalized = ?1)
+          AND t.exit_code = ?4
+          AND (t.host = ?3 OR t.host = '')
+          AND (?2 IS NULL OR t.directory = '' OR t.directory = ?2)
+          AND t.next_id != t.prev_id
+          AND substr(c.normalized, 1, length(?5)) = ?5
+          AND c.normalized != ?5
+        GROUP BY t.next_id
+        ORDER BY raw_count DESC
+        LIMIT 200
+    )
+    SELECT c.id, c.text, c.use_count, c.last_seen, c.success_count, c.accepted_count,
+           CAST(pool.raw_count AS REAL), pool.raw_count
+    FROM pool JOIN command c ON c.id = pool.cid
+    ORDER BY pool.raw_count DESC
+    """
+
+    /// Prefix tier 2: prefix-matched commands by same-directory
+    /// occurrence (?2), then recency, then use count. The substr
+    /// comparison is a scan, but history tables are small.
+    private static let recentPrefixCandidatesSQL = """
+    SELECT c.id, c.text, c.use_count, c.last_seen, c.success_count, c.accepted_count
+    FROM command c
+    LEFT JOIN occurrence o ON o.command_id = c.id AND o.directory = ?2
+    WHERE substr(c.normalized, 1, length(?1)) = ?1
+      AND c.normalized != ?1
+    ORDER BY (o.command_id IS NOT NULL) DESC, COALESCE(o.last_seen, c.last_seen) DESC,
+             c.use_count DESC
     LIMIT 200
     """
 
-    /// v1 schema. Future versions migrate forward from `user_version`.
-    private static let schemaV1 = """
+    /// Feature-overlap mass between the pooled command ids (inline IN
+    /// list) and the previous command (?2), for extractor version ?1.
+    /// The ids come straight from SQLite INTEGER columns and are
+    /// interpolated as integers; the varying text means the statement
+    /// is prepared one-shot rather than cached.
+    private static func featureMassSQL(ids: [Int64]) -> String {
+        let list = ids.map(String.init).joined(separator: ",")
+        return """
+        SELECT f.command_id, SUM(f.weight)
+        FROM feature f
+        WHERE f.extractor = ?1
+          AND f.command_id IN (\(list))
+          AND f.hash IN (
+              SELECT p.hash FROM feature p
+              WHERE p.extractor = ?1 AND p.command_id = ?2)
+        GROUP BY f.command_id
+        """
+    }
+
+    /// v2 schema. Older databases are discarded rather than migrated
+    /// (see `configureDatabase`).
+    private static let schemaV2 = """
     CREATE TABLE IF NOT EXISTS command (
       id INTEGER PRIMARY KEY,
       text TEXT NOT NULL,
@@ -429,8 +639,18 @@ actor HistoryStore {
       prev_id INTEGER NOT NULL,
       next_id INTEGER NOT NULL,
       directory TEXT NOT NULL,
+      host TEXT NOT NULL DEFAULT '',
+      exit_code INTEGER NOT NULL,
       count INTEGER NOT NULL,
-      PRIMARY KEY (prev_id, next_id, directory)
+      last_seen REAL NOT NULL,
+      PRIMARY KEY (prev_id, next_id, directory, host, exit_code)
+    );
+    CREATE TABLE IF NOT EXISTS occurrence (
+      command_id INTEGER NOT NULL,
+      directory TEXT NOT NULL,
+      host TEXT NOT NULL DEFAULT '',
+      last_seen REAL NOT NULL,
+      PRIMARY KEY (command_id, directory, host)
     );
     CREATE TABLE IF NOT EXISTS feature (
       command_id INTEGER NOT NULL,
@@ -466,10 +686,16 @@ actor HistoryStore {
         }
         let version = try queryIntOn(db, "PRAGMA user_version")
         switch version {
-        case 0:
-            try execOn(db, schemaV1)
-            try execOn(db, "PRAGMA user_version = 1")
-        case 1:
+        case 0, 1:
+            // v2 is a clean break: the v1 ranking is gone, so its
+            // data is dead weight. Wipe rather than migrate
+            // (single-user local history).
+            for table in ["feature", "transition", "occurrence", "command", "meta"] {
+                try execOn(db, "DROP TABLE IF EXISTS \(table)")
+            }
+            try execOn(db, schemaV2)
+            try execOn(db, "PRAGMA user_version = 2")
+        case 2:
             break
         case let v:
             throw StoreError.unsupportedVersion(v)
@@ -505,6 +731,22 @@ actor HistoryStore {
         }
         statements[sql] = stmt
         return stmt
+    }
+
+    /// Run `body` with a one-shot prepared statement, finalized on
+    /// return. Used for SQL whose text embeds a varying id list —
+    /// caching those would grow the statement cache without bound.
+    private func withStatement<T>(
+        _ sql: String, _ body: (OpaquePointer) throws -> T
+    ) throws -> T {
+        guard let db else { throw StoreError.exec(sql, SQLITE_MISUSE) }
+        var stmt: OpaquePointer?
+        let rc = sqlite3_prepare_v2(db, sql, -1, &stmt, nil)
+        guard rc == SQLITE_OK, let stmt else {
+            throw StoreError.exec(sql, rc)
+        }
+        defer { sqlite3_finalize(stmt) }
+        return try body(stmt)
     }
 
     private func exec(_ sql: String) throws {

@@ -9,11 +9,11 @@ const ssh_session = @import("ssh_session.zig");
 const ssh_tunnel = @import("ssh_tunnel.zig");
 
 const usage =
-    \\Usage: niftty ++ssh-forward --pid=<pid> [--list]
-    \\       niftty ++ssh-forward --pid=<pid> --add [--local=<port>] --remote=<port>
-    \\       niftty ++ssh-forward --pid=<pid> --cancel [--local=<port>] --remote=<port>
+    \\Usage: niftty +ssh-forward --pid=<pid> [--list]
+    \\       niftty +ssh-forward --pid=<pid> --add [--local=<port>] --remote=<port>
+    \\       niftty +ssh-forward --pid=<pid> --cancel [--local=<port>] --remote=<port>
     \\
-    \\List, add, or close loopback tunnels on an active `niftty ++ssh` session.
+    \\List, add, or close loopback tunnels on an active `niftty +ssh` session.
     \\`--pid` is the foreground `+ssh` process. List output is tab-separated:
     \\  D <destination>
     \\  T <local-host> <local-port> <remote-host> <remote-port>
@@ -41,7 +41,7 @@ pub const Options = struct {
 };
 
 /// List, add, or cancel local forwards on the multiplexed connection owned
-/// by an active `niftty ++ssh` process.
+/// by an active `niftty +ssh` process.
 ///
 /// This action is normally launched by Ghostty's macOS SSH Ports panel.
 /// `--pid` identifies the foreground `+ssh` process. `--list` is the default
@@ -49,8 +49,9 @@ pub const Options = struct {
 ///
 /// Adding a tunnel runs `ssh -O forward -L` on the existing control socket
 /// and records it so the Ports panel and auto-forwarder stay in sync. Closing
-/// a tunnel runs `ssh -O cancel -L` and records the remote port as ignored
-/// so auto-forward will not reopen it for the rest of the session.
+/// a tunnel runs `ssh -O cancel -L` and records the remote port as ignored;
+/// the port becomes eligible for auto-forward again once its remote listener
+/// disappears, so a restarted dev server is picked back up.
 ///
 /// Available since: 1.4.0
 pub fn run(gpa: Allocator) !u8 {

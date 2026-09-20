@@ -8,15 +8,12 @@ import Foundation
 /// (the engine publishes there), tracks the last observed command per
 /// surface as the transition source, and fire-and-forget records into
 /// the store. `predict(_:)` is what the engine's provider closure
-/// calls at each empty prompt.
+/// calls at each prompt: a deterministic, local-only cascade modeled
+/// on Warp's autosuggestion pipeline minus the AI tier — context
+/// transitions first, typed-prefix tiers second, declining (nil) on
+/// any miss.
 @MainActor
 final class HistoryRecorder {
-    /// Candidates must clear this blended score to be suggested.
-    private static let minimumScore = 1.0
-
-    /// Confidence saturates at this score.
-    private static let saturatingScore = 10.0
-
     /// Candidate ids are "history-<command row id>"; parsed back on
     /// acceptance.
     private static let candidateIDPrefix = "history-"
@@ -27,10 +24,19 @@ final class HistoryRecorder {
     private var closeObserver: (any NSObjectProtocol)?
 
     /// The most recently finished command per surface, from
-    /// observations only. A new prompt context does not clear it: the
-    /// previous command is exactly the transition source for whatever
-    /// comes next. Entries are dropped when the surface closes.
-    private var lastCommandBySurface: [UUID: String] = [:]
+    /// observations only, with the execution context its transitions
+    /// were recorded under. A new prompt context does not clear it:
+    /// the previous command is exactly the transition source for
+    /// whatever comes next. Entries are dropped when the surface
+    /// closes.
+    private struct LastCommand {
+        let text: String
+        let exitCode: Int32?
+        let directory: String?
+        let host: String?
+    }
+
+    private var lastCommandBySurface: [UUID: LastCommand] = [:]
 
     init(store: HistoryStore, enabled: Bool) {
         self.store = store
@@ -75,77 +81,176 @@ final class HistoryRecorder {
 
     // MARK: Provider seam
 
-    /// Rank history for the surface's last command and typed prefix and
-    /// return the best candidate, or nil to decline. At an empty prompt
-    /// this is the previous-command follow-up; once the user has typed,
-    /// it is the remaining suffix of the best history match for the
-    /// typed prefix.
+    /// Rank history for the surface's state and return the best
+    /// candidate, or nil to decline — a local-only cascade:
+    ///
+    /// - Empty prompt: follow-ups of the previous command through
+    ///   context-matching transitions, confidence-gated
+    ///   (`meetsGate`) and validated against the local disk.
+    /// - Typed prefix: (1) context-transition follow-ups matching the
+    ///   typed prefix, then (2) recent prefix matches, this directory
+    ///   first. The first candidate that both token-suffix-matches
+    ///   the typed text and validates wins.
+    ///
+    /// Any miss declines: there is no completer or model fallback.
     func predict(_ context: PredictionEngine.PredictionContext) async -> PredictionEngine.Candidate? {
         guard enabled else { return nil }
         let typed = context.input
+        let directory = context.localPath ?? context.remotePath
+        // Remote (or unidentified) hosts have no local disk to
+        // validate against.
+        let isLocalContext = context.host != nil && context.remotePath == nil
 
-        // Typed prefix: suggest the remaining suffix of the best match.
-        // The query matches the normalized form (so quoting and spacing
-        // differences in the typed text still match), while the suffix
-        // is taken against the raw typed text so the completion is
-        // always verbatim. Any history match is strong evidence, so no
-        // score gate here.
+        // Typed prefix: two local tiers, first suffix-and-disk-valid
+        // match wins.
         if !typed.isEmpty {
             let normalizedTyped = ShellLexer.normalize(typed)
             guard !normalizedTyped.isEmpty else { return nil }
-            let rows = await store.topCandidates(
-                previous: nil,
-                directory: context.localPath ?? context.remotePath,
-                extractor: CommandFeatureExtractor.version,
-                prefix: normalizedTyped,
-                limit: 20
-            )
-            let match = rows.lazy.compactMap { row -> PredictionEngine.Candidate? in
-                guard let suffix = Self.suffix(of: row.text, after: typed) else {
-                    return nil
+
+            // Tier 1: context transitions out of the previous command,
+            // matched under the context it was recorded in.
+            if let last = lastCommandBySurface[context.surfaceID] {
+                let rows = await store.contextPrefixCandidates(
+                    previous: last.text,
+                    directory: last.directory,
+                    host: last.host,
+                    exitCode: last.exitCode,
+                    prefix: normalizedTyped,
+                    extractor: CommandFeatureExtractor.version,
+                    limit: 20)
+                if let match = Self.firstValidCandidate(
+                    rows, typed: typed, isLocalContext: isLocalContext)
+                {
+                    return match
                 }
-                return PredictionEngine.Candidate(
-                    id: "\(Self.candidateIDPrefix)\(row.id)",
-                    text: suffix,
-                    source: row.source,
-                    confidence: min(max(row.score, 0) / Self.saturatingScore, 1),
-                    metadata: ["commandID": String(row.id)]
-                )
             }
-            return match.first
+
+            // Tier 2: recent prefix matches, this directory first.
+            let rows = await store.recentPrefixCandidates(
+                prefix: normalizedTyped,
+                directory: directory,
+                limit: 20)
+            return Self.firstValidCandidate(
+                rows, typed: typed, isLocalContext: isLocalContext)
         }
 
-        // Empty prompt: previous-command follow-up, score-gated.
+        // Empty prompt: follow-up of the command that just ran, behind
+        // a confidence gate. Weak evidence declines instead of
+        // guessing.
+        guard let last = lastCommandBySurface[context.surfaceID] else { return nil }
         let rows = await store.topCandidates(
-            previous: lastCommandBySurface[context.surfaceID],
-            directory: context.localPath ?? context.remotePath,
+            previous: last.text,
+            directory: directory,
+            host: context.host,
+            exitCode: last.exitCode,
             extractor: CommandFeatureExtractor.version,
-            limit: 20
-        )
-        guard let top = rows.first, top.score >= Self.minimumScore else { return nil }
-        return PredictionEngine.Candidate(
-            id: "\(Self.candidateIDPrefix)\(top.id)",
-            text: top.text,
-            source: top.source,
-            confidence: min(top.score / Self.saturatingScore, 1),
-            metadata: ["commandID": String(top.id)]
-        )
+            limit: 20)
+        guard let top = rows.first,
+              Self.meetsGate(count: top.contextCount, total: top.contextTotal)
+        else { return nil }
+        for row in rows {
+            guard Self.validatesOnLocalDisk(row.text, isLocalContext: isLocalContext)
+            else { continue }
+            return PredictionEngine.Candidate(
+                id: "\(Self.candidateIDPrefix)\(row.id)",
+                text: row.text,
+                source: row.source,
+                confidence: Double(row.contextCount) / Double(max(row.contextTotal, 1)),
+                metadata: ["commandID": String(row.id)]
+            )
+        }
+        return nil
     }
 
-    /// The remaining suffix of `command` after the typed `prefix`, or nil
-    /// when the command does not start with the prefix. The match is
-    /// case-insensitive so a prefix typed with different casing still
-    /// completes to the stored form; the suffix is taken from the stored
-    /// text so the completion is always verbatim.
-    private static func suffix(of command: String, after prefix: String) -> String? {
-        guard let range = command.range(
-            of: prefix,
-            options: [.caseInsensitive, .anchored]
-        ) else { return nil }
-        let suffix = String(command[range.upperBound...])
+    /// The remaining suffix of `command` after the typed `typed`
+    /// prefix, compared token-by-token so quoting and spacing
+    /// differences in either text still match: every typed token must
+    /// be a case-insensitive prefix of the command token at the same
+    /// position. The suffix completes the partially-typed last token
+    /// (prepended without a space) and appends the remaining command
+    /// tokens, all in normalized form — quoting in the stored raw
+    /// text is flattened. Returns nil when the tokens already match
+    /// exactly (nothing to add) or any token fails to prefix-match.
+    nonisolated static func suffix(of command: String, afterTyped typed: String) -> String? {
+        let typedTokens = ShellLexer.tokens(typed)
+        let commandTokens = ShellLexer.tokens(command)
+        guard typedTokens.count <= commandTokens.count else { return nil }
+
+        var exact = typedTokens.count == commandTokens.count
+        for (i, token) in typedTokens.enumerated() {
+            let target = commandTokens[i].text
+            guard target.lowercased().hasPrefix(token.text.lowercased()) else { return nil }
+            if target != token.text { exact = false }
+        }
+        if exact { return nil }
+
+        let last = typedTokens.count - 1
+        var suffix = String(
+            commandTokens[last].text.dropFirst(typedTokens[last].text.count))
+        if typedTokens.count < commandTokens.count {
+            suffix += " " + commandTokens[typedTokens.count...]
+                .map(\.text)
+                .joined(separator: " ")
+        }
         return suffix.isEmpty ? nil : suffix
     }
 
+    /// A zero-state suggestion needs at least two runs as a follow-up
+    /// and at least a quarter of the context pool; weaker evidence
+    /// declines rather than guessing.
+    nonisolated static func meetsGate(count: Int, total: Int) -> Bool {
+        count >= 2 && Double(count) / Double(max(total, 1)) >= 0.25
+    }
+
+    /// Whether every path-like token of `text` exists on the local
+    /// disk. Remote contexts have no local disk to check, so they
+    /// always pass. Non-path tokens (command names, flags, plain
+    /// arguments) are never validated — shell functions and aliases
+    /// would be false rejections.
+    nonisolated static func validatesOnLocalDisk(_ text: String, isLocalContext: Bool) -> Bool {
+        guard isLocalContext else { return true }
+        for token in ShellLexer.tokens(text) where isPathLike(token.text) {
+            guard FileManager.default.fileExists(atPath: expandTilde(token.text)) else {
+                return false
+            }
+        }
+        return true
+    }
+
+    /// A token referencing a file somewhere: absolute, relative, or
+    /// home-anchored.
+    private nonisolated static func isPathLike(_ word: String) -> Bool {
+        word.hasPrefix("/") || word.hasPrefix("./") || word.hasPrefix("../")
+            || word.hasPrefix("~/") || word.contains("/")
+    }
+
+    /// Expand a leading `~` to the current user's home directory.
+    private nonisolated static func expandTilde(_ word: String) -> String {
+        guard word.hasPrefix("~") else { return word }
+        return FileManager.default.homeDirectoryForCurrentUser.path + word.dropFirst()
+    }
+
+    /// The first row with a remaining suffix after `typed` that also
+    /// validates on the local disk.
+    private static func firstValidCandidate(
+        _ rows: [HistoryStore.CandidateRow],
+        typed: String,
+        isLocalContext: Bool
+    ) -> PredictionEngine.Candidate? {
+        for row in rows {
+            guard let suffix = suffix(of: row.text, afterTyped: typed),
+                  validatesOnLocalDisk(row.text, isLocalContext: isLocalContext)
+            else { continue }
+            return PredictionEngine.Candidate(
+                id: "\(candidateIDPrefix)\(row.id)",
+                text: suffix,
+                source: row.source,
+                confidence: nil,
+                metadata: ["commandID": String(row.id)]
+            )
+        }
+        return nil
+    }
 
     // MARK: Observation handling
 
@@ -159,7 +264,11 @@ final class HistoryRecorder {
         case .command(let observation):
             guard enabled else { return }
             let previous = lastCommandBySurface[observation.surfaceID]
-            lastCommandBySurface[observation.surfaceID] = observation.command.text
+            lastCommandBySurface[observation.surfaceID] = LastCommand(
+                text: observation.command.text,
+                exitCode: observation.command.exitCode,
+                directory: observation.localPath ?? observation.remotePath,
+                host: observation.host)
             let store = self.store
             Task {
                 await store.record(
@@ -169,7 +278,7 @@ final class HistoryRecorder {
                     finishedAt: observation.command.finishedAt,
                     host: observation.host,
                     directory: observation.localPath ?? observation.remotePath,
-                    previousCommand: previous
+                    previousCommand: previous?.text
                 )
             }
 

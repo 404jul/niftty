@@ -9,7 +9,7 @@ const ssh_session = @import("ssh_session.zig");
 const ssh_sftp = @import("ssh_sftp.zig");
 
 const usage =
-    \\Usage: niftty ++ssh-upload --pid=<pid> --remote-dir=<path> [--verbose=<bool>] <paths...>
+    \\Usage: niftty +ssh-upload --pid=<pid> --remote-dir=<path> [--verbose=<bool>] <paths...>
     \\
     \\Uploads files and directories through the active multiplexed SSH session.
     \\Progress is emitted as tab-separated `P <bytes> <total> <base64-name>` records.
@@ -69,7 +69,7 @@ const Entry = struct {
 };
 
 /// Upload local files and directories through the multiplexed connection
-/// owned by an active `niftty ++ssh` process.
+/// owned by an active `niftty +ssh` process.
 ///
 /// This action is normally launched by Ghostty's macOS drag-and-drop UI.
 /// `--pid` identifies the foreground `+ssh` process, `--remote-dir` is the

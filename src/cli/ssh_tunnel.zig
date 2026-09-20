@@ -122,6 +122,14 @@ pub const Ledger = struct {
         }
         return found;
     }
+
+    /// Forget a port's `ignored` marker so auto-forward may pick it up
+    /// again once its remote listener is gone.
+    pub fn dropIgnored(self: *Ledger, remote_port: u16) bool {
+        const idx = std.mem.indexOfScalar(u16, self.ignored.items, remote_port) orelse return false;
+        _ = self.ignored.orderedRemove(idx);
+        return true;
+    }
 };
 
 pub fn load(alloc: Allocator, path: []const u8) !Ledger {
@@ -240,17 +248,17 @@ pub fn closeLocal(
 /// Whether something is still listening on `local_port` on this machine.
 /// Used to detect stale ledger entries whose local forward died. Uncertain
 /// outcomes (unexpected errors) report `true` so nothing is pruned wrongly.
+///
+/// Probed by briefly binding the port instead of connecting: std's
+/// connect-with-timeout still panics with a TODO on some Io backends, and
+/// a plain connect can block the caller. A successful bind means nothing
+/// holds the port; `AddressInUse` means a listener (or its lingering
+/// TIME_WAIT sockets) still occupies it.
 pub fn listenerAlive(local_port: u16) bool {
     const address = std.Io.net.IpAddress.parseIp4(loopback, local_port) catch return true;
-    var stream = address.connect(global.io(), .{
-        .mode = .stream,
-        .timeout = .{ .duration = .{ .raw = .fromMilliseconds(250), .clock = .awake } },
-    }) catch |err| switch (err) {
-        error.ConnectionRefused, error.Timeout, error.ConnectionResetByPeer, error.AddressUnavailable => return false,
-        else => return true,
-    };
-    stream.close(global.io());
-    return true;
+    var probe = address.listen(global.io(), .{}) catch return true;
+    probe.deinit(global.io());
+    return false;
 }
 
 const MuxOp = enum { forward, cancel };
@@ -358,6 +366,21 @@ test "Ledger.dropRemote removes without recording ignore" {
     try testing.expect(ledger.dropRemote(3000));
     try testing.expectEqual(@as(usize, 1), ledger.tunnels.items.len);
     try testing.expect(!ledger.ignores(3000));
+}
+
+test "Ledger.dropIgnored forgets marker without touching tunnels" {
+    const testing = std.testing;
+    var ledger: Ledger = .{ .alloc = testing.allocator };
+    defer ledger.deinit();
+    try ledger.add(loopback, 3000, loopback, 3000);
+    try ledger.ignored.append(testing.allocator, 3000);
+    try ledger.ignored.append(testing.allocator, 8080);
+
+    try testing.expect(ledger.dropIgnored(3000));
+    try testing.expect(!ledger.ignores(3000));
+    try testing.expect(ledger.ignores(8080));
+    try testing.expectEqual(@as(usize, 1), ledger.tunnels.items.len);
+    try testing.expect(!ledger.dropIgnored(9999));
 }
 
 test "writeLedger round trip" {

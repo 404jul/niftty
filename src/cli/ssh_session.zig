@@ -199,14 +199,21 @@ pub fn sweepStale(alloc: Allocator) void {
     defer dir.close(global.io());
     var it = dir.iterate();
     while (it.next(global.io()) catch return) |entry| {
-        if (entry.kind != .file) continue;
         if (std.mem.indexOfScalar(u8, entry.name, '.') != null) continue;
         const pid = std.fmt.parseUnsigned(u64, entry.name, 10) catch continue;
         const alive = std.posix.kill(
             @intCast(@min(pid, std.math.maxInt(std.posix.pid_t))),
             @enumFromInt(0),
         ) catch |err| err == error.PermissionDenied;
-        if (!alive) remove(alloc, pid);
+        if (alive) continue;
+        // Flat files go through `remove`, which also drops the `.tunnels`
+        // sidecar. Older builds left `<pid>/session` directories behind;
+        // those are swept here so the Ports menu does not list ghosts.
+        if (entry.kind == .directory) {
+            dir.deleteTree(global.io(), entry.name) catch {};
+        } else if (entry.kind == .file) {
+            remove(alloc, pid);
+        }
     }
 }
 

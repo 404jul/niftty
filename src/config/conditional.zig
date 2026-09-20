@@ -2,7 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 
-/// Conditionals in Ghostty configuration are based on a static, typed
+/// Conditionals in Niftty configuration are based on a static, typed
 /// state of the world instead of a dynamic key-value set. This simplifies
 /// the implementation, allows for better type checking, and enables a
 /// typed C API.

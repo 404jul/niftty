@@ -12,12 +12,12 @@ const global = @import("../global.zig");
 pub const Options = struct {
     /// The config option to explain. For example:
     ///
-    ///   niftty ++explain-config --option=font-size
+    ///   niftty +explain-config --option=font-size
     option: ?[]const u8 = null,
 
     /// The keybind action to explain. For example:
     ///
-    ///   niftty ++explain-config --keybind=copy_to_clipboard
+    ///   niftty +explain-config --keybind=copy_to_clipboard
     keybind: ?[]const u8 = null,
 
     pub fn deinit(self: Options) void {
@@ -36,10 +36,10 @@ pub const Options = struct {
 ///
 /// Examples:
 ///
-///   niftty ++explain-config font-size
-///   niftty ++explain-config copy_to_clipboard
-///   niftty ++explain-config --option=font-size
-///   niftty ++explain-config --keybind=copy_to_clipboard
+///   niftty +explain-config font-size
+///   niftty +explain-config copy_to_clipboard
+///   niftty +explain-config --option=font-size
+///   niftty +explain-config --keybind=copy_to_clipboard
 ///
 /// Flags:
 ///
@@ -79,9 +79,9 @@ pub fn run(alloc: Allocator) !u8 {
         var stderr: std.Io.File = .stderr();
         var buffer: [4096]u8 = undefined;
         var stderr_writer = stderr.writer(global.io(), &buffer);
-        try stderr_writer.interface.writeAll("Usage: niftty ++explain-config <option>\n");
-        try stderr_writer.interface.writeAll("       niftty ++explain-config --option=<option>\n");
-        try stderr_writer.interface.writeAll("       niftty ++explain-config --keybind=<action>\n");
+        try stderr_writer.interface.writeAll("Usage: niftty +explain-config <option>\n");
+        try stderr_writer.interface.writeAll("       niftty +explain-config --option=<option>\n");
+        try stderr_writer.interface.writeAll("       niftty +explain-config --keybind=<action>\n");
         try stderr_writer.end();
         return 1;
     };

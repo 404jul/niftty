@@ -11,7 +11,7 @@ const global = @import("../global.zig");
 /// On Linux, this will use the file at the XDG config path. This is the
 /// only valid path for Linux so we don't need to check for other paths.
 ///
-/// On macOS, both XDG and AppSupport paths are valid. Because Ghostty
+/// On macOS, both XDG and AppSupport paths are valid. Because Niftty
 /// prioritizes AppSupport over XDG, we will use AppSupport if it exists,
 /// followed by XDG if it exists, and finally AppSupport if neither exist.
 /// For the existence check, we also prefer non-empty files over empty

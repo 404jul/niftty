@@ -41,7 +41,7 @@ pub const Options = struct {
 /// using the default configuration this will output nothing.
 ///
 /// If you are a new user and want to see all available options with
-/// documentation, run `niftty ++show-config --default --docs`.
+/// documentation, run `niftty +show-config --default --docs`.
 ///
 /// The output is not in any specific order, but the order should be consistent
 /// between runs. The output is not guaranteed to be exactly match the input

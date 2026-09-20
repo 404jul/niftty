@@ -108,21 +108,21 @@ pub const compatibility = std.StaticStringMap(
     .{ "copy-on-select", compatCopyOnSelect },
 });
 
-/// Set Ghostty's graphical user interface language to a language other than the
+/// Set Niftty's graphical user interface language to a language other than the
 /// system default language. For example:
 ///
 ///     language = de
 ///
-/// will force the strings in Ghostty's graphical user interface to be in German
+/// will force the strings in Niftty's graphical user interface to be in German
 /// rather than the system default.
 ///
-/// This will not affect the language used by programs run _within_ Ghostty.
+/// This will not affect the language used by programs run _within_ Niftty.
 /// Those will continue to use the default system language. There are also many
-/// non-GUI elements in Ghostty that are not translated - this setting will have
+/// non-GUI elements in Niftty that are not translated - this setting will have
 /// no effect on those.
 ///
 /// Warning: This setting cannot be reloaded at runtime. To change the language
-/// you must fully restart Ghostty.
+/// you must fully restart Niftty.
 ///
 /// GTK only.
 /// Available since 1.3.0.
@@ -132,14 +132,14 @@ language: ?[:0]const u8 = null,
 ///
 /// You can generate the list of valid values using the CLI:
 ///
-///     ghostty +list-fonts
+///     niftty +list-fonts
 ///
 /// This configuration can be repeated multiple times to specify preferred
 /// fallback fonts when the requested codepoint is not available in the primary
 /// font. This is particularly useful for multiple languages, symbolic fonts,
 /// etc.
 ///
-/// Notes on emoji specifically: On macOS, Ghostty by default will always use
+/// Notes on emoji specifically: On macOS, Niftty by default will always use
 /// Apple Color Emoji and on Linux will always use Noto Emoji. You can
 /// override this behavior by specifying a font family here that contains
 /// emoji glyphs.
@@ -147,15 +147,15 @@ language: ?[:0]const u8 = null,
 /// The specific styles (bold, italic, bold italic) do not need to be
 /// explicitly set. If a style is not set, then the regular style (font-family)
 /// will be searched for stylistic variants. If a stylistic variant is not
-/// found, Ghostty will use the regular style. This prevents falling back to a
+/// found, Niftty will use the regular style. This prevents falling back to a
 /// different font family just to get a style such as bold. This also applies
 /// if you explicitly specify a font family for a style. For example, if you
-/// set `font-family-bold = FooBar` and "FooBar" cannot be found, Ghostty will
+/// set `font-family-bold = FooBar` and "FooBar" cannot be found, Niftty will
 /// use whatever font is set for `font-family` for the bold style.
 ///
 /// Finally, some styles may be synthesized if they are not supported.
 /// For example, if a font does not have an italic style and no alternative
-/// italic font is specified, Ghostty will synthesize an italic style by
+/// italic font is specified, Niftty will synthesize an italic style by
 /// applying a slant to the regular style. If you want to disable these
 /// synthesized styles then you can use the `font-style` configurations
 /// as documented below.
@@ -198,10 +198,10 @@ language: ?[:0]const u8 = null,
 @"font-style-italic": FontStyle = .{ .default = {} },
 @"font-style-bold-italic": FontStyle = .{ .default = {} },
 
-/// Control whether Ghostty should synthesize a style if the requested style is
+/// Control whether Niftty should synthesize a style if the requested style is
 /// not available in the specified font-family.
 ///
-/// Ghostty can synthesize bold, italic, and bold italic styles if the font
+/// Niftty can synthesize bold, italic, and bold italic styles if the font
 /// does not have a specific style. For bold, this is done by drawing an
 /// outline around the glyph of varying thickness. For italic, this is done by
 /// applying a slant to the glyph. For bold italic, both of these are applied.
@@ -243,7 +243,7 @@ language: ?[:0]const u8 = null,
 ///
 /// The syntax is fairly loose, but invalid settings will be silently ignored.
 ///
-/// The font feature will apply to all fonts rendered by Ghostty. A future
+/// The font feature will apply to all fonts rendered by Niftty. A future
 /// enhancement will allow targeting specific faces.
 ///
 /// To disable programming ligatures, use `-calt` since this is the typical
@@ -367,8 +367,8 @@ language: ?[:0]const u8 = null,
 /// "!" is at the end of one run and "=" is at the start of the next run,
 /// then the ligature will not be formed.
 ///
-/// Ghostty breaks runs at certain points to improve readability or usability.
-/// For example, Ghostty by default will break runs under the cursor so that
+/// Niftty breaks runs at certain points to improve readability or usability.
+/// For example, Niftty by default will break runs under the cursor so that
 /// text editing can see the individual characters rather than a ligature.
 /// This configuration lets you configure this behavior.
 ///
@@ -522,7 +522,7 @@ language: ?[:0]const u8 = null,
 /// explicitly disable flags you don't want. You can also use `true` or `false`
 /// to turn all flags on or off.
 ///
-/// This configuration only applies to Ghostty builds that use FreeType.
+/// This configuration only applies to Niftty builds that use FreeType.
 /// This is usually the case only for Linux builds. macOS uses CoreText
 /// and does not have an equivalent configuration.
 ///
@@ -540,7 +540,7 @@ language: ?[:0]const u8 = null,
 ///   * `autohint` - Enable the freetype auto-hinter. Enabled by default.
 ///
 ///   * `light` - Use a light hinting style, better preserving glyph shapes.
-///     This is the most common setting in GTK apps and therefore also Ghostty's
+///     This is the most common setting in GTK apps and therefore also Niftty's
 ///     default. This has no effect if `monochrome` is enabled. Enabled by
 ///     default.
 ///
@@ -548,11 +548,11 @@ language: ?[:0]const u8 = null,
 @"freetype-load-flags": FreetypeLoadFlags = .{},
 
 /// A theme to use. This can be a built-in theme name, a custom theme
-/// name, or an absolute path to a custom theme file. Ghostty also supports
+/// name, or an absolute path to a custom theme file. Niftty also supports
 /// specifying a different theme to use for light and dark mode. Each
 /// option is documented below.
 ///
-/// If the theme is an absolute pathname, Ghostty will attempt to load that
+/// If the theme is an absolute pathname, Niftty will attempt to load that
 /// file as a theme. If that file does not exist or is inaccessible, an error
 /// will be logged and no other directories will be searched.
 ///
@@ -565,16 +565,16 @@ language: ?[:0]const u8 = null,
 /// configuration directory. This is `$XDG_CONFIG_HOME/niftty/themes` or
 /// `~/.config/niftty/themes`.
 ///
-/// The second directory is the `themes` subdirectory of the Ghostty resources
-/// directory. Ghostty ships with a multitude of themes that will be installed
+/// The second directory is the `themes` subdirectory of the Niftty resources
+/// directory. Niftty ships with a multitude of themes that will be installed
 /// into this directory. On macOS, this list is in the
-/// `Ghostty.app/Contents/Resources/ghostty/themes` directory. On Linux, this
+/// `Niftty.app/Contents/Resources/ghostty/themes` directory. On Linux, this
 /// list is in the `share/ghostty/themes` directory (wherever you installed the
-/// Ghostty "share" directory.
+/// Niftty "share" directory.
 ///
-/// To see a list of available themes, run `ghostty +list-themes`.
+/// To see a list of available themes, run `niftty +list-themes`.
 ///
-/// A theme file is simply another Ghostty configuration file. They share
+/// A theme file is simply another Niftty configuration file. They share
 /// the same syntax and same configuration options. A theme can set any valid
 /// configuration option so please do not use a theme file from an untrusted
 /// source. The built-in themes are audited to only set safe configuration
@@ -582,7 +582,7 @@ language: ?[:0]const u8 = null,
 ///
 /// Some options cannot be set within theme files. The reason these are not
 /// supported should be self-evident. A theme file cannot set `theme` or
-/// `config-file`. At the time of writing this, Ghostty will not show any
+/// `config-file`. At the time of writing this, Niftty will not show any
 /// warnings or errors if you set these options in a theme file but they will
 /// be silently ignored.
 ///
@@ -617,11 +617,11 @@ foreground: Color = .{ .r = 0xFF, .g = 0xFF, .b = 0xFF },
 ///
 /// The background image is currently per-terminal, not per-window. If
 /// you are a heavy split user, the background image will be repeated across
-/// splits. A future improvement to Ghostty will address this.
+/// splits. A future improvement to Niftty will address this.
 ///
 /// WARNING: Background images are currently duplicated in VRAM per-terminal.
 /// For sufficiently large images, this could lead to a large increase in
-/// memory usage (specifically VRAM usage). A future Ghostty improvement
+/// memory usage (specifically VRAM usage). A future Niftty improvement
 /// will resolve this by sharing image textures across terminals.
 ///
 /// Available since: 1.2.0
@@ -913,7 +913,7 @@ palette: Palette = .{},
 /// If this is not set, the cursor blinks by default. Note that this is not the
 /// same as a "true" value, as noted below.
 ///
-/// If this is not set at all (`null`), then Ghostty will respect DEC Mode 12
+/// If this is not set at all (`null`), then Niftty will respect DEC Mode 12
 /// (AT&T cursor blink) as an alternate approach to turning blinking on/off. If
 /// this is set to any value other than null, DEC mode 12 will be ignored but
 /// `DECSCUSR` will still be respected.
@@ -938,7 +938,7 @@ palette: Palette = .{},
 ///
 /// This feature requires prompt marking via `OSC 133`. Some shells like Fish
 /// (v4.1+) and Nu (0.111+) natively support this while others may require
-/// additional configuration or Ghostty's shell integration features to be
+/// additional configuration or Niftty's shell integration features to be
 /// enabled.
 ///
 /// Depending on the shell, this works either by translating your click
@@ -961,7 +961,7 @@ palette: Palette = .{},
 ///
 /// - `keystroke` If set, scroll the surface to the bottom when the user
 ///   presses a key that results in data being sent to the PTY (basically
-///   anything but modifiers or keybinds that are processed by Ghostty).
+///   anything but modifiers or keybinds that are processed by Niftty).
 ///
 /// - `output` If set, scroll the surface to the bottom if there is new data
 ///   to display (e.g., when new lines are printed to the terminal).
@@ -1031,7 +1031,7 @@ palette: Palette = .{},
 /// fullscreen. This is because the background becomes gray and it can cause
 /// widgets to show through which isn't generally desirable.
 ///
-/// On macOS, changing this configuration requires restarting Ghostty completely.
+/// On macOS, changing this configuration requires restarting Niftty completely.
 @"background-opacity": f64 = 1.0,
 
 /// Applies background opacity to cells with an explicit background color
@@ -1070,7 +1070,7 @@ palette: Palette = .{},
 /// on non-macOS platforms.
 ///
 /// On Linux, the exact blur intensity is ignored and any positive integer
-/// or `true` value will enable background blur. On Wayland, Ghostty uses
+/// or `true` value will enable background blur. On Wayland, Niftty uses
 /// the [`ext-background-effect-v1`](https://wayland.app/protocols/ext-background-effect-v1)
 /// protocol to enable the blur effect, but this is not always supported
 /// on all compositors. Check the documentation of your compositor or
@@ -1106,7 +1106,7 @@ palette: Palette = .{},
 /// Available since: 1.1.0
 @"split-divider-color": ?Color = null,
 
-/// Control when Ghostty preserves a zoomed split. Under normal circumstances,
+/// Control when Niftty preserves a zoomed split. Under normal circumstances,
 /// any operation that changes focus or layout of the split tree in a window
 /// will unzoom any zoomed split. This configuration allows you to control
 /// this behavior.
@@ -1174,16 +1174,16 @@ palette: Palette = .{},
 ///
 /// This command will be used for all new terminal surfaces, i.e. new windows,
 /// tabs, etc. If you want to run a command only for the first terminal surface
-/// created when Ghostty starts, use the `initial-command` configuration.
+/// created when Niftty starts, use the `initial-command` configuration.
 ///
-/// Ghostty supports the common `-e` flag for executing a command with
-/// arguments. For example, `ghostty -e fish --with --custom --args`.
+/// Niftty supports the common `-e` flag for executing a command with
+/// arguments. For example, `niftty -e fish --with --custom --args`.
 /// This flag sets the `initial-command` configuration, see that for more
 /// information.
 command: ?Command = null,
 
 /// This is the same as "command", but only applies to the first terminal
-/// surface created when Ghostty starts. Subsequent terminal surfaces will use
+/// surface created when Niftty starts. Subsequent terminal surfaces will use
 /// the `command` configuration.
 ///
 /// After the first terminal surface is created (or closed), there is no
@@ -1191,19 +1191,19 @@ command: ?Command = null,
 /// this at runtime works but will only affect the next terminal surface
 /// if it is the first one ever created.
 ///
-/// If you're using the `ghostty` CLI there is also a shortcut to set this
-/// with arguments directly: you can use the `-e` flag. For example: `ghostty -e
+/// If you're using the `niftty` CLI there is also a shortcut to set this
+/// with arguments directly: you can use the `-e` flag. For example: `niftty -e
 /// fish --with --custom --args`. The `-e` flag automatically forces some
 /// other behaviors as well:
 ///
 ///   * Disables shell expansion since the input is expected to already
 ///     be shell-expanded by the upstream (e.g. the shell used to type in
-///     the `ghostty -e` command).
+///     the `niftty -e` command).
 ///
 ///   * `gtk-single-instance=false` - This ensures that a new instance is
 ///     launched and the CLI args are respected.
 ///
-///   * `quit-after-last-window-closed=true` - This ensures that the Ghostty
+///   * `quit-after-last-window-closed=true` - This ensures that the Niftty
 ///     process will exit when the command exits. Additionally, the
 ///     `quit-after-last-window-closed-delay` is unset.
 ///
@@ -1338,11 +1338,11 @@ prediction: bool = true,
 /// will result in `foo=baz` being passed to the launched commands.
 ///
 /// These environment variables will override any existing environment
-/// variables set by Ghostty. For example, if you set `GHOSTTY_RESOURCES_DIR`
-/// then the value you set here will override the value Ghostty typically
+/// variables set by Niftty. For example, if you set `GHOSTTY_RESOURCES_DIR`
+/// then the value you set here will override the value Niftty typically
 /// automatically injects.
 ///
-/// These environment variables _will not_ be passed to commands run by Ghostty
+/// These environment variables _will not_ be passed to commands run by Niftty
 /// for other purposes, like `open` or `xdg-open` used to open URLs in your
 /// browser.
 ///
@@ -1419,13 +1419,13 @@ input: RepeatableReadableIO = .{},
 ///
 /// Scrollback is stored in memory and allocated lazily up to this limit, so
 /// setting a very large limit does not immediately consume that amount of
-/// memory. On supported systems with scrollback compression enabled, Ghostty
+/// memory. On supported systems with scrollback compression enabled, Niftty
 /// attempts to compress fully historical pages which are not currently visible
 /// while the terminal is idle. This can reduce physical memory usage, depending
 /// on the contents of the scrollback.
 ///
 /// This limit always measures the uncompressed logical size of the terminal
-/// pages. Compression does not allow Ghostty to retain more history than the
+/// pages. Compression does not allow Niftty to retain more history than the
 /// configured limit. Accessing compressed history restores it transparently
 /// and may increase the terminal's physical memory usage again.
 ///
@@ -1443,7 +1443,7 @@ input: RepeatableReadableIO = .{},
 /// The maximum number of lines of scrollback to retain. This excludes
 /// the active screen. Soft-wrapped lines count as multiple lines.
 ///
-/// This limit is an estimate. Internally, Ghostty will only trim lines
+/// This limit is an estimate. Internally, Niftty will only trim lines
 /// up to the minimum allocation unit that is used internally (called a
 /// "page"). The size of a page depends on how many styles, graphemes, etc.
 /// take up the screen. In practice, this can be anywhere from a handful to
@@ -1460,7 +1460,7 @@ input: RepeatableReadableIO = .{},
 
 /// Whether to compress scrollback pages while the terminal is idle.
 ///
-/// Ghostty does its best to only compress when idle and decompress
+/// Niftty does its best to only compress when idle and decompress
 /// as needed. This means that compression doesn't lower IO throughput.
 /// We recommend you keep it on.
 ///
@@ -1473,7 +1473,7 @@ input: RepeatableReadableIO = .{},
 /// in physical memory for pages which are compressed. Compression savings are
 /// content-dependent.
 ///
-/// Note that the way Ghostty works is that we compress and discard the
+/// Note that the way Niftty works is that we compress and discard the
 /// physical/resident memory but we retain virtual mappings. You will not
 /// see a decrease in virtual memory usage, but you will see a decrease
 /// in physical/memory usage.
@@ -1571,8 +1571,8 @@ maximize: bool = false,
 /// decorations.
 fullscreen: Fullscreen = .false,
 
-/// The title Ghostty will use for the window. This will force the title of the
-/// window to be this title at all times and Ghostty will ignore any set title
+/// The title Niftty will use for the window. This will force the title of the
+/// window to be this title at all times and Niftty will ignore any set title
 /// escape sequences programs (such as Neovim) may send.
 ///
 /// If you want a blank title, set this to one or more spaces by quoting
@@ -1591,14 +1591,14 @@ title: ?[:0]const u8 = null,
 ///
 /// This controls the class field of the `WM_CLASS` X11 property (when running
 /// under X11), the Wayland application ID (when running under Wayland), and the
-/// bus name that Ghostty uses to connect to DBus.
+/// bus name that Niftty uses to connect to DBus.
 ///
 /// Note that changing this value between invocations will create new, separate
-/// instances, of Ghostty when running with `gtk-single-instance=true`. See that
+/// instances, of Niftty when running with `gtk-single-instance=true`. See that
 /// option for more details.
 ///
-/// Changing this value may break launching Ghostty from `.desktop` files, via
-/// DBus activation, or systemd user services as the system is expecting Ghostty
+/// Changing this value may break launching Niftty from `.desktop` files, via
+/// DBus activation, or systemd user services as the system is expecting Niftty
 /// to connect to DBus using the default `class` when it is launched.
 ///
 /// The class name must follow the requirements defined [in the GTK
@@ -1620,14 +1620,14 @@ class: ?[:0]const u8 = null,
 /// The directory to change to after starting the command.
 ///
 /// This setting is secondary to the `window-inherit-working-directory`
-/// setting. If a previous Ghostty terminal exists in the same process,
+/// setting. If a previous Niftty terminal exists in the same process,
 /// `window-inherit-working-directory` will take precedence. Otherwise, this
 /// setting will be used. Typically, this setting is used only for the first
 /// window.
 ///
 /// The default is `inherit` except in special scenarios listed next. On macOS,
-/// if Ghostty can detect it is launched from launchd (double-clicked) or
-/// `open`, then it defaults to `home`. On Linux with GTK, if Ghostty can detect
+/// if Niftty can detect it is launched from launchd (double-clicked) or
+/// `open`, then it defaults to `home`. On Linux with GTK, if Niftty can detect
 /// it was launched from a desktop launcher, then it defaults to `home`.
 ///
 /// The value of this must be an absolute path, a path prefixed with `~/`
@@ -1641,7 +1641,7 @@ class: ?[:0]const u8 = null,
 
 /// Key bindings. The format is `trigger=action`. Duplicate triggers will
 /// overwrite previously set values. The list of actions is available in
-/// the documentation or using the `ghostty +list-actions` command.
+/// the documentation or using the `niftty +list-actions` command.
 ///
 /// Trigger: `+`-separated list of keys and modifiers. Example: `ctrl+a`,
 /// `ctrl+shift+b`, `up`.
@@ -1690,7 +1690,7 @@ class: ?[:0]const u8 = null,
 /// The special key `catch_all` can be used to match any key that is not
 /// otherwise bound. This can be combined with modifiers, for example
 /// `ctrl+catch_all` will match any key pressed with `ctrl` that is not
-/// otherwise bound. When looking up a binding, Ghostty first tries to match
+/// otherwise bound. When looking up a binding, Niftty first tries to match
 /// `catch_all` with modifiers. If no match is found and the event has
 /// modifiers, it falls back to `catch_all` without modifiers.
 ///
@@ -1701,7 +1701,7 @@ class: ?[:0]const u8 = null,
 ///
 /// Note: The fn or "globe" key on keyboards are not supported as a
 /// modifier. This is a limitation of the operating systems and GUI toolkits
-/// that Ghostty uses.
+/// that Niftty uses.
 ///
 /// Some additional notes for triggers:
 ///
@@ -1719,13 +1719,13 @@ class: ?[:0]const u8 = null,
 /// is sometimes called a leader key, a key chord, a key table, etc. There
 /// is no hardcoded limit on the number of parts in a sequence.
 ///
-/// Warning: If you define a sequence as a CLI argument to `ghostty`,
+/// Warning: If you define a sequence as a CLI argument to `niftty`,
 /// you probably have to quote the keybind since `>` is a special character
-/// in most shells. Example: ghostty --keybind='ctrl+a>n=new_window'
+/// in most shells. Example: niftty --keybind='ctrl+a>n=new_window'
 ///
 /// A trigger sequence has some special handling:
 ///
-///   * Ghostty will wait an indefinite amount of time for the next key in
+///   * Niftty will wait an indefinite amount of time for the next key in
 ///     the sequence. There is no way to specify a timeout. The only way to
 ///     force the output of a prefix key is to assign another keybind to
 ///     specifically output that key (e.g. `ctrl+a>ctrl+a=text:foo`) or
@@ -1772,7 +1772,7 @@ class: ?[:0]const u8 = null,
 ///     e.g. `text:\x15` sends Ctrl-U.
 ///
 ///   * All other actions can be found in the documentation or by using the
-///     `ghostty +list-actions` command.
+///     `niftty +list-actions` command.
 ///
 /// Some notes for the action:
 ///
@@ -1803,10 +1803,10 @@ class: ?[:0]const u8 = null,
 ///
 ///  * `global:`
 ///
-///    Make the keybind global. By default, keybinds only work within Ghostty
+///    Make the keybind global. By default, keybinds only work within Niftty
 ///    and under the right conditions (application focused, sometimes terminal
 ///    focused, etc.). If you want a keybind to work globally across your system
-///    (e.g. even when Ghostty is not focused), specify this prefix.
+///    (e.g. even when Niftty is not focused), specify this prefix.
 ///    This prefix implies `all:`.
 ///
 ///    Note: this does not work in all environments; see the additional notes
@@ -1831,7 +1831,7 @@ class: ?[:0]const u8 = null,
 ///
 ///    Only consume the input if the action is able to be performed.
 ///    For example, the `copy_to_clipboard` action will only consume the input
-///    if there is a selection to copy. If there is no selection, Ghostty
+///    if there is a selection to copy. If there is no selection, Niftty
 ///    behaves as if the keybind was not set. This has no effect with `global:`
 ///    or `all:`-prefixed keybinds. For key sequences, this will reset the
 ///    sequence if the action is not performable (acting identically to not
@@ -1855,8 +1855,8 @@ class: ?[:0]const u8 = null,
 /// and not consume the input to reload the config.
 ///
 /// On macOS, this feature requires accessibility permissions to be granted
-/// to Ghostty. When a `global:` keybind is specified and Ghostty is launched
-/// or reloaded, Ghostty will attempt to request these permissions.
+/// to Niftty. When a `global:` keybind is specified and Niftty is launched
+/// or reloaded, Niftty will attempt to request these permissions.
 /// If the permissions are not granted, the keybind will not work. On macOS,
 /// you can find these permissions in System Preferences -> Privacy & Security
 /// -> Accessibility.
@@ -1987,7 +1987,7 @@ class: ?[:0]const u8 = null,
 /// Key tables are available since Ghostty 1.3.0.
 keybind: Keybinds = .{},
 
-/// Remap modifier keys within Ghostty. This allows you to swap or reassign
+/// Remap modifier keys within Niftty. This allows you to swap or reassign
 /// modifier keys at the application level without affecting system-wide
 /// settings.
 ///
@@ -1995,10 +1995,10 @@ keybind: Keybinds = .{},
 /// You can use generic names like `ctrl`, `alt`, `shift`, `super` (macOS:
 /// `cmd`/`command`) or sided names like `left_ctrl`, `right_alt`, etc.
 ///
-/// This will NOT change keyboard layout or key encodings outside of Ghostty.
+/// This will NOT change keyboard layout or key encodings outside of Niftty.
 /// For example, on macOS, `option+a` may still produce `å` even if `option` is
 /// remapped to `ctrl`. Desktop environments usually handle key layout long
-/// before Ghostty receives the key events.
+/// before Niftty receives the key events.
 ///
 /// Example:
 ///
@@ -2015,7 +2015,7 @@ keybind: Keybinds = .{},
 ///
 /// * This affects both keybind matching and terminal input encoding.
 ///   This does NOT impact keyboard layout or how keys are interpreted
-///   prior to Ghostty receiving them. For example, `option+a` on macOS
+///   prior to Niftty receiving them. For example, `option+a` on macOS
 ///   may still produce `å` even if `option` is remapped to `ctrl`.
 ///
 /// * Generic modifiers (e.g. `ctrl`) match both left and right physical keys.
@@ -2026,7 +2026,7 @@ keybind: Keybinds = .{},
 ///
 /// * On macOS, bindings in the main menu will trigger before any remapping
 ///   is done. This is because macOS itself handles menu activation and
-///   this happens before Ghostty receives the key event. To workaround
+///   this happens before Niftty receives the key event. To workaround
 ///   this, you should unbind the menu items and rebind them using your
 ///   desired modifier.
 ///
@@ -2153,7 +2153,7 @@ keybind: Keybinds = .{},
 
 /// Configure a preference for window decorations. This setting specifies
 /// a _preference_; the actual OS, desktop environment, window manager, etc.
-/// may override this preference. Ghostty will do its best to respect this
+/// may override this preference. Niftty will do its best to respect this
 /// preference but it may not always be possible.
 ///
 /// Valid values:
@@ -2168,7 +2168,7 @@ keybind: Keybinds = .{},
 ///
 ///    Automatically decide to use either client-side or server-side
 ///    decorations based on the detected preferences of the current OS and
-///    desktop environment. This option usually makes Ghostty look the most
+///    desktop environment. This option usually makes Niftty look the most
 ///    "native" for your desktop.
 ///
 ///  * `client`
@@ -2236,12 +2236,12 @@ keybind: Keybinds = .{},
 ///   * `light` - Use the light theme regardless of system theme.
 ///   * `dark` - Use the dark theme regardless of system theme.
 ///   * `ghostty` - Use the background and foreground colors specified in the
-///     Ghostty configuration. This is only supported on Linux builds.
+///     Niftty configuration. This is only supported on Linux builds.
 ///
 /// On macOS, if `macos-titlebar-style` is `tabs` or `transparent`, the window theme will be
 /// automatically set based on the luminosity of the terminal background color.
 /// This only applies to terminal windows. This setting will still apply to
-/// non-terminal windows within Ghostty.
+/// non-terminal windows within Niftty.
 ///
 /// This is currently only supported on macOS and Linux.
 @"window-theme": WindowTheme = .auto,
@@ -2268,7 +2268,7 @@ keybind: Keybinds = .{},
 ///
 /// Note that the window manager may put limits on the size or override the
 /// size. For example, a tiling window manager may force the window to be a
-/// certain size to fit within the grid. There is nothing Ghostty will do about
+/// certain size to fit within the grid. There is nothing Niftty will do about
 /// this, but it will make an effort.
 ///
 /// Sizes larger than the screen size will be clamped to the screen size.
@@ -2294,7 +2294,7 @@ keybind: Keybinds = .{},
 ///
 /// Note that the window manager may put limits on the position or override
 /// the position. For example, a tiling window manager may force the window
-/// to be a certain position to fit within the grid. There is nothing Ghostty
+/// to be a certain position to fit within the grid. There is nothing Niftty
 /// will do about this, but it will make an effort.
 ///
 /// Also note that negative values are also up to the operating system and
@@ -2327,18 +2327,18 @@ keybind: Keybinds = .{},
 ///
 ///   * `never` will never save window state.
 ///
-///   * `always` will always save window state whenever Ghostty is exited.
+///   * `always` will always save window state whenever Niftty is exited.
 ///
-/// If you change this value to `never` while Ghostty is not running, the next
-/// Ghostty launch will NOT restore the window state.
+/// If you change this value to `never` while Niftty is not running, the next
+/// Niftty launch will NOT restore the window state.
 ///
-/// If you change this value to `default` while Ghostty is not running and the
-/// previous exit saved state, the next Ghostty launch will still restore the
-/// window state. This is because Ghostty cannot know if the previous exit was
+/// If you change this value to `default` while Niftty is not running and the
+/// previous exit saved state, the next Niftty launch will still restore the
+/// window state. This is because Niftty cannot know if the previous exit was
 /// due to a forced save or not (macOS doesn't provide this information).
 ///
-/// If you change this value so that window state is saved while Ghostty is not
-/// running, the previous window state will not be restored because Ghostty only
+/// If you change this value so that window state is saved while Niftty is not
+/// running, the previous window state will not be restored because Niftty only
 /// saves state on exit if this is enabled.
 ///
 /// The default value is `default`.
@@ -2508,14 +2508,14 @@ keybind: Keybinds = .{},
 /// The maximum size in bytes of a single clipboard write by a program
 /// running in the terminal via the Kitty clipboard protocol (OSC 5522).
 /// This doesn't apply to OSC 52, which is limited by the maximum length
-/// of an escape sequence hardcoded into Ghostty for now.
+/// of an escape sequence hardcoded into Niftty for now.
 ///
 /// Data beyond the limit fails the entire write with an `EFBIG` status,
 /// discards the transaction, and leaves the clipboard untouched. Later
 /// write-related packets are ignored until a new write begins.
 ///
 /// The data is buffered in memory while the write is in progress, so
-/// this limit bounds how much memory a program can make Ghostty
+/// this limit bounds how much memory a program can make Niftty
 /// allocate per write. A future improvement will attempt to spool large
 /// writes to disk.
 ///
@@ -2658,7 +2658,7 @@ keybind: Keybinds = .{},
 /// config path ($XDG_CONFIG_HOME/niftty/config).
 ///
 /// If this is false, the default configuration paths will not be loaded.
-/// This is targeted directly at using Ghostty from the CLI in a way
+/// This is targeted directly at using Niftty from the CLI in a way
 /// that minimizes external effects.
 ///
 /// This is a CLI-only configuration. Setting this in a configuration file
@@ -2680,12 +2680,12 @@ keybind: Keybinds = .{},
 /// a macOS application. On Linux, this defaults to `true` since that is
 /// generally expected behavior.
 ///
-/// On Linux, if this is `true`, Ghostty can delay quitting fully until a
+/// On Linux, if this is `true`, Niftty can delay quitting fully until a
 /// configurable amount of time has passed after the last window is closed.
 /// See the documentation of `quit-after-last-window-closed-delay`.
 @"quit-after-last-window-closed": bool = builtin.os.tag == .linux,
 
-/// Controls how long Ghostty will stay running after the last open surface has
+/// Controls how long Niftty will stay running after the last open surface has
 /// been closed. This only has an effect if `quit-after-last-window-closed` is
 /// also set to `true`.
 ///
@@ -2720,16 +2720,16 @@ keybind: Keybinds = .{},
 /// value larger than this will be clamped to the maximum value.
 ///
 /// By default `quit-after-last-window-closed-delay` is unset and
-/// Ghostty will quit immediately after the last window is closed if
+/// Niftty will quit immediately after the last window is closed if
 /// `quit-after-last-window-closed` is `true`.
 ///
 /// Only implemented on Linux.
 @"quit-after-last-window-closed-delay": ?Duration = null,
 
-/// This controls whether an initial window is created when Ghostty
+/// This controls whether an initial window is created when Niftty
 /// is run. Note that if `quit-after-last-window-closed` is `true` and
 /// `quit-after-last-window-closed-delay` is set, setting `initial-window` to
-/// `false` will mean that Ghostty will quit after the configured delay if no
+/// `false` will mean that Niftty will quit after the configured delay if no
 /// window is ever created. Only implemented on Linux and macOS.
 @"initial-window": bool = true,
 
@@ -2793,7 +2793,7 @@ keybind: Keybinds = .{},
 ///   * `right` - Terminal appears at the right of the screen.
 ///   * `center` - Terminal appears at the center of the screen.
 ///
-/// On macOS, changing this configuration requires restarting Ghostty
+/// On macOS, changing this configuration requires restarting Niftty
 /// completely.
 ///
 /// Note: There is no default keybind for toggling the quick terminal.
@@ -2868,7 +2868,7 @@ keybind: Keybinds = .{},
 ///  * `main` - The screen that the operating system recommends as the main
 ///    screen. On macOS, this is the screen that is currently receiving
 ///    keyboard input. This screen is defined by the operating system and
-///    not chosen by Ghostty.
+///    not chosen by Niftty.
 ///
 ///  * `mouse` - The screen that the mouse is currently hovered over.
 ///
@@ -2884,7 +2884,7 @@ keybind: Keybinds = .{},
 /// On Linux/Wayland, `macos-menu-bar` is treated as equivalent to `main`.
 ///
 /// Note: On Linux, there is no universal concept of a "primary" monitor.
-/// Ghostty uses the compositor-reported primary output when available and
+/// Niftty uses the compositor-reported primary output when available and
 /// falls back to the first monitor reported by GDK if no primary output can
 /// be resolved.
 @"quick-terminal-screen": QuickTerminalScreen = .main,
@@ -3014,26 +3014,26 @@ keybind: Keybinds = .{},
 ///     (Available since: 1.2.0)
 ///
 ///   * `ssh-terminfo` - Enable automatic terminfo installation on remote hosts.
-///     Attempts to install Ghostty's embedded terminfo entry using `tic` on local
+///     Attempts to install Niftty's embedded terminfo entry using `tic` on local
 ///     cache misses. Requires `tic` to be available on remote hosts. Successful
 ///     installations are cached locally to avoid repeat installations.
 ///     If desired, the `+ssh-cache` CLI action can be used to manage the installation
 ///     cache manually using various arguments.
 ///     (Available since: 1.2.0)
 ///
-///   * `path` - Add Ghostty's binary directory to PATH. This ensures the `ghostty`
+///   * `path` - Add Niftty's binary directory to PATH. This ensures the `niftty`
 ///     command is available in the shell even if shell init scripts reset PATH.
 ///     This is particularly useful on macOS where PATH is often overridden by
 ///     system scripts. The directory is only added if not already present.
 ///
 /// SSH features work independently and can be combined for optimal experience:
-/// when both `ssh-env` and `ssh-terminfo` are enabled, Ghostty will install its
+/// when both `ssh-env` and `ssh-terminfo` are enabled, Niftty will install its
 /// terminfo on remote hosts and use `xterm-ghostty` as TERM, falling back to
 /// `xterm-256color` with environment variables if terminfo installation fails.
 @"shell-integration-features": ShellIntegrationFeatures = .{},
 
 /// Automatically forward TCP ports opened by remote development processes
-/// during SSH sessions launched through Ghostty's shell integration, including
+/// during SSH sessions launched through Niftty's shell integration, including
 /// ports that were already listening when the session started. Local listeners
 /// bind to loopback only. Disable this when explicit `ssh -L` management is
 /// preferred. On macOS, the SSH Ports overlay can add or close tunnels.
@@ -3041,7 +3041,7 @@ keybind: Keybinds = .{},
 /// Available since: 1.4.0
 @"ssh-auto-forward": bool = true,
 
-/// Show a non-obstructive notification whenever Ghostty automatically forwards
+/// Show a non-obstructive notification whenever Niftty automatically forwards
 /// a remote port. Forwarding continues when this is disabled.
 ///
 /// Available since: 1.4.0
@@ -3081,7 +3081,7 @@ keybind: Keybinds = .{},
 /// command-palette-entry = title:Reset Font Style, action:csi:0m
 /// command-palette-entry = title:Crash on Main Thread,description:Causes a crash on the main (UI) thread.,action:crash:main
 /// command-palette-entry = title:Focus Split: Right,description:"Focus the split to the right, if it exists.",action:goto_split:right
-/// command-palette-entry = title:"Ghostty",description:"Add a little Ghostty to your terminal.",action:"text:\xf0\x9f\x91\xbb"
+/// command-palette-entry = title:"Niftty",description:"Add a little Niftty to your terminal.",action:"text:\xf0\x9f\x91\xbb"
 /// ```
 ///
 /// There are some additional special values that can be specified for
@@ -3104,7 +3104,7 @@ keybind: Keybinds = .{},
 @"command-palette-entry": RepeatableCommand = .{},
 
 /// Sets the reporting format for OSC sequences that request color information.
-/// Ghostty currently supports OSC 10 (foreground), OSC 11 (background), and
+/// Niftty currently supports OSC 10 (foreground), OSC 11 (background), and
 /// OSC 4 (256 color palette) queries, and by default the reported values
 /// are scaled-up RGB values, where each component are 16 bits. This is how
 /// most terminals report these values. However, some legacy applications may
@@ -3133,13 +3133,13 @@ keybind: Keybinds = .{},
 /// Custom shaders to run after the default shaders. This is a file path
 /// to a GLSL-syntax shader for all platforms.
 ///
-/// Warning: Invalid shaders can cause Ghostty to become unusable such as by
+/// Warning: Invalid shaders can cause Niftty to become unusable such as by
 /// causing the window to be completely black. If this happens, you can
 /// unset this configuration to disable the shader.
 ///
 /// Custom shader support is based on and compatible with the Shadertoy shaders.
 /// Shaders should specify a `mainImage` function and the available uniforms
-/// largely match Shadertoy, with some caveats and Ghostty-specific extensions.
+/// largely match Shadertoy, with some caveats and Niftty-specific extensions.
 ///
 /// The uniform values available to shaders are as follows:
 ///
@@ -3172,7 +3172,7 @@ keybind: Keybinds = .{},
 ///
 ///  * `float iSampleRate` - Sample rate for audio. (N/A)
 ///
-/// Ghostty-specific extensions:
+/// Niftty-specific extensions:
 ///
 ///  * `vec4 iCurrentCursor` - Info about the terminal cursor.
 ///
@@ -3292,7 +3292,7 @@ keybind: Keybinds = .{},
 ///
 ///  * `attention` *(enabled by default)*
 ///
-///    Request the user's attention when Ghostty is unfocused, until it has
+///    Request the user's attention when Niftty is unfocused, until it has
 ///    received focus again. On macOS, this will bounce the app icon in the
 ///    dock once. On Linux, the behavior depends on the desktop environment
 ///    and/or the window manager/compositor:
@@ -3301,7 +3301,7 @@ keybind: Keybinds = .{},
 ///      highlighted;
 ///
 ///    - On GNOME, you may receive a notification that, when clicked, would
-///      bring the Ghostty window into focus;
+///      bring the Niftty window into focus;
 ///
 ///    - On Sway, the window may be decorated with a distinctly colored border;
 ///
@@ -3340,7 +3340,7 @@ keybind: Keybinds = .{},
 /// Available since: 1.2.0 on GTK, 1.3.0 on macOS.
 @"bell-audio-volume": f64 = 0.5,
 
-/// Control the in-app notifications that Ghostty shows.
+/// Control the in-app notifications that Niftty shows.
 ///
 /// On Linux (GTK), in-app notifications show up as toasts. Toasts appear
 /// overlaid on top of the terminal window. They are used to show information
@@ -3454,7 +3454,7 @@ keybind: Keybinds = .{},
 /// When "hidden", the top titlebar area can no longer be used for dragging
 /// the window. To drag the window, you can use option+click on the resizable
 /// areas of the frame to drag the window. This is a standard macOS behavior
-/// and not something Ghostty enables.
+/// and not something Niftty enables.
 ///
 /// The default value is "transparent". This is an opinionated choice
 /// but its one I think is the most aesthetically pleasing and works in
@@ -3485,7 +3485,7 @@ keybind: Keybinds = .{},
 @"macos-titlebar-proxy-icon": MacTitlebarProxyIcon = .visible,
 
 /// Controls the windowing behavior when dropping a file or folder
-/// onto the Ghostty icon in the macOS dock.
+/// onto the Niftty icon in the macOS dock.
 ///
 /// Valid values are:
 ///
@@ -3560,12 +3560,12 @@ keybind: Keybinds = .{},
 /// Available since: 1.2.0
 @"macos-hidden": MacHidden = .never,
 
-/// If true, Ghostty on macOS will automatically enable the "Secure Input"
+/// If true, Niftty on macOS will automatically enable the "Secure Input"
 /// feature when it detects that a password prompt is being displayed.
 ///
 /// "Secure Input" is a macOS security feature that prevents applications from
 /// reading keyboard events. This can always be enabled manually using the
-/// `Ghostty > Secure Keyboard Entry` menu item.
+/// `Niftty > Secure Keyboard Entry` menu item.
 ///
 /// Note that automatic password prompt detection is based on heuristics
 /// and may not always work as expected. Specifically, it does not work
@@ -3578,7 +3578,7 @@ keybind: Keybinds = .{},
 /// reading keyboard events.
 @"macos-auto-secure-input": bool = true,
 
-/// If true, Ghostty will show a graphical indication when secure input is
+/// If true, Niftty will show a graphical indication when secure input is
 /// enabled. This indication is generally recommended to know when secure input
 /// is enabled.
 ///
@@ -3588,7 +3588,7 @@ keybind: Keybinds = .{},
 /// you may want to disable it.
 @"macos-secure-input-indication": bool = true,
 
-/// If true, Ghostty exposes and handles the built-in AppleScript dictionary
+/// If true, Niftty exposes and handles the built-in AppleScript dictionary
 /// on macOS.
 ///
 /// If false, all AppleScript interactions are disabled. This includes
@@ -3609,13 +3609,13 @@ keybind: Keybinds = .{},
 ///
 /// Valid values:
 ///
-///  * `official` - Use the official Ghostty icon.
+///  * `official` - Use the official Niftty icon.
 ///  * `blueprint`, `chalkboard`, `microchip`, `glass`, `holographic`,
-///    `paper`, `retro`, `xray` - Official variants of the Ghostty icon
+///    `paper`, `retro`, `xray` - Official variants of the Niftty icon
 ///    hand-created by artists (no AI).
 ///  * `custom` - Use a completely custom icon. The location must be specified
 ///    using the additional `macos-custom-icon` configuration
-///  * `custom-style` - Use the official Ghostty icon but with custom
+///  * `custom-style` - Use the official Niftty icon but with custom
 ///    styles applied to various layers. The custom styles must be
 ///    specified using the additional `macos-icon`-prefixed configurations.
 ///    The `macos-icon-ghost-color` and `macos-icon-screen-color`
@@ -3672,10 +3672,10 @@ keybind: Keybinds = .{},
 /// `custom-style`.
 @"macos-icon-screen-color": ?ColorList = null,
 
-/// Whether macOS Shortcuts are allowed to control Ghostty.
+/// Whether macOS Shortcuts are allowed to control Niftty.
 ///
-/// Ghostty exposes a number of actions that allow Shortcuts to
-/// control and interact with Ghostty. This includes creating new
+/// Niftty exposes a number of actions that allow Shortcuts to
+/// control and interact with Niftty. This includes creating new
 /// terminals, sending text to terminals, running commands, invoking
 /// any keybind action, etc.
 ///
@@ -3685,13 +3685,13 @@ keybind: Keybinds = .{},
 ///
 /// Valid values are:
 ///
-/// * `ask` - Ask the user whether for permission. Ghostty will remember
+/// * `ask` - Ask the user whether for permission. Niftty will remember
 ///   this choice and never ask again. This is similar to other macOS
 ///   permissions such as microphone access, camera access, etc.
 ///
-/// * `allow` - Allow Shortcuts to control Ghostty without asking.
+/// * `allow` - Allow Shortcuts to control Niftty without asking.
 ///
-/// * `deny` - Deny Shortcuts from controlling Ghostty.
+/// * `deny` - Deny Shortcuts from controlling Niftty.
 ///
 /// Available since: 1.2.0
 @"macos-shortcuts": MacShortcuts = .ask,
@@ -3700,18 +3700,18 @@ keybind: Keybinds = .{},
 ///
 /// This allows per-surface resource management. For example, if a shell program
 /// is using too much memory, only that shell will be killed by the oom monitor
-/// instead of the entire Ghostty process. Similarly, if a shell program is
+/// instead of the entire Niftty process. Similarly, if a shell program is
 /// using too much CPU, only that surface will be CPU-throttled.
 ///
 /// This will cause startup times to be slower (a hundred milliseconds or so),
 /// so the default value is "single-instance." In single-instance mode, only
-/// one instance of Ghostty is running (see gtk-single-instance) so the startup
-/// time is a one-time cost. Additionally, single instance Ghostty is much
+/// one instance of Niftty is running (see gtk-single-instance) so the startup
+/// time is a one-time cost. Additionally, single instance Niftty is much
 /// more likely to have many windows, tabs, etc. so cgroup isolation is a
 /// big benefit.
 ///
 /// This feature requires `systemd`. If `systemd` is unavailable, cgroup
-/// initialization will fail. By default, this will not prevent Ghostty from
+/// initialization will fail. By default, this will not prevent Niftty from
 /// working (see `linux-cgroup-hard-fail`).
 ///
 /// Changing this value and reloading the config will not affect existing
@@ -3721,7 +3721,7 @@ keybind: Keybinds = .{},
 ///
 ///   * `never` - Never use cgroups.
 ///   * `always` - Always use cgroups.
-///   * `single-instance` - Enable cgroups only for Ghostty instances launched
+///   * `single-instance` - Enable cgroups only for Niftty instances launched
 ///     as single-instance applications (see gtk-single-instance).
 @"linux-cgroup": LinuxCgroup = if (builtin.os.tag == .linux)
     .@"single-instance"
@@ -3775,21 +3775,21 @@ else
 /// Available since: 1.1.0
 @"gtk-opengl-debug": bool = builtin.mode == .Debug,
 
-/// If `true`, the Ghostty GTK application will run in single-instance mode:
-/// each new `ghostty` process launched will result in a new window if there is
+/// If `true`, the Niftty GTK application will run in single-instance mode:
+/// each new `niftty` process launched will result in a new window if there is
 /// already a running process.
 ///
-/// If `false`, each new ghostty process will launch a separate application.
+/// If `false`, each new niftty process will launch a separate application.
 ///
-/// If `detect`, Ghostty will assume true (single instance) unless one of
+/// If `detect`, Niftty will assume true (single instance) unless one of
 /// the following scenarios is found:
 ///
 /// 1. TERM_PROGRAM environment variable is a non-empty value. In this
-/// case, we assume Ghostty is being launched from a graphical terminal
+/// case, we assume Niftty is being launched from a graphical terminal
 /// session and you want a dedicated instance.
 ///
 /// 2. Any CLI arguments exist. In this case, we assume you are passing
-/// custom Ghostty configuration. Single instance mode inherits the
+/// custom Niftty configuration. Single instance mode inherits the
 /// configuration from when it was launched, so we must disable single
 /// instance to load the new configuration.
 ///
@@ -3801,7 +3801,7 @@ else
 ///
 /// The default value is `detect`.
 ///
-/// Note that debug builds of Ghostty have a separate single-instance ID
+/// Note that debug builds of Niftty have a separate single-instance ID
 /// so you can test single instance without conflicting with release builds.
 @"gtk-single-instance": GtkSingleInstance = .default,
 
@@ -3854,7 +3854,7 @@ else
 /// The default style is `native`.
 @"gtk-titlebar-style": GtkTitlebarStyle = .native,
 
-/// If `true` (default), then the Ghostty GTK tabs will be "wide." Wide tabs
+/// If `true` (default), then the Niftty GTK tabs will be "wide." Wide tabs
 /// are the new typical Gnome style where tabs fill their available space.
 /// If you set this to `false` then tabs will only take up space they need,
 /// which is the old style.
@@ -3876,9 +3876,9 @@ else
 ///   * https://docs.gtk.org/gtk4/css-properties.html - A comprehensive list
 ///     of supported CSS properties.
 ///
-/// Launch Ghostty with `env GTK_DEBUG=interactive ghostty` to tweak Ghostty's
+/// Launch Niftty with `env GTK_DEBUG=interactive niftty` to tweak Niftty's
 /// CSS in real time using the GTK Inspector. Errors in your CSS files would
-/// also be reported in the terminal you started Ghostty from. See
+/// also be reported in the terminal you started Niftty from. See
 /// https://developer.gnome.org/documentation/tools/inspector.html for more
 /// information about the GTK Inspector.
 ///
@@ -3957,7 +3957,7 @@ term: []const u8 = "xterm-ghostty",
 ///   * `epoll` - Use the `epoll` API
 ///   * `io_uring` - Use the `io_uring` API
 ///
-/// If the selected backend is not available on the platform, Ghostty will
+/// If the selected backend is not available on the platform, Niftty will
 /// fall back to an automatically chosen backend that is available.
 ///
 /// Changing this value requires a full application restart to take effect.
@@ -3968,13 +3968,13 @@ term: []const u8 = "xterm-ghostty",
 /// Available since: 1.2.0
 @"async-backend": AsyncBackend = .auto,
 
-/// Control the auto-update functionality of Ghostty. This is only supported
+/// Control the auto-update functionality of Niftty. This is only supported
 /// on macOS currently, since Linux builds are distributed via package
-/// managers that are not centrally controlled by Ghostty.
+/// managers that are not centrally controlled by Niftty.
 ///
 /// Checking or downloading an update does not send any information to
 /// the project beyond standard network information mandated by the
-/// underlying protocols. To put it another way: Ghostty doesn't explicitly
+/// underlying protocols. To put it another way: Niftty doesn't explicitly
 /// add any tracking to the update process. The update process works by
 /// downloading information about the latest version and comparing it
 /// client-side to the current version.
@@ -3996,9 +3996,9 @@ term: []const u8 = "xterm-ghostty",
 /// The release channel to use for auto-updates.
 ///
 /// The default value of this matches the release channel of the currently
-/// running Ghostty version. If you download a pre-release version of Ghostty
+/// running Niftty version. If you download a pre-release version of Niftty
 /// then this will be set to `tip` and you will receive pre-release updates.
-/// If you download a stable version of Ghostty then this will be set to
+/// If you download a stable version of Niftty then this will be set to
 /// `stable` and you will receive stable updates.
 ///
 /// Valid values are:
@@ -4010,7 +4010,7 @@ term: []const u8 = "xterm-ghostty",
 ///    will likely have more bugs than the stable channel.
 ///
 /// Changing this configuration requires a full restart of
-/// Ghostty to take effect.
+/// Niftty to take effect.
 ///
 /// This only works on macOS since only macOS has an auto-update feature.
 @"auto-update-channel": ?build_config.ReleaseChannel = null,
@@ -4035,7 +4035,7 @@ _conditional_set: std.EnumSet(conditional.Key) = .{},
 /// as loadTheme which has more details on why.
 _replay_steps: std.ArrayList(Replay.Step) = .empty,
 
-/// Set to true if Ghostty was executed as xdg-terminal-exec on Linux.
+/// Set to true if Niftty was executed as xdg-terminal-exec on Linux.
 @"_xdg-terminal-exec": bool = false,
 
 pub fn deinit(self: *Config) void {
@@ -4811,7 +4811,7 @@ pub fn finalize(self: *Config) !void {
         // window-theme = auto since that breaks it.
         if (different) {
             // This setting doesn't make sense with different light/dark themes
-            // because it'll force the theme based on the Ghostty theme.
+            // because it'll force the theme based on the Niftty theme.
             if (self.@"window-theme" == .auto) self.@"window-theme" = .system;
 
             // Mark that we use a conditional theme
@@ -4979,7 +4979,7 @@ pub fn finalize(self: *Config) !void {
     if (!self.@"link-url") self.link.links.items = self.link.links.items[1..];
 
     // We warn when the quit-after-last-window-closed-delay is set to a very
-    // short value because it can cause Ghostty to quit before the first
+    // short value because it can cause Niftty to quit before the first
     // window is even shown.
     if (self.@"quit-after-last-window-closed-delay") |duration| {
         if (duration.duration < 5 * std.time.ns_per_s) {
@@ -5394,7 +5394,7 @@ pub const ChangeIterator = struct {
 };
 
 /// This runs a heuristic to determine if we are likely running
-/// Ghostty in a CLI environment. We need this to change some behaviors.
+/// Niftty in a CLI environment. We need this to change some behaviors.
 /// We should keep the set of behaviors that depend on this as small
 /// as possible because magic sucks, but each place is well documented.
 fn probableCliEnvironment() bool {
@@ -9377,7 +9377,7 @@ pub const MacHidden = enum {
 
 /// See macos-icon
 ///
-/// Note: future versions of Ghostty can support a custom icon with
+/// Note: future versions of Niftty can support a custom icon with
 /// path by changing this to a tagged union, which doesn't change our
 /// format at all.
 pub const MacAppIcon = enum {
@@ -10004,10 +10004,10 @@ pub const BackgroundImageFit = enum {
 /// See freetype-load-flag
 pub const FreetypeLoadFlags = packed struct {
     // The defaults here at the time of writing this match the defaults
-    // for Freetype itself. Ghostty hasn't made any opinionated changes
+    // for Freetype itself. Niftty hasn't made any opinionated changes
     // to these defaults. (Strictly speaking, `light` isn't FreeType's
     // own default, but appears to be the effective default with most
-    // Fontconfig-aware software using FreeType, so until Ghostty
+    // Fontconfig-aware software using FreeType, so until Niftty
     // implements Fontconfig support we default to `light`.)
     hinting: bool = true,
     @"force-autohint": bool = false,

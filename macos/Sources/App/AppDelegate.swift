@@ -1142,7 +1142,7 @@ extension AppDelegate {
         dockMenu.addItem(newTab)
     }
 
-    /// Inserts the Connect menu after "View" in the main menu.
+    /// Inserts the Remote menu after "View" in the main menu.
     private func setupConnectMenu() {
         let controller = ConnectMenuController(ghostty: ghostty)
         let mainMenu = NSApp.mainMenu
