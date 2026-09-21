@@ -301,8 +301,19 @@ jobs:
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             extra=(--target "$GITHUB_SHA")
           fi
+
+          # A pre-existing draft for this tag (e.g. left behind by an
+          # aborted attempt) is silently reused by the API and the
+          # release stays an invisible draft. Delete any draft first
+          # (the git tag is kept), and force-publish afterwards.
+          if gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null | grep -q true; then
+            echo "Deleting stray draft release for $TAG"
+            gh release delete "$TAG" --yes
+          fi
+
           gh release create "$TAG" \
             "${extra[@]}" \
+            --latest \
             --title "Niftty $VERSION" \
             --notes "Automatic update notes are signed for Sparkle; the app checks for updates on its own via the \`appcast-*.xml\` feeds in this release.
 
@@ -319,3 +330,9 @@ jobs:
             dist/Niftty-v"$VERSION"-x86_64.zip \
             dist/appcast-arm64.xml \
             dist/appcast-x86_64.xml
+
+          # Belt and braces: never end with an unpublished release.
+          if gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null | grep -q true; then
+            echo "::warning::Release was created as a draft; publishing."
+            gh release edit "$TAG" --draft=false --latest
+          fi
