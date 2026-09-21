@@ -131,6 +131,14 @@ enum ShellLexer {
         /// Set right after `<<`/`<<-`; the next word is its delimiter.
         private var awaitingHeredocDelimiter: Bool?
 
+        /// Explicit init: the implicit memberwise initializer inherits
+        /// the private access of the stored properties, which older
+        /// Swift compilers (Xcode 26.6 / Swift 6.2) reject at the
+        /// call site in `tokens(_:)`.
+        init(chars: [Character]) {
+            self.chars = chars
+        }
+
         mutating func scan() -> [Token] {
             while i < chars.count {
                 if step(closer: nil) { break }
