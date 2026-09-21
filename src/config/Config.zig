@@ -1295,9 +1295,9 @@ command: ?Command = null,
 /// by the embedding application, and renders the candidate as faint "ghost"
 /// text at the cursor while the shell is sitting at an empty prompt. The
 /// candidate can then be accepted as ordinary typed input with the
-/// `accept_prediction` keybinding action (`performable:tab` by default;
-/// when no candidate is visible the key falls through to the program in
-/// the terminal as usual).
+/// `accept_prediction` keybinding action (`performable:tab` and
+/// `performable:right` by default; when no candidate is visible the key
+/// falls through to the program in the terminal as usual).
 ///
 /// Disabling this at runtime immediately clears any visible candidate,
 /// stops observing command lines, and rejects any further candidate
@@ -6808,12 +6808,19 @@ pub const Keybinds = struct {
             );
         }
 
-        // Predictions: accept the visible prediction candidate with Tab.
-        // This is performable so that Tab reaches the shell or TUI as
-        // normal whenever no candidate is showing.
+        // Predictions: accept the visible prediction candidate with
+        // Tab or Right, the convention every shell-autosuggestion
+        // implementation uses. Both are performable so the key reaches
+        // the shell or TUI as normal whenever no candidate is showing.
         try self.set.putFlags(
             alloc,
             .{ .key = .{ .physical = .tab } },
+            .accept_prediction,
+            .{ .performable = true },
+        );
+        try self.set.putFlags(
+            alloc,
+            .{ .key = .{ .physical = .arrow_right } },
             .accept_prediction,
             .{ .performable = true },
         );

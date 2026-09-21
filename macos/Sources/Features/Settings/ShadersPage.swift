@@ -45,7 +45,11 @@ struct ShadersPage: View {
     }
 
     private func isSelected(_ shader: BuiltInShader) -> Bool {
-        currentValue == shader.url.path
+        guard let value = currentValue, !value.isEmpty else { return false }
+        // The recorded path can go stale when the app bundle moves (e.g. a
+        // value written by a dev build while running an installed copy), so
+        // bundled shaders are identified by file name, not full path.
+        return URL(fileURLWithPath: value).lastPathComponent == shader.id
     }
 
     private var isNoneSelected: Bool {
@@ -55,7 +59,9 @@ struct ShadersPage: View {
 
     private var customShaderPath: String? {
         guard let value = currentValue, !value.isEmpty,
-              !shaders.contains(where: { $0.url.path == value })
+              !shaders.contains(where: {
+                  $0.id == URL(fileURLWithPath: value).lastPathComponent
+              })
         else { return nil }
         return value
     }

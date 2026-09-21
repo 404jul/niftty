@@ -49,3 +49,8 @@ vgcore.*
 *.xcframework
 .v2c/
 .zcodeignore
+
+# Local agent skills / tooling
+.claude/
+skills-lock.json
+.agents/skills/i-have-adhd/

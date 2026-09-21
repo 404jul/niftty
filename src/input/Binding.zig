@@ -739,8 +739,9 @@ pub const Action = union(enum) {
     /// prediction candidate is showing (for example when the `prediction`
     /// configuration is disabled, the terminal is not sitting at a shell
     /// prompt, or a candidate was already invalidated by other input).
-    /// Binding this action with the `performable:` flag (the default for
-    /// Tab) makes the key fall through to the terminal in those cases.
+    /// Binding this action with the `performable:` flag (the default
+    /// for Tab and Right) makes the key fall through to the terminal
+    /// in those cases.
     accept_prediction,
 
     /// Close the specified tabs and all splits therein.

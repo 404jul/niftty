@@ -3036,8 +3036,10 @@ fn predictionInvalidateKeepInput(
 
 /// Track a key press (or auto-repeat) that produced pty input and
 /// update the prediction input line. Plain printable text extends the
-/// line, backspace removes the last character, and anything else
-/// (enter, arrows, control keys) gives up on tracking: the
+/// line, backspace removes the last character, a plain right arrow is
+/// a no-op (forward-char at the end of the line, where the cursor
+/// always is while tracking is valid), and anything else (enter,
+/// other arrows, control keys) gives up on tracking: the
 /// line-editing position can no longer be known, so the context is
 /// invalidated without a new request. A changed line requests a fresh
 /// candidate for the new prefix.
@@ -3084,10 +3086,29 @@ fn predictionTrackKey(self: *Surface, event: input.KeyEvent) void {
             while (len > 0 and (items[len] & 0xC0) == 0x80) len -= 1;
             self.prediction_input.shrinkRetainingCapacity(len);
         }
+    } else if (event.key == .arrow_right and
+        !event.mods.shift and !event.mods.ctrl and
+        !event.mods.alt and !event.mods.super)
+    {
+        // A plain right arrow is forward-char in the shell's line
+        // editor, and while input tracking is valid the cursor sits at
+        // the end of the line: printable keys append there, backspace
+        // deletes there, and anything else gives up on tracking below.
+        // forward-char at end of line is a no-op in the standard emacs
+        // and vi-insert editing modes, so the tracked line is still
+        // exact. Keep the context — including any visible candidate —
+        // rather than stopping predictions until the next prompt. A
+        // shell that binds right arrow to a line-changing widget
+        // (e.g. zsh-autosuggestions on the remote host) can desync
+        // the tracked prefix; the worst case is a stale-prefix
+        // candidate the user sees before Enter, never silent
+        // misinput.
+        return;
     } else {
-        // Any other key that reaches the pty (enter, arrows, control
-        // keys, an over-long line) can change the shell editor in ways
-        // we cannot reconstruct. Stop predicting until the next prompt.
+        // Any other key that reaches the pty (enter, other arrows,
+        // control keys, an over-long line) can change the shell editor
+        // in ways we cannot reconstruct. Stop predicting until the
+        // next prompt.
         self.predictionInvalidate(.key);
         return;
     }

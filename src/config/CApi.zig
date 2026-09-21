@@ -728,6 +728,11 @@ test "ghostty_config_keybind_data: default config" {
         ) != null);
     }
 
+    // Predictions default to performable Tab and Right acceptance.
+    try testing.expect(std.mem.indexOf(u8, json,
+        \\{"trigger":"arrow_right","actions":["accept_prediction"],"table":null,"default":true
+    ) != null);
+
     // The action catalog documents payload requirements.
     try testing.expect(std.mem.indexOf(u8, json,
         \\{"name":"ignore","docs":
