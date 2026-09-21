@@ -28,6 +28,18 @@ A file for [guiding coding agents](https://agents.md/).
 - All C enums in `include/ghostty/vt/` must have a `_MAX_VALUE = GHOSTTY_ENUM_MAX_VALUE`
   sentinel as the last entry to force int enum sizing (pre-C23 portability).
 
+## CI Toolchain Skew
+
+- CI builds (`.github/workflows/ci.yml`, `release.yml`) compile with an
+  older, pinned Xcode than a dev machine may have. Swift accepted only
+  by a newer local compiler will pass locally and fail CI.
+- Never rely on newest-compiler behavior. In particular, a private
+  nested struct with private stored properties must define an explicit
+  `init`; its implicit memberwise initializer inherits the properties'
+  access level and older Swift rejects constructing it from the
+  enclosing declaration.
+- Never tag a release while the `CI` workflow is red on `main`.
+
 ## Directory Structure
 
 - Shared Zig core: `src/`

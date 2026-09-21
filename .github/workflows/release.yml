@@ -69,6 +69,18 @@ jobs:
             exit 1
           fi
 
+      - name: Pin Xcode toolchain
+        run: |
+          # Keep in sync with .github/workflows/ci.yml. Pinning avoids
+          # the runner image's default Xcode changing under us.
+          pin="/Applications/Xcode_26.6.app"
+          if [[ ! -d "$pin" ]]; then
+            echo "::error::Pinned Xcode $pin is not on the runner image. Update it in release.yml and ci.yml."
+            exit 1
+          fi
+          sudo xcode-select -s "$pin"
+          xcodebuild -version
+
       - name: Install Zig
         run: |
           curl -fsSL \
@@ -91,6 +103,22 @@ jobs:
           zig build -Doptimize=ReleaseFast -Dversion-string="$GHOSTTY_VERSION"
         env:
           GHOSTTY_VERSION: ${{ steps.version.outputs.version }}
+
+      # zig's RunStep captures xcodebuild output, so a compile failure
+      # shows only the summary tail. Re-run the raw command on failure;
+      # incremental state makes it quick and diagnostics stream here.
+      - name: Dump xcodebuild errors on failure
+        if: failure()
+        run: |
+          cd macos
+          xcodebuild \
+            -target Ghostty \
+            -configuration ReleaseLocal \
+            GHOSTTY_COMMIT="${GHOSTTY_COMMIT:-dev}" \
+            MARKETING_VERSION="${{ steps.version.outputs.version }}" \
+            CURRENT_PROJECT_VERSION="${GHOSTTY_BUILD:-1}" \
+            2>&1 | tee /tmp/xcodebuild.log | grep -E "error:|warning:" | head -100
+          exit 0
 
       - name: Verify version injection
         env:

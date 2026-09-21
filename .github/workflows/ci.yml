@@ -1,0 +1,78 @@
+name: CI
+
+# Build gate: compiles the universal app with the same command as the
+# Release workflow, on CI's pinned (older than dev machines) Xcode.
+# Local builds with a newer Swift can pass while this fails — this is
+# the authoritative check before tagging a release.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "macos/**"
+      - "src/**"
+      - "include/**"
+      - "build.zig"
+      - "build.zig.zon"
+      - ".github/workflows/ci.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      ZIG_VERSION: "0.16.0"
+      XCODE_PIN: "/Applications/Xcode_26.6.app"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Pin Xcode toolchain
+        run: |
+          if [[ ! -d "$XCODE_PIN" ]]; then
+            echo "::error::Pinned Xcode $XCODE_PIN is not on the runner image. Update XCODE_PIN in .github/workflows/ci.yml (and release.yml) to a version the image provides."
+            exit 1
+          fi
+          sudo xcode-select -s "$XCODE_PIN"
+          xcodebuild -version
+
+      - name: Install Zig
+        run: |
+          curl -fsSL \
+            "https://ziglang.org/download/${ZIG_VERSION}/zig-aarch64-macos-${ZIG_VERSION}.tar.xz" \
+            -o /tmp/zig.tar.xz
+          mkdir -p "$HOME/.zig"
+          tar -xJf /tmp/zig.tar.xz -C "$HOME/.zig"
+          echo "$HOME/.zig/zig-aarch64-macos-${ZIG_VERSION}" >> "$GITHUB_PATH"
+
+      - name: Build Niftty.app
+        run: |
+          export GHOSTTY_BUILD=$(git rev-list --count HEAD)
+          export GHOSTTY_COMMIT=$(git rev-parse --short HEAD)
+          echo "GHOSTTY_BUILD=$GHOSTTY_BUILD" >> "$GITHUB_ENV"
+          echo "GHOSTTY_COMMIT=$GHOSTTY_COMMIT" >> "$GITHUB_ENV"
+          zig build -Doptimize=ReleaseFast -Dversion-string=0.0.0-ci
+
+      # zig's RunStep captures xcodebuild output, so a compile failure
+      # shows only the summary tail. Re-run the raw command on failure;
+      # everything is already compiled except the failing part, so this
+      # is quick and the compiler diagnostics stream into this log.
+      - name: Dump xcodebuild errors on failure
+        if: failure()
+        run: |
+          cd macos
+          xcodebuild \
+            -target Ghostty \
+            -configuration ReleaseLocal \
+            GHOSTTY_COMMIT="${GHOSTTY_COMMIT:-dev}" \
+            MARKETING_VERSION=0.0.0-ci \
+            CURRENT_PROJECT_VERSION="${GHOSTTY_BUILD:-1}" \
+            2>&1 | tee /tmp/xcodebuild.log | grep -E "error:|warning:" | head -100
+          exit 0
