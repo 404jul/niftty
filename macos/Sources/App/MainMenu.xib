@@ -69,6 +69,7 @@
                 <outlet property="menuTerminalInspector" destination="QwP-M5-fvh" id="wJi-Dh-S9f"/>
                 <outlet property="menuToggleFullScreen" destination="8kY-Pi-KaY" id="yQg-6V-OO6"/>
                 <outlet property="menuToggleVisibility" destination="DOX-wA-ilh" id="iBj-Bc-2bq"/>
+                <outlet property="menuToggleZenMode" destination="yZ2-9x-4Vn" id="w8K-2p-7Rt"/>
                 <outlet property="menuUndo" destination="r83-CV-syt" id="bU9-0b-xgQ"/>
                 <outlet property="menuUseAsDefault" destination="TrB-O8-g8H" id="af4-Jh-2HU"/>
                 <outlet property="menuZoomSplit" destination="oPd-mn-IEH" id="wTu-jK-egI"/>
@@ -400,6 +401,12 @@
                                 <modifierMask key="keyEquivalentModifierMask" control="YES" command="YES"/>
                                 <connections>
                                     <action selector="toggleGhosttyFullScreen:" target="-1" id="QB9-7R-xyc"/>
+                                </connections>
+                            </menuItem>
+                            <menuItem title="Toggle Zen Mode" keyEquivalent="z" id="yZ2-9x-4Vn">
+                                <modifierMask key="keyEquivalentModifierMask" control="YES" option="YES" command="YES"/>
+                                <connections>
+                                    <action selector="toggleZenMode:" target="-1" id="m4Q-8s-1Lv"/>
                                 </connections>
                             </menuItem>
                             <menuItem title="Show/Hide All Terminals" id="DOX-wA-ilh">

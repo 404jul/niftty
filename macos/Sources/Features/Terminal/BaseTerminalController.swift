@@ -76,6 +76,21 @@ class BaseTerminalController: NSWindowController,
     /// Fullscreen state management.
     private(set) var fullscreenStyle: FullscreenStyle?
 
+    /// The fullscreen style that was active before zen mode took over the
+    /// window's fullscreen presentation. Restored on zen exit.
+    var preZenFullscreenStyle: FullscreenStyle?
+
+    /// True while this window presents zen mode.
+    @Published var isZenMode: Bool = false
+
+    /// True while this window is the active zen stage (as opposed to a
+    /// waiting zen window hidden behind another stage).
+    @Published var isZenStageActive: Bool = false
+
+    /// The cell size of the focused surface, observed so the zen stage can
+    /// resize with font changes.
+    @Published var zenCellSize: CGSize = .zero
+
     /// Event monitor (see individual events for why)
     private var eventMonitor: Any?
 
@@ -285,12 +300,39 @@ class BaseTerminalController: NSWindowController,
         baseConfig config: Ghostty.SurfaceConfiguration? = nil
     ) -> Ghostty.SurfaceView? {
         guard let ghosttyApp = ghostty.app else { return nil }
+
+        // A split of a pane with an active `niftty +ssh` session opens
+        // on the same remote host (and directory) instead of a local
+        // shell.
+        var config = config ?? Ghostty.SurfaceConfiguration()
+        if config.command == nil {
+            config.command = inheritedSSHCommand(from: oldView)
+        }
         return insertSplit(
             Ghostty.SurfaceView(ghosttyApp, baseConfig: config),
             at: oldView,
             direction: direction,
             undoAction: "New Split"
         )
+    }
+
+    /// Command for a split that inherits the old pane's active
+    /// `niftty +ssh` session: reconnect to the same destination (the
+    /// shared ControlMaster makes this instant), starting in the old
+    /// pane's last reported remote working directory when known. Nil
+    /// when the old pane has no active session.
+    private func inheritedSSHCommand(from oldView: Ghostty.SurfaceView) -> String? {
+        guard let pid = oldView.surfaceModel?.foregroundPID,
+              SSHSessionStore.isActive(pid: pid),
+              let destination = SSHSessionStore.destination(pid: pid) else { return nil }
+
+        let exe = Bundle.main.executableURL?.path ?? "niftty"
+        var command = "\(Ghostty.Shell.quote(exe)) +ssh"
+        if let directory = oldView.sshRemoteDirectory {
+            command += " --cwd=\(Ghostty.Shell.quote(directory))"
+        }
+        command += " \(Ghostty.Shell.quote(destination))"
+        return command
     }
 
     @discardableResult
@@ -923,6 +965,16 @@ class BaseTerminalController: NSWindowController,
         // Important to cancel any prior subscriptions
         focusedSurfaceCancellables = []
 
+        // Seed the zen cell size and keep it updated so the zen stage
+        // resizes when the font size changes.
+        if let to {
+            zenCellSize = to.cellSize
+            to.$cellSize
+                .removeDuplicates()
+                .sink { [weak self] in self?.zenCellSize = $0 }
+                .store(in: &focusedSurfaceCancellables)
+        }
+
         // Setup our title listener. If we have a focused surface we always use that.
         // Otherwise, we try to use our last focused surface. In either case, we only
         // want to care if the surface is in the tree so we don't listen to titles of
@@ -958,6 +1010,13 @@ class BaseTerminalController: NSWindowController,
 
     private func applyTitleToWindow() {
         guard let window else { return }
+
+        // Keep the zen shelf titles in sync. Refreshing is cheap (a map
+        // over the participating windows) and only matters while zen mode
+        // is active.
+        if !ZenModeManager.shared.workspaces.isEmpty {
+            ZenModeManager.shared.refresh()
+        }
 
         if let titleOverride {
             window.title = computeTitle(
@@ -1274,6 +1333,9 @@ class BaseTerminalController: NSWindowController,
     func windowWillClose(_ notification: Notification) {
         guard let window else { return }
 
+        // Leave zen mode bookkeeping if this window was participating.
+        ZenModeManager.shared.controllerDidClose(self)
+
         for surfaceView in surfaceTree {
             cancelPendingClipboardConfirmation(for: surfaceView)
         }
@@ -1557,9 +1619,31 @@ extension BaseTerminalController: NSMenuItemValidation {
         case #selector(findHide):
             return focusedSurface?.searchState != nil
 
+        case #selector(toggleZenMode(_:)):
+            // Zen mode is a standard terminal window feature.
+            guard self is TerminalController else { return false }
+            item.state = isZenMode ? .on : .off
+            return true
+
         default:
             return true
         }
+    }
+
+    // MARK: Zen Mode
+
+    /// Installs (or clears) the fullscreen style used by zen mode. This
+    /// exists because the setter on ``fullscreenStyle`` is private to this
+    /// class and zen mode drives the window's fullscreen presentation
+    /// directly. See ``ZenWindowPresentation``.
+    func zenSetFullscreenStyle(_ style: FullscreenStyle?) {
+        self.fullscreenStyle = style
+    }
+
+    /// Toggles zen mode for this window. When zen mode is active on another
+    /// window, this brings this window's workspace to the stage instead.
+    @IBAction func toggleZenMode(_ sender: Any?) {
+        ZenModeManager.shared.toggle(self)
     }
 
     // MARK: - Surface Color Scheme

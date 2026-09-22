@@ -18,6 +18,22 @@ enum SSHSessionStore {
         return kill(pid_t(pid), 0) == 0 || errno == EPERM
     }
 
+    /// The `user@host` destination recorded by the `niftty +ssh` session
+    /// for the given pid, read straight from the session state file.
+    /// Nil when the file is missing or malformed.
+    static func destination(pid: Int) -> String? {
+        // Format written by `+ssh`: "<version>\n<control path>\n<destination>\n<ssh>\n"
+        // (v2 appends a mux key line).
+        guard let data = try? Data(contentsOf: stateURL(pid: pid)),
+              data.count <= 16 * 1024,
+              let text = String(data: data, encoding: .utf8) else { return nil }
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        guard lines.count >= 3,
+              lines[0] == "1" || lines[0] == "2",
+              !lines[2].isEmpty else { return nil }
+        return String(lines[2])
+    }
+
     struct Tunnel: Identifiable, Equatable {
         var localHost: String
         var localPort: UInt16

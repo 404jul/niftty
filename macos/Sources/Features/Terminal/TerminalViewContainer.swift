@@ -23,9 +23,18 @@ class TerminalViewContainer: NSView {
     }
 
     init<Root: View>(@ViewBuilder rootView: () -> Root) {
-        self.terminalView = NSHostingView(rootView: rootView())
+        // The root is type erased so it can be swapped later (zen mode does
+        // this to switch between the terminal and zen layouts within the
+        // same hosting view, which lets SwiftUI reparent the surface views
+        // safely in a single update).
+        self.terminalView = NSHostingView(rootView: AnyView(rootView()))
         super.init(frame: .zero)
         setup()
+    }
+
+    /// Replaces the root SwiftUI view hosted by this container.
+    func setRootView(_ newRoot: AnyView) {
+        (terminalView as? NSHostingView<AnyView>)?.rootView = newRoot
     }
 
     @available(*, unavailable)

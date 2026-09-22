@@ -382,6 +382,9 @@ extension Ghostty.Notification {
     static let ghosttyToggleFullscreen = Notification.Name("com.niftty.app.toggleFullscreen")
     static let FullscreenModeKey = ghosttyToggleFullscreen.rawValue
 
+    /// Toggle zen mode of current window
+    static let ghosttyToggleZenMode = Notification.Name("com.niftty.app.toggleZenMode")
+
     /// Notification sent to toggle split maximize/unmaximize.
     static let didToggleSplitZoom = Notification.Name("com.niftty.app.didToggleSplitZoom")
 

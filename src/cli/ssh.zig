@@ -26,6 +26,7 @@ const usage =
     \\  --forward-notify[=bool] Show automatic forwarding notifications. Default: true.
     \\  --cache[=bool]        Use the terminfo install cache. Default: true.
     \\  --ssh=<path>          Path to the ssh binary. Default: first `ssh` on PATH.
+    \\  --cwd=<path>         Start the interactive remote shell in this directory.
     \\  --verbose             Print +ssh status lines to stderr.
     \\  --help                Show full help.
     \\
@@ -54,6 +55,12 @@ pub const Options = struct {
     /// The wrapped `ssh` binary.
     /// `/`-containing values are treated as paths; otherwise resolved via PATH.
     ssh: []const u8 = "ssh",
+
+    /// Initial working directory for the interactive remote shell.
+    /// Inserted as a `cd` before the login shell starts; ignored when
+    /// the ssh args request a remote command. Used by the app so a
+    /// split pane opens where the pane it split from was.
+    cwd: ?[]const u8 = null,
 
     /// When true, print verbose output to stderr.
     verbose: bool = false,
@@ -196,6 +203,11 @@ pub const Options = struct {
 ///
 ///   * `--ssh=<path>`: Path to the `ssh` binary to execute. Default: the
 ///     first `ssh` found on `PATH`.
+///   * `--cwd=<path>`: Start the interactive remote shell in this
+///     directory (ignored when a remote command is requested). The `cd`
+///     is best-effort: an unreadable directory falls back to the default.
+///     Used by the app to open split panes in the directory of the pane
+///     they were split from.
 ///
 ///   * `--verbose`: Print +ssh status lines to stderr, and surface
 ///     remote stderr during the terminfo install.
@@ -358,7 +370,7 @@ fn runInner(
     else
         &.{};
     const cwd_cmd: []const []const u8 = if (inject_cwd)
-        &.{cwd_reporter_command}
+        &.{try cwdReporterCommand(alloc, opts.cwd)}
     else
         &.{};
     const argv = try std.mem.concat(alloc, []const u8, &.{
@@ -959,17 +971,17 @@ const port_watch_tail =
 ;
 
 const port_watch_script = port_watch_head ++ port_scan_script ++ port_watch_tail;
-
-/// Injected as the remote command for interactive `niftty +ssh` logins.
-/// The login shell is a child; this process polls `/proc/<child>/cwd`
-/// (parent is allowed under Yama) and `wait`s the shell exactly once.
-/// OSC 7 host `niftty-ssh` marks the path remote. POSIX sh with job
-/// control off (`set +m`) points `&` stdin at `/dev/null`, so the child
-/// reopens `/dev/tty` after fork.
-const cwd_reporter_command =
+/// The cwd reporter script before the login-shell `exec` line. Split so
+/// `--cwd` can insert a `cd` between head and tail.
+const cwd_reporter_head =
     \\exec /bin/sh -c 'trap "" INT TTOU TTIN
     \\set +m
-    \\(trap - INT TTOU TTIN; exec "${SHELL:-/bin/sh}" -l <>/dev/tty >&0 2>&0) &
+    \\(trap - INT TTOU TTIN;
+;
+
+/// The cwd reporter script from the login-shell `exec` line onward.
+const cwd_reporter_tail =
+    \\ exec "${SHELL:-/bin/sh}" -l <>/dev/tty >&0 2>&0) &
     \\spid=$!
     \\last=
     \\while :; do
@@ -982,7 +994,7 @@ const cwd_reporter_command =
     \\  fi
     \\  cwd=$(readlink /proc/$spid/cwd 2>/dev/null)
     \\  if [ -z "$cwd" ]; then
-    \\    cwd=$(lsof -a -p "$spid" -d cwd -Fn 2>/dev/null | sed -n "s/^n//p" | head -n 1)
+    \\    cwd=$(lsof -a -p $spid -d cwd -Fn 2>/dev/null | sed -n "s/^n//p" | head -n 1)
     \\  fi
     \\  case "$cwd" in
     \\    /*) ;;
@@ -1000,6 +1012,36 @@ const cwd_reporter_command =
     \\wait $spid
     \\exit $?'
 ;
+
+/// Composed cwd reporter. See `cwdReporterCommand` for the `--cwd` variant.
+const cwd_reporter_command = cwd_reporter_head ++ cwd_reporter_tail;
+
+/// The remote command for interactive logins: the cwd reporter, with an
+/// initial `cd` inserted before the login shell when `cwd` is an
+/// absolute path. The `cd` is best-effort (a failed `cd` falls back to
+/// the default directory). The path is escaped for the single-quoted
+/// script since it survives two shell parse levels (the remote shell,
+/// then the inner `/bin/sh -c`).
+fn cwdReporterCommand(alloc: Allocator, cwd: ?[]const u8) Allocator.Error![]const u8 {
+    const dir = cwd orelse return cwd_reporter_command;
+    if (!std.mem.startsWith(u8, dir, "/")) return cwd_reporter_command;
+
+    var escaped: std.ArrayList(u8) = .empty;
+    for (dir) |c| {
+        if (c == '\'') {
+            try escaped.appendSlice(alloc, "'\\''");
+        } else {
+            try escaped.append(alloc, c);
+        }
+    }
+
+    const cd = try std.fmt.allocPrint(
+        alloc,
+        "cd -- '{s}' 2>/dev/null;",
+        .{escaped.items},
+    );
+    return std.mem.concat(alloc, u8, &.{ cwd_reporter_head, cd, cwd_reporter_tail });
+}
 
 fn sshFlagTakesArg(flag: u8) bool {
     return switch (flag) {
@@ -1107,6 +1149,29 @@ test "cwd reporter watches child not parent" {
     try testing.expect(std.mem.indexOf(u8, cwd_reporter_command, "wait $spid") != null);
     try testing.expect(std.mem.indexOf(u8, cwd_reporter_command, "trap - INT TTOU TTIN") != null);
     try testing.expect(std.mem.indexOf(u8, cwd_reporter_command, "/proc/$PPID/cwd") == null);
+}
+
+test "cwdReporterCommand: --cwd inserts escaped cd before login shell" {
+    const testing = std.testing;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const cmd = try cwdReporterCommand(arena.allocator(), "/srv/o'brien app");
+    try testing.expect(std.mem.indexOf(
+        u8,
+        cmd,
+        "cd -- '/srv/o'\\''brien app' 2>/dev/null; exec \"${SHELL:-/bin/sh}\" -l",
+    ) != null);
+
+    // Non-absolute or absent cwd leaves the plain reporter untouched.
+    try testing.expectEqualStrings(
+        cwd_reporter_command,
+        try cwdReporterCommand(arena.allocator(), "relative"),
+    );
+    try testing.expectEqualStrings(
+        cwd_reporter_command,
+        try cwdReporterCommand(arena.allocator(), null),
+    );
 }
 
 test "port watch script reports both additions and removals" {

@@ -6001,6 +6001,12 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             },
         ),
 
+        .toggle_zen_mode => return try self.rt_app.performAction(
+            .{ .surface = self },
+            .toggle_zen_mode,
+            {},
+        ),
+
         .toggle_window_decorations => return try self.rt_app.performAction(
             .{ .surface = self },
             .toggle_window_decorations,

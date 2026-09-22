@@ -106,6 +106,10 @@ pub const Action = union(Key) {
     /// Toggle fullscreen mode.
     toggle_fullscreen: Fullscreen,
 
+    /// Toggle zen mode. This is currently only implemented by the macOS
+    /// apprt.
+    toggle_zen_mode,
+
     /// Toggle tab overview.
     toggle_tab_overview,
 
@@ -393,6 +397,7 @@ pub const Action = union(Key) {
         close_all_windows,
         toggle_maximize,
         toggle_fullscreen,
+        toggle_zen_mode,
         toggle_tab_overview,
         toggle_window_decorations,
         toggle_quick_terminal,

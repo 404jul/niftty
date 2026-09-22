@@ -683,6 +683,9 @@ extension Ghostty {
             case GHOSTTY_ACTION_TOGGLE_FULLSCREEN:
                 toggleFullscreen(app, target: target, mode: action.action.toggle_fullscreen)
 
+            case GHOSTTY_ACTION_TOGGLE_ZEN_MODE:
+                toggleZenMode(app, target: target)
+
             case GHOSTTY_ACTION_MOVE_TAB:
                 return moveTab(app, target: target, move: action.action.move_tab)
 
@@ -1200,6 +1203,27 @@ extension Ghostty {
                     userInfo: [
                         Notification.FullscreenModeKey: mode,
                     ]
+                )
+
+            default:
+                assertionFailure()
+            }
+        }
+
+        private static func toggleZenMode(
+            _ app: ghostty_app_t,
+            target: ghostty_target_s) {
+            switch target.tag {
+            case GHOSTTY_TARGET_APP:
+                Ghostty.logger.warning("toggle zen mode does nothing with an app target")
+                return
+
+            case GHOSTTY_TARGET_SURFACE:
+                guard let surface = target.target.surface else { return }
+                guard let surfaceView = self.surfaceView(from: surface) else { return }
+                NotificationCenter.default.post(
+                    name: Notification.ghosttyToggleZenMode,
+                    object: surfaceView
                 )
 
             default:

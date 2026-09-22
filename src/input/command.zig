@@ -649,6 +649,12 @@ fn actionCommands(action: Action.Key) []const Command {
             .description = i18n.N_("Toggle the fullscreen state of the current window."),
         }},
 
+        .toggle_zen_mode => comptime &.{.{
+            .action = .toggle_zen_mode,
+            .title = i18n.N_("Toggle Zen Mode"),
+            .description = i18n.N_("Toggle zen mode for the current window."),
+        }},
+
         .toggle_window_decorations => comptime &.{.{
             .action = .toggle_window_decorations,
             .title = i18n.N_("Toggle Window Decorations"),

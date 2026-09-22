@@ -53,6 +53,8 @@ class AppDelegate: NSObject,
 
     @IBOutlet private var menuToggleVisibility: NSMenuItem?
     @IBOutlet private var menuToggleFullScreen: NSMenuItem?
+
+    @IBOutlet private var menuToggleZenMode: NSMenuItem?
     @IBOutlet private var menuBringAllToFront: NSMenuItem?
     @IBOutlet private var menuZoomSplit: NSMenuItem?
     @IBOutlet private var menuPreviousSplit: NSMenuItem?
@@ -1185,6 +1187,7 @@ extension AppDelegate {
         self.menuReadonly?.setImageIfDesired(systemSymbolName: "eye.fill")
         self.menuSetAsDefaultTerminal?.setImageIfDesired(systemSymbolName: "star.fill")
         self.menuToggleFullScreen?.setImageIfDesired(systemSymbolName: "square.arrowtriangle.4.outward")
+        self.menuToggleZenMode?.setImageIfDesired(systemSymbolName: "macwindow.on.rectangle")
         self.menuToggleVisibility?.setImageIfDesired(systemSymbolName: "eye")
         self.menuZoomSplit?.setImageIfDesired(systemSymbolName: "arrow.up.left.and.arrow.down.right")
         self.menuPreviousSplit?.setImageIfDesired(systemSymbolName: "chevron.backward.2")
@@ -1236,6 +1239,8 @@ extension AppDelegate {
         syncMenuShortcut(config, action: "scroll_to_selection", menuItem: self.menuScrollToSelection)
         syncMenuShortcut(config, action: "navigate_search:next", menuItem: self.menuFindNext)
         syncMenuShortcut(config, action: "navigate_search:previous", menuItem: self.menuFindPrevious)
+
+        syncMenuShortcut(config, action: "toggle_zen_mode", menuItem: self.menuToggleZenMode)
 
         syncMenuShortcut(config, action: "toggle_split_zoom", menuItem: self.menuZoomSplit)
         syncMenuShortcut(config, action: "goto_split:previous", menuItem: self.menuPreviousSplit)

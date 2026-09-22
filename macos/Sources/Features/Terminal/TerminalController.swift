@@ -87,6 +87,11 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             object: nil)
         center.addObserver(
             self,
+            selector: #selector(onToggleZenMode),
+            name: Ghostty.Notification.ghosttyToggleZenMode,
+            object: nil)
+        center.addObserver(
+            self,
             selector: #selector(onMoveTab),
             name: .ghosttyMoveTab,
             object: nil)
@@ -1638,6 +1643,13 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         closeWindow(self)
     }
 
+    @objc private func onToggleZenMode(notification: SwiftUI.Notification) {
+        guard let target = notification.object as? Ghostty.SurfaceView else { return }
+        guard surfaceTree.contains(target) else { return }
+
+        ZenModeManager.shared.toggle(self)
+    }
+
     @objc private func onResetWindowSize(notification: SwiftUI.Notification) {
         guard let target = notification.object as? Ghostty.SurfaceView else { return }
         guard surfaceTree.contains(target) else { return }
@@ -1645,6 +1657,13 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     }
 
     @objc private func onToggleFullscreen(notification: SwiftUI.Notification) {
+        // While in zen mode zen owns the fullscreen presentation, so the
+        // fullscreen keybind exits zen mode instead.
+        if isZenMode {
+            ZenModeManager.shared.exitAll()
+            return
+        }
+
         guard let target = notification.object as? Ghostty.SurfaceView else { return }
         guard target == self.focusedSurface else { return }
 

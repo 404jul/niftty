@@ -786,6 +786,14 @@ pub const Action = union(enum) {
     /// Fullscreen or unfullscreen the current window.
     toggle_fullscreen,
 
+    /// Zen or un-zen the current window.
+    ///
+    /// Zen mode is a distraction free presentation of the current window:
+    /// it goes fullscreen and centers the terminal with a workspace shelf.
+    ///
+    /// Only implemented on macOS.
+    toggle_zen_mode,
+
     /// Toggle window decorations (titlebar, buttons, etc.) for the current window.
     ///
     /// Only implemented on Linux.
@@ -1442,6 +1450,7 @@ pub const Action = union(enum) {
             .close_window,
             .toggle_maximize,
             .toggle_fullscreen,
+            .toggle_zen_mode,
             .toggle_window_decorations,
             .toggle_window_float_on_top,
             .toggle_secure_input,

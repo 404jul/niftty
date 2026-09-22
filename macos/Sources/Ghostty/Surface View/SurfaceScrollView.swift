@@ -25,6 +25,30 @@ class SurfaceScrollView: NSView {
     /// on the same row.
     private var lastSentRow: Int?
 
+    /// When true the scrollbar is hidden regardless of the scrollbar
+    /// configuration. Callers use this to suppress the overlay scrollbar
+    /// flash that AppKit shows when the scroll view is reparented or resized
+    /// (e.g. when entering zen mode).
+    var isScrollbarSuppressed = false {
+        didSet {
+            guard oldValue != isScrollbarSuppressed else { return }
+            synchronizeAppearance()
+        }
+    }
+
+    /// Returns the SurfaceScrollView that wraps the given view, if any,
+    /// by walking up the view hierarchy.
+    static func wrapping(_ view: NSView) -> SurfaceScrollView? {
+        var current: NSView? = view
+        while let node = current {
+            if let wrapper = node as? SurfaceScrollView {
+                return wrapper
+            }
+            current = node.superview
+        }
+        return nil
+    }
+
     init(contentSize: CGSize, surfaceView: Ghostty.SurfaceView) {
         self.surfaceView = surfaceView
         // The scroll view is our outermost view that controls all our scrollbar
@@ -185,7 +209,7 @@ class SurfaceScrollView: NSView {
 
     private func synchronizeAppearance() {
         let scrollbarConfig = surfaceView.derivedConfig.scrollbar
-        scrollView.hasVerticalScroller = scrollbarConfig != .never
+        scrollView.hasVerticalScroller = scrollbarConfig != .never && !isScrollbarSuppressed
         let hasLightBackground = NSColor(surfaceView.derivedConfig.backgroundColor).isLightColor
         // Make sure the scroller’s appearance matches the surface's background color.
         scrollView.appearance = NSAppearance(named: hasLightBackground ? .aqua : .darkAqua)

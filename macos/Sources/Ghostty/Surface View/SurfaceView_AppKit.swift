@@ -2417,7 +2417,7 @@ extension Ghostty.SurfaceView {
     /// from the local `pwd`. The report is only usable when it came from
     /// the session that is still in the foreground; otherwise it is stale
     /// (e.g. left over from a previous SSH connection to another host).
-    private var sshRemoteDirectory: String? {
+    var sshRemoteDirectory: String? {
         guard let remote = remotePwd,
               let pid = surfaceModel?.foregroundPID,
               remote.sessionPID == pid,

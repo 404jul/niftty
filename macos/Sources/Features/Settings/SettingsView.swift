@@ -30,6 +30,7 @@ struct SettingsView: View {
                     Button("Open Config File") { model.openConfigFile() }
                     Button("Apply") { model.save() }
                         .buttonStyle(.borderedProminent)
+                        .keyboardShortcut("s", modifiers: .command)
                         .disabled(!model.hasUnsavedChanges || model.keybinds.hasInvalidRows)
                 }
                 .padding()
