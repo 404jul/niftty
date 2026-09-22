@@ -150,6 +150,13 @@ class NonNativeFullscreen: FullscreenBase, FullscreenStyle {
         var paddedNotch: Bool = false
     }
 
+    /// True while zen mode owns this window's presentation. Zen moves its
+    /// windows between screens (and hides them entirely) as workspaces
+    /// take the stage and give it up; those internal moves must not tear
+    /// the presentation down the way an external move would (see
+    /// ``windowDidChangeScreen``).
+    var zenOwnsPresentation = false
+
     private var savedState: SavedState?
 
     required init?(_ window: NSWindow) {
@@ -187,7 +194,7 @@ class NonNativeFullscreen: FullscreenBase, FullscreenStyle {
 
         // This is the screen that we're going to go fullscreen on. We use the
         // screen the window is currently on.
-        guard let screen = window.screen else { return }
+        guard let screen = window.screen ?? NSScreen.main else { return }
 
         // Save the state that we need to exit again
         guard let savedState = SavedState(window) else { return }
@@ -383,6 +390,13 @@ class NonNativeFullscreen: FullscreenBase, FullscreenStyle {
 
         // Our screens must have changed
         guard savedState.screenID != window.screen?.displayID else { return }
+
+        // Zen mode owns the presentation while it is active: the zen
+        // manager itself moves these windows between screens (and hides
+        // them) as workspaces take the stage, and those internal moves
+        // must not exit fullscreen the way an external window manager
+        // move would.
+        if zenOwnsPresentation { return }
 
         // When we change screens, we simply exit fullscreen. Changing
         // screens shouldn't naturally be possible, it can only happen

@@ -18,8 +18,16 @@ extension BaseTerminalController {
     func zenEnter() -> Bool {
         // Zen mode is a feature of standard terminal windows.
         guard self is TerminalController else { return false }
-        guard !isZenMode else { return true }
+
+        // Already presenting zen mode with its fullscreen intact — nothing
+        // to do. A zen window whose fullscreen was torn down underneath it
+        // (for example by a screen-change exit while it was hidden) falls
+        // through and re-enters so the workspace is presented correctly
+        // again instead of staying broken.
+        if isZenMode, fullscreenStyle?.isFullscreen == true { return true }
+
         guard let window else { return false }
+        let wasZen = isZenMode
 
         // Seed the cell size so the stage is sized correctly on the first
         // layout instead of falling back to fraction-only sizing.
@@ -36,23 +44,34 @@ extension BaseTerminalController {
             preZenFullscreenStyle = fullscreenStyle
         }
 
-        // Suppress the overlay scrollbar flash on every pane: reparenting
-        // the scroll views during the content swap plus the fullscreen
-        // resize makes AppKit flash the scroll indicators otherwise.
-        setScrollbarsSuppressed(true)
+        // While zen is active the presentation must survive the zen
+        // manager's own moves: windows are hidden and moved between
+        // screens as workspaces take the stage.
+        if let nonNative = fullscreenStyle as? NonNativeFullscreen {
+            nonNative.zenOwnsPresentation = true
+        }
 
-        // Swap the content to the zen layout before going fullscreen so the
-        // window resizes with its final content in place.
-        installZenContent()
+        if !wasZen {
+            // Suppress the overlay scrollbar flash on every pane:
+            // reparenting the scroll views during the content swap plus
+            // the fullscreen resize makes AppKit flash the scroll
+            // indicators otherwise.
+            setScrollbarsSuppressed(true)
+
+            // Swap the content to the zen layout before going fullscreen so
+            // the window resizes with its final content in place.
+            installZenContent()
+        }
 
         zenInstalledFullscreenStyle = !tookOverFullscreen
         if !tookOverFullscreen {
             guard let style = NonNativeFullscreen(window) else {
-                restoreTerminalContent()
+                if !wasZen { restoreTerminalContent() }
                 zenInstalledFullscreenStyle = false
                 return false
             }
             style.delegate = self
+            style.zenOwnsPresentation = true
             zenSetFullscreenStyle(style)
             style.enter()
         }
@@ -87,6 +106,12 @@ extension BaseTerminalController {
         // Swap back to the regular terminal layout before exiting
         // fullscreen so the window restores with its real content.
         restoreTerminalContent()
+
+        // Zen no longer owns the presentation; the style's own screen-change
+        // handling applies again from here on.
+        if let nonNative = fullscreenStyle as? NonNativeFullscreen {
+            nonNative.zenOwnsPresentation = false
+        }
 
         // Only leave fullscreen if zen entered it. A takeover keeps the
         // window in whatever fullscreen the user had before zen, so

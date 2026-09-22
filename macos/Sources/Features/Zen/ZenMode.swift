@@ -134,12 +134,20 @@ final class ZenModeManager: ObservableObject {
         if let window = controller.window {
             window.makeKeyAndOrderFront(nil)
 
-            if !wasActive, animated, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
-                // A short fade makes the exchange between workspaces legible
-                // without drawing attention to the window mechanics. The
-                // previous stage stays visible beneath the fading window
-                // and is hidden only once the fade has completed.
-                window.alphaValue = 0.3
+            // The reveal is strictly monotonic toward opaque: the alpha is
+            // never reset downward here. Resetting it (and animating back
+            // up) compounds when workspaces are switched faster than the
+            // animation completes, and can leave the stage transparent.
+            // The exchange fade the user sees comes from the stage
+            // content's own opacity animation; the window itself only
+            // ever becomes more opaque.
+            //
+            // The previous stage stays beneath until this window fully
+            // covers the screen: the hide runs at fade completion, or for
+            // an already-opaque window on the tick after its fullscreen
+            // frame has landed.
+            if !wasActive, animated, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+               window.alphaValue < 1 {
                 NSAnimationContext.runAnimationGroup({ context in
                     context.duration = 0.22
                     context.timingFunction = CAMediaTimingFunction(name: .easeOut)
@@ -148,12 +156,17 @@ final class ZenModeManager: ObservableObject {
                     hideOthers()
                 })
             } else {
-                // No exchange fade. Reveal after the fullscreen frame has
-                // landed (the next tick), then hide the others. This also
-                // un-hides windows that were staged transparent (see
-                // ``newZenWorkspace``).
-                DispatchQueue.main.async {
-                    window.alphaValue = 1
+                window.alphaValue = 1
+                // Keep the previous stage on screen briefly after this
+                // window is fronted. A freshly ordered-in window needs a
+                // compositor cycle before its content actually renders;
+                // hiding the window beneath on the very next tick can
+                // leave nothing drawn for a frame or two, which shows up
+                // as the desktop flashing through during rapid workspace
+                // switching. The recheck inside hideOthers supersedes
+                // this if the user switches again within the grace
+                // period.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
                     hideOthers()
                 }
             }
