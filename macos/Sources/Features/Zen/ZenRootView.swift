@@ -70,8 +70,18 @@ struct ZenRootView: View {
     private var stage: some View {
         GeometryReader { geometry in
             let shape = ZenStageLayout.shape(of: controller.surfaceTree) ?? .leaf
+            // Size against the final fullscreen frame rather than the live
+            // window size: zen swaps the content while the window is still
+            // at its old frame and only resizes the window afterwards, so
+            // live geometry would lay the terminal out twice (once small,
+            // once full) and the stage would visibly jitter through both.
+            // The stage is hidden until the presentation settles, so the
+            // single reflow at the final size happens while invisible.
+            // NonNativeFullscreen frames zen windows on screen.frame (it
+            // hides the menu and dock), and the stage's own margin and
+            // fraction limits keep it inside the window regardless.
             let size = ZenStageLayout.stageSize(
-                available: geometry.size,
+                available: controller.window?.screen?.frame.size ?? geometry.size,
                 cellSize: controller.zenCellSize,
                 shape: shape)
 
@@ -82,13 +92,15 @@ struct ZenRootView: View {
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
                         .strokeBorder(.white.opacity(0.09), lineWidth: 1))
                 .shadow(color: .black.opacity(0.35), radius: 36, x: 0, y: 14)
-                .scaleEffect(isActive || reduceMotion ? 1 : 0.97)
+                // Deliberately no scaleEffect anywhere on the stage: the
+                // hosted terminal views re-layout (not GPU-transform) under
+                // SwiftUI scale effects, and each step is a cell-snapped
+                // resize that makes the terminal shake. Fade only.
                 .opacity(isActive || reduceMotion ? 1 : 0.3)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(ZenStageLayout.minimumMargin)
         }
         .opacity(appeared ? 1 : 0)
-        .scaleEffect(appeared || reduceMotion ? 1 : 0.985)
     }
 
     /// The terminal split tree rendered within the stage.

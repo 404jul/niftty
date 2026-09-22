@@ -3,11 +3,12 @@ import SwiftUI
 
 /// Zen mode presentation for a single terminal window.
 ///
-/// Each window presents zen mode independently: its content view swaps to
-/// the zen layout and the window takes over the screen with a non-native
-/// fullscreen presentation. Because every zen window covers the screen with
-/// identical chrome, switching between workspaces (via ``ZenModeManager``)
-/// feels like a single persistent stage.
+/// A window presents zen mode by swapping its content view to the zen
+/// layout and taking over the screen with a non-native fullscreen
+/// presentation. The zen manager keeps exactly one such window — the
+/// stage — visible at a time; the other workspaces' windows are ordered
+/// out (hidden) while zen mode is active, so switching workspaces (via
+/// ``ZenModeManager``) reads as a single persistent stage.
 extension BaseTerminalController {
     /// Presents this window's workspace in zen mode.
     ///
@@ -24,12 +25,15 @@ extension BaseTerminalController {
         // layout instead of falling back to fraction-only sizing.
         zenCellSize = focusedSurface?.cellSize ?? surfaceTree.first?.cellSize ?? .zero
 
-        // Zen mode owns the window's fullscreen presentation. If the window
-        // is already fullscreen, exit that first so we can cleanly restore
-        // it later.
-        if let style = fullscreenStyle, style.isFullscreen {
-            preZenFullscreenStyle = style
-            style.exit()
+        // Zen mode owns the window's fullscreen presentation, but if the
+        // window is already fullscreen (native or not) we take the
+        // presentation over in place: the window is already at the frame
+        // zen presents, and exiting just to re-enter would bounce the
+        // window through its restored frame while the content swaps,
+        // which reads as a jittery resize of the terminal.
+        let tookOverFullscreen = fullscreenStyle?.isFullscreen ?? false
+        if tookOverFullscreen {
+            preZenFullscreenStyle = fullscreenStyle
         }
 
         // Suppress the overlay scrollbar flash on every pane: reparenting
@@ -41,13 +45,17 @@ extension BaseTerminalController {
         // window resizes with its final content in place.
         installZenContent()
 
-        guard let style = NonNativeFullscreen(window) else {
-            restoreTerminalContent()
-            return false
+        zenInstalledFullscreenStyle = !tookOverFullscreen
+        if !tookOverFullscreen {
+            guard let style = NonNativeFullscreen(window) else {
+                restoreTerminalContent()
+                zenInstalledFullscreenStyle = false
+                return false
+            }
+            style.delegate = self
+            zenSetFullscreenStyle(style)
+            style.enter()
         }
-        style.delegate = self
-        zenSetFullscreenStyle(style)
-        style.enter()
 
         isZenMode = true
         isZenStageActive = true
@@ -80,13 +88,17 @@ extension BaseTerminalController {
         // fullscreen so the window restores with its real content.
         restoreTerminalContent()
 
-        if let style = fullscreenStyle, style.isFullscreen {
+        // Only leave fullscreen if zen entered it. A takeover keeps the
+        // window in whatever fullscreen the user had before zen, so
+        // exiting doesn't bounce the window through a resize.
+        if zenInstalledFullscreenStyle, let style = fullscreenStyle, style.isFullscreen {
             style.exit()
         }
 
         // Restore whatever fullscreen style was installed before zen mode.
         zenSetFullscreenStyle(preZenFullscreenStyle)
         preZenFullscreenStyle = nil
+        zenInstalledFullscreenStyle = false
 
         isZenMode = false
 

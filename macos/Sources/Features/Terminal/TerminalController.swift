@@ -432,6 +432,12 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
               let parentController = parent.windowController as? TerminalController else {
             return newWindow(ghostty, withBaseConfig: baseConfig, withParent: parent)
         }
+        // In zen mode the shelf is the tab bar: a new tab stages a new zen
+        // workspace instead of a native tab, which cannot exist while the
+        // window is in non-native fullscreen.
+        if parentController.isZenMode {
+            return Self.newZenWorkspace(ghostty, from: parentController, withBaseConfig: baseConfig)
+        }
 
         // If our parent is in non-native fullscreen, then new tabs do not work.
         // See: https://github.com/mitchellh/ghostty/issues/392
@@ -552,6 +558,55 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
                 }
             }
         }
+
+        return controller
+    }
+
+    /// Creates a new terminal window and stages it as a zen workspace.
+    /// This is the new tab path while the parent is in zen mode, where
+    /// native tabs can't exist.
+    private static func newZenWorkspace(
+        _ ghostty: Ghostty.App,
+        from parentController: TerminalController,
+        withBaseConfig baseConfig: Ghostty.SurfaceConfiguration? = nil
+    ) -> TerminalController? {
+        let controller = TerminalController(ghostty, withBaseConfig: baseConfig)
+        controller.isBackgroundOpaque = parentController.isBackgroundOpaque
+        guard let window = controller.window else { return controller }
+
+        // Keep the window transparent while it is presented and staged; the
+        // zen exchange fade reveals it once it is fullscreen.
+        window.alphaValue = 0
+
+        // Present the window through the regular new-window path so that
+        // ordering, first layout, and frame bookkeeping all happen for a
+        // real window. Staging a window that was never shown leaves it at
+        // the wrong frame with a broken first layout.
+        controller.showWindowSafely(self)
+
+        let hasFixedPos = controller.derivedConfig.windowPositionX != nil && controller.derivedConfig.windowPositionY != nil
+        controller.scheduleInitialPresentation { [weak controller] in
+            guard let controller else { return }
+
+            // Give the workspace a cascaded frame so leaving zen mode later
+            // restores it to a sensible position. This runs before staging
+            // so the fullscreen save state captures the cascaded frame.
+            if let window = controller.window {
+                Self.applyCascade(to: window, hasFixedPos: hasFixedPos)
+            }
+
+            // Stage the workspace onto the zen shelf and bring it to the
+            // stage. activate reveals the window with its exchange fade.
+            ZenModeManager.shared.activate(controller)
+
+            // Zen mode shouldn't fail to present the window, but if it
+            // does, fall back to a regular terminal window.
+            if !controller.isZenMode, let window = controller.window {
+                window.alphaValue = 1
+            }
+        }
+
+        NSApp.activate(ignoringOtherApps: true)
 
         return controller
     }
@@ -1511,7 +1566,11 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
         // Get the move action
         guard let action = notification.userInfo?[Notification.Name.GhosttyMoveTabKey] as? Ghostty.Action.MoveTab else { return }
-        guard action.amount != 0 else { return }
+        // In zen mode, moving a tab reorders the workspace in the zen shelf.
+        if isZenMode {
+            ZenModeManager.shared.move(self, by: action.amount)
+            return
+        }
 
         // Determine our current selected index
         guard let windowController = window.windowController else { return }
@@ -1575,7 +1634,27 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         // Get the tab index from the notification
         guard let tabEnumAny = notification.userInfo?[Ghostty.Notification.GotoTabKey] else { return }
         guard let tabEnum = tabEnumAny as? ghostty_action_goto_tab_e else { return }
+
         let tabIndex: Int32 = tabEnum.rawValue
+        // In zen mode, tab navigation switches workspaces on the zen shelf
+        // rather than native tabs, which can't exist in non-native
+        // fullscreen.
+        if isZenMode {
+            let zen = ZenModeManager.shared
+            if tabIndex == GHOSTTY_GOTO_TAB_PREVIOUS.rawValue {
+                zen.activateWorkspace(offsetFromActive: -1)
+            } else if tabIndex == GHOSTTY_GOTO_TAB_NEXT.rawValue {
+                zen.activateWorkspace(offsetFromActive: 1)
+            } else if tabIndex == GHOSTTY_GOTO_TAB_LAST.rawValue {
+                zen.activateWorkspace(at: zen.workspaces.count - 1)
+            } else if tabIndex >= 1 {
+                // The configured value is 1-indexed and clamps to the last
+                // workspace, matching native goto tab behavior.
+                let index = min(Int(tabIndex), zen.workspaces.count) - 1
+                zen.activateWorkspace(at: index)
+            }
+            return
+        }
 
         guard let windowController = window.windowController else { return }
         guard let tabGroup = windowController.window?.tabGroup else { return }

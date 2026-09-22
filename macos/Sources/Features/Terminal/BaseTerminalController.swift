@@ -80,6 +80,11 @@ class BaseTerminalController: NSWindowController,
     /// window's fullscreen presentation. Restored on zen exit.
     var preZenFullscreenStyle: FullscreenStyle?
 
+    /// True when zen mode entered fullscreen itself, as opposed to taking
+    /// over a non-native fullscreen that was already active. On exit, only
+    /// a style zen installed is exited.
+    var zenInstalledFullscreenStyle = false
+
     /// True while this window presents zen mode.
     @Published var isZenMode: Bool = false
 
@@ -1354,7 +1359,14 @@ class BaseTerminalController: NSWindowController,
         // I don't know if this is required anymore. We previously had a ref cycle between
         // the view and the window so we had to nil this out to break it but I think this
         // may now be resolved. We should verify that no memory leaks and we can remove this.
-        window.contentView = nil
+        //
+        // Zen mode keeps its content installed while the window closes:
+        // dropping it mid-close flashes an empty window behind the close
+        // animation. The window is going away, so the whole view tree is
+        // released with it.
+        if !isZenMode {
+            window.contentView = nil
+        }
 
         // Make sure we clean up all our undos
         window.undoManager?.removeAllActions(withTarget: self)

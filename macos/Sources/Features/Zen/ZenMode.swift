@@ -18,14 +18,14 @@ struct ZenWorkspace: Identifiable, Equatable {
 
 /// Coordinates zen mode across all terminal windows.
 ///
-/// Zen mode presents each participating terminal window as a fullscreen
-/// stage: the window's workspace is centered in a sized frame and all other
-/// terminal windows are listed in a Stage Manager-like shelf. Switching
-/// workspaces brings the other window forward within the same presentation
-/// so the experience feels like a single persistent stage.
-///
-/// Every zen window covers the full screen with identical chrome, so the
-/// user always perceives one stage no matter which window owns it.
+/// Zen mode is global: while active, exactly one terminal window — the
+/// stage — is visible. It presents the active workspace centered on the
+/// screen with the app's other terminal windows hidden and listed in a
+/// Stage Manager-like shelf. Hidden windows keep their workspaces (splits
+/// and all) running; switching workspaces unhides the next window within
+/// the same presentation. Because the other windows are ordered out, the
+/// Dock, app switcher, and Mission Control expose a single zen window.
+/// Exiting zen mode restores every window.
 @MainActor
 final class ZenModeManager: ObservableObject {
     static let shared = ZenModeManager()
@@ -36,11 +36,14 @@ final class ZenModeManager: ObservableObject {
     /// The identity of the controller currently on the stage.
     @Published private(set) var activeID: ObjectIdentifier?
 
-    /// The zen controllers in the order they entered zen mode. Order is
+    /// The zen workspaces in the order they joined zen mode. Order is
     /// kept stable so shelf targets don't shuffle while working.
     private var controllers: [Weak<BaseTerminalController>] = []
 
     private init() {}
+
+    /// True while zen mode is presenting across the app.
+    var isActive: Bool { activeID != nil }
 
     /// The controller currently on the stage, if any.
     var activeController: BaseTerminalController? {
@@ -50,32 +53,55 @@ final class ZenModeManager: ObservableObject {
     /// Toggles zen mode for the given controller. This is the entry point
     /// for the menu item and keyboard shortcuts.
     func toggle(_ controller: BaseTerminalController) {
-        if controller.isZenMode {
+        if isActive {
             if controller.idObject == activeID {
                 exitAll()
             } else {
                 activate(controller)
             }
         } else {
-            enter(controller)
-            activate(controller)
+            begin(controller)
         }
     }
 
-    /// Presents the given controller's workspace on the zen stage.
-    func enter(_ controller: BaseTerminalController) {
+    /// Starts zen mode with the given controller's window as the stage.
+    /// Every other terminal window joins the presentation hidden so zen
+    /// mode reads as a single global window.
+    private func begin(_ controller: BaseTerminalController) {
         guard controller.zenEnter() else { return }
 
-        if !controllers.contains(where: { $0.value === controller }) {
-            controllers.append(Weak(controller))
+        controllers = [Weak(controller)]
+        activeID = controller.idObject
+        controller.zenSetStageActive(true)
+
+        let others = TerminalController.all.filter { $0 !== controller }
+        for other in others {
+            other.zenSetStageActive(false)
+            controllers.append(Weak(other))
         }
 
+        // Hide the other windows once the stage has taken the screen (its
+        // fullscreen frame lands on the next tick) so nothing flashes
+        // through while the presentation settles.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.isActive else { return }
+            for other in others {
+                other.window?.orderOut(nil)
+            }
+        }
+
+        controller.zenFocusSurface()
         refresh()
     }
 
+
     /// Brings the given workspace to the stage, entering zen mode on it
     /// first if necessary. This is triggered from the shelf.
-    func activate(_ controller: BaseTerminalController) {
+    ///
+    /// - Parameter animated: Pass false when the window is freshly entering
+    ///   zen mode, to skip the fade reserved for exchanging workspaces.
+    func activate(_ controller: BaseTerminalController, animated: Bool = true) {
+        guard isActive else { return }
         guard controller.isZenMode || controller.zenEnter() else { return }
 
         if !controllers.contains(where: { $0.value === controller }) {
@@ -83,20 +109,52 @@ final class ZenModeManager: ObservableObject {
         }
 
         let wasActive = activeID == controller.idObject
-        activeID = controller.idObject
-        controller.zenSetStageActive(true)
+        if !wasActive {
+            activeController?.zenSetStageActive(false)
+            activeID = controller.idObject
+            controller.zenSetStageActive(true)
+        }
 
-        if !wasActive, let window = controller.window {
+        // Only the stage may stay visible: every other zen window is
+        // ordered out so Mission Control and the app switcher expose a
+        // single window. The previous stage may only disappear once this
+        // window fully covers the screen — while it is translucent or
+        // still taking its fullscreen frame, the window beneath it must
+        // stay visible or the desktop shows through. The active check is
+        // re-evaluated at execution so a rapid switch to yet another
+        // workspace supersedes a pending hide.
+        let hideOthers: () -> Void = { [weak self, weak controller] in
+            guard let self, self.isActive, self.activeID == controller?.idObject else { return }
+            for other in self.controllers.compactMap(\.value)
+            where other.idObject != self.activeID {
+                other.window?.orderOut(nil)
+            }
+        }
+
+        if let window = controller.window {
             window.makeKeyAndOrderFront(nil)
 
-            // A short fade makes the exchange between workspaces legible
-            // without drawing attention to the window mechanics.
-            if !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+            if !wasActive, animated, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion {
+                // A short fade makes the exchange between workspaces legible
+                // without drawing attention to the window mechanics. The
+                // previous stage stays visible beneath the fading window
+                // and is hidden only once the fade has completed.
                 window.alphaValue = 0.3
-                NSAnimationContext.runAnimationGroup { context in
+                NSAnimationContext.runAnimationGroup({ context in
                     context.duration = 0.22
                     context.timingFunction = CAMediaTimingFunction(name: .easeOut)
                     window.animator().alphaValue = 1
+                }, completionHandler: {
+                    hideOthers()
+                })
+            } else {
+                // No exchange fade. Reveal after the fullscreen frame has
+                // landed (the next tick), then hide the others. This also
+                // un-hides windows that were staged transparent (see
+                // ``newZenWorkspace``).
+                DispatchQueue.main.async {
+                    window.alphaValue = 1
+                    hideOthers()
                 }
             }
         }
@@ -113,20 +171,62 @@ final class ZenModeManager: ObservableObject {
         activate(controller)
     }
 
+    /// Activates the workspace at the given shelf index. Returns false if
+    /// the index is out of range. This is the zen equivalent of
+    /// `goto_tab:N` while in zen mode.
+    @discardableResult
+    func activateWorkspace(at index: Int) -> Bool {
+        let list = controllers.compactMap(\.value)
+        guard list.indices.contains(index) else { return false }
+        activate(list[index])
+        return true
+    }
+
+    /// Activates the workspace offset positions from the currently active
+    /// one, wrapping around the shelf order. Returns false if there are
+    /// fewer than two workspaces. This is the zen equivalent of
+    /// `goto_tab:previous` and `goto_tab:next`.
+    @discardableResult
+    func activateWorkspace(offsetFromActive offset: Int) -> Bool {
+        let list = controllers.compactMap(\.value)
+        guard list.count > 1 else { return false }
+        guard let index = list.firstIndex(where: { $0.idObject == activeID }) else { return false }
+        let target = (index + offset + list.count) % list.count
+        activate(list[target])
+        return true
+    }
+
+    /// Moves the given workspace within the shelf order, clamped to the
+    /// ends. This is the zen equivalent of `move_tab`.
+    func move(_ controller: BaseTerminalController, by offset: Int) {
+        guard offset != 0 else { return }
+        guard let index = controllers.firstIndex(where: { $0.value === controller }) else { return }
+        let target = min(max(index + offset, 0), controllers.count - 1)
+        guard target != index else { return }
+        controllers.move(fromOffsets: IndexSet(integer: index), toOffset: target > index ? target + 1 : target)
+        refresh()
+    }
+
     /// Exits zen mode everywhere, restoring all windows.
     func exitAll() {
-        // Exit inactive windows first so the final makeKeyAndOrderFront of
-        // each fullscreen exit lands on the active window, leaving it key.
-        let exiting = controllers.compactMap(\.value)
-        for controller in exiting where controller.idObject != activeID {
-            controller.zenExit()
-        }
-        if let active = activeController {
-            active.zenExit()
-        }
+        guard isActive else { return }
 
+        let stage = activeController
+        let exiting = controllers.compactMap(\.value)
         controllers = []
         activeID = nil
+
+        // Restore the hidden workspaces first so the stage's exit lands
+        // last and leaves it key. zenExit is a no-op for workspaces that
+        // never took the stage; those only need to be un-hidden.
+        for controller in exiting where controller !== stage {
+            controller.zenExit()
+
+            controller.window?.makeKeyAndOrderFront(nil)
+        }
+
+        stage?.zenExit()
+
         refresh()
     }
 
@@ -136,13 +236,26 @@ final class ZenModeManager: ObservableObject {
 
         controllers.removeAll(where: { $0.value === controller })
 
+        // The closing window must not run the normal fullscreen exit: it
+        // would restore the window's pre-zen frame and title bar mid-close
+        // (a small window flashing behind the close animation) and re-add
+        // the window to any tab group it left. Release only the system
+        // chrome references its fullscreen holds; the menu bar and dock
+        // return when the last zen window goes away.
+        if let nonNative = controller.fullscreenStyle as? NonNativeFullscreen {
+            nonNative.releaseSystemChrome()
+        }
+
         if controller.idObject == activeID {
             // Hand the stage to the next workspace rather than dropping the
-            // user out of zen mode entirely.
-            activeID = nil
+            // user out of zen mode entirely. activate replaces the active
+            // workspace, so keep the closing one current until then.
             if let next = controllers.compactMap(\.value).first {
-                activate(next)
+                // The closing stage disappears immediately, so the next
+                // workspace must not fade in over the desktop.
+                activate(next, animated: false)
             } else {
+                // The last workspace closed; zen mode is over.
                 activeID = nil
             }
         }

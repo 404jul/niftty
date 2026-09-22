@@ -321,6 +321,30 @@ class NonNativeFullscreen: FullscreenBase, FullscreenStyle {
         self.delegate?.fullscreenDidChange()
     }
 
+    /// Releases the system chrome (menu bar/dock) references this
+    /// fullscreen holds without restoring the window itself.
+    ///
+    /// Used when a zen-mode window closes: the window is going away, so
+    /// restoring its frame, style mask, and title bar only flashes a small
+    /// titled window behind the close animation. The chrome references
+    /// must still be released (they are reference counted) so the menu bar
+    /// and dock return once the last fullscreen window goes away. This
+    /// also disarms the close-time exit: ``isFullscreen`` becomes false so
+    /// ``exit()`` no-ops if it runs later.
+    func releaseSystemChrome() {
+        guard let savedState else { return }
+
+        if savedState.dock {
+            unhideDock()
+        }
+        if properties.hideMenu && savedState.menu {
+            unhideMenu()
+        }
+
+        self.savedState = nil
+        NotificationCenter.default.post(name: .fullscreenDidExit, object: self)
+    }
+
     private func fullscreenFrame(_ screen: NSScreen) -> NSRect {
         // It would make more sense to use "visibleFrame" but visibleFrame
         // will omit space by our dock and isn't updated until an event

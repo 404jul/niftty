@@ -1352,6 +1352,15 @@ extension Ghostty {
             }
         }
 
+        /// Returns true if the given surface's window is presenting zen
+        /// mode. While zen mode is active tab actions map to the zen shelf
+        /// instead of a native tab group, which cannot exist in non-native
+        /// fullscreen. The notification handlers no-op when there is
+        /// nothing to switch or move.
+        static private func isInZenMode(_ surfaceView: SurfaceView) -> Bool {
+            (surfaceView.window?.windowController as? BaseTerminalController)?.isZenMode == true
+        }
+
         private static func moveTab(
             _ app: ghostty_app_t,
             target: ghostty_target_s,
@@ -1364,9 +1373,13 @@ extension Ghostty {
                 case GHOSTTY_TARGET_SURFACE:
                     guard let surface = target.target.surface else { return false }
                     guard let surfaceView = self.surfaceView(from: surface) else { return false }
-
-                    // See gotoTab for notes on this check.
-                    guard (surfaceView.window?.tabGroup?.windows.count ?? 0) > 1 else { return false }
+                    // In zen mode tabs are workspaces on the zen shelf, so
+                    // moving a tab stays performable without a native tab
+                    // group.
+                    if !isInZenMode(surfaceView) {
+                        // See gotoTab for notes on this check.
+                        guard (surfaceView.window?.tabGroup?.windows.count ?? 0) > 1 else { return false }
+                    }
 
                     NotificationCenter.default.post(
                         name: .ghosttyMoveTab,
@@ -1395,10 +1408,14 @@ extension Ghostty {
                 case GHOSTTY_TARGET_SURFACE:
                     guard let surface = target.target.surface else { return false }
                     guard let surfaceView = self.surfaceView(from: surface) else { return false }
-
-                    // Similar to goto_split (see comment there) about our performability,
-                    // we should make this more accurate later.
-                    guard (surfaceView.window?.tabGroup?.windows.count ?? 0) > 1 else { return false }
+                    // In zen mode tabs are workspaces on the zen shelf, so
+                    // tab navigation stays performable without a native tab
+                    // group.
+                    if !isInZenMode(surfaceView) {
+                        // Similar to goto_split (see comment there) about our performability,
+                        // we should make this more accurate later.
+                        guard (surfaceView.window?.tabGroup?.windows.count ?? 0) > 1 else { return false }
+                    }
 
                     NotificationCenter.default.post(
                         name: Notification.ghosttyGotoTab,

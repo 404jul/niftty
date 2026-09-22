@@ -2,7 +2,8 @@ import SwiftUI
 
 /// The zen mode shelf: a vertical stack of workspace cards on the leading
 /// edge of the screen, similar in spirit to macOS Stage Manager. Clicking a
-/// card brings that workspace to the stage.
+/// card brings that workspace to the stage. The stack scrolls when there
+/// are more workspaces than fit vertically.
 struct ZenShelfView: View {
     let workspaces: [ZenWorkspace]
     let appeared: Bool
@@ -11,18 +12,34 @@ struct ZenShelfView: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 0) {
-            VStack(spacing: 26) {
-                ForEach(Array(workspaces.enumerated()), id: \.element.id) { index, workspace in
-                    ZenShelfCard(
-                        workspace: workspace,
-                        appeared: appeared,
-                        delay: reduceMotion ? 0 : Double(min(index, 6)) * 0.035)
+            // The stack must live inside a ScrollView even though it only
+            // overflows with many workspaces: a plain stack taller than
+            // the screen inflates the hosting view's intrinsic content
+            // size, and AppKit then grows the window itself to fit (and
+            // never shrinks it back), permanently displacing the stage
+            // off-center. NSScrollView keeps the overflowing content out
+            // of the window's autolayout.
+            GeometryReader { proxy in
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: 26) {
+                        ForEach(Array(workspaces.enumerated()), id: \.element.id) { index, workspace in
+                            ZenShelfCard(
+                                workspace: workspace,
+                                appeared: appeared,
+                                delay: reduceMotion ? 0 : Double(min(index, 6)) * 0.035)
+                        }
+                    }
+                    .padding(.vertical, 16)
+                    // Center the cards vertically when they fit the
+                    // screen; scroll when they don't.
+                    .frame(minHeight: proxy.size.height)
                 }
             }
-            .padding(.leading, 28)
+            .frame(width: ZenShelfCard.cardWidth)
 
             Spacer(minLength: 0)
         }
+        .padding(.leading, 28)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Workspace shelf")
     }
@@ -40,7 +57,7 @@ private struct ZenShelfCard: View {
     @State private var hovering = false
     @State private var pressing = false
 
-    private static let cardWidth: CGFloat = 148
+    static let cardWidth: CGFloat = 148
 
     /// The width to height aspect of the preview area, derived from the
     /// workspace's split shape.
