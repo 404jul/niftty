@@ -360,9 +360,15 @@ private struct KeybindEditorSheet: View {
             }
             .padding(.bottom, 16)
 
-            Form {
-                Section {
-                    HStack {
+            VStack(alignment: .leading, spacing: 16) {
+                // Keys
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Keys")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .textCase(.uppercase)
+
+                    HStack(spacing: 8) {
                         TextField("cmd+shift+c", text: $trigger)
                             .font(.body.monospaced())
                             .textFieldStyle(.roundedBorder)
@@ -388,16 +394,24 @@ private struct KeybindEditorSheet: View {
                         Text("Press the key combination to bind. Esc cancels.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     } else {
                         validationText
                     }
-                } header: {
-                    Text("Keys")
-                } footer: {
+
                     Text("Niftty syntax: modifiers (cmd, ctrl, alt, shift), a key, and sequences joined with >. Example: cmd+shift+c")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
-                Section {
+                // Action
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Action")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .textCase(.uppercase)
+
                     TextField("copy_to_clipboard", text: $action)
                         .font(.body.monospaced())
                         .textFieldStyle(.roundedBorder)
@@ -406,15 +420,23 @@ private struct KeybindEditorSheet: View {
                         Text("This binding currently chains \(row?.actions.count ?? 0) actions; saving replaces the chain with the single action above.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     actionSuggestions
-                } header: {
-                    Text("Action")
-                } footer: {
+
                     Text("Action name with an optional parameter, e.g. goto_tab:2 or text:hello")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
-                Section("Options") {
+                // Options
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Options")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .textCase(.uppercase)
+
                     Toggle("Global (works system-wide)", isOn: $flags.global)
                     Toggle("All surfaces (forward to every terminal)", isOn: $flags.all)
                     Toggle("Performable (only when the action can run)", isOn: $flags.performable)

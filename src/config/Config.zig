@@ -7291,6 +7291,14 @@ pub const Keybinds = struct {
                 .{ .performable = true },
             );
 
+            // Toggle zen mode. This matches the shortcut shown on the
+            // "Toggle Zen Mode" menu item.
+            try self.set.put(
+                alloc,
+                .{ .key = .{ .unicode = 'z' }, .mods = .{ .super = true, .ctrl = true, .alt = true } },
+                .{ .toggle_zen_mode = {} },
+            );
+
             // Viewport scrolling
             try self.set.put(
                 alloc,
