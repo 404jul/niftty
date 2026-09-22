@@ -3484,6 +3484,25 @@ keybind: Keybinds = .{},
 /// editor, etc.
 @"macos-titlebar-proxy-icon": MacTitlebarProxyIcon = .visible,
 
+/// Whether to show a status bar at the bottom of each window.
+///
+/// The status bar shows information about the currently focused
+/// terminal surface: the working directory (including the remote
+/// working directory of an SSH session when one is reported via
+/// OSC 7), the surface title, a bell indicator, and the terminal
+/// size in cells (columns × rows).
+///
+/// The default value is `true`.
+///
+/// This setting can be changed at runtime and applies immediately to
+/// all open windows.
+///
+/// This setting is only supported on macOS and has no effect on other
+/// platforms.
+///
+/// Available since: 1.4.0.
+@"macos-status-bar": bool = true,
+
 /// Controls the windowing behavior when dropping a file or folder
 /// onto the Niftty icon in the macOS dock.
 ///
