@@ -157,6 +157,7 @@ class NonNativeFullscreen: FullscreenBase, FullscreenStyle {
     /// ``windowDidChangeScreen``).
     var zenOwnsPresentation = false
 
+
     private var savedState: SavedState?
 
     required init?(_ window: NSWindow) {
@@ -438,6 +439,7 @@ class NonNativeFullscreen: FullscreenBase, FullscreenStyle {
         let titlebarAccessoryViewControllers: [NSTitlebarAccessoryViewController]
         let dock: Bool
         let menu: Bool
+
 
         init?(_ window: NSWindow) {
             guard let contentView = window.contentView else { return nil }

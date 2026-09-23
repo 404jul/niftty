@@ -40,6 +40,12 @@ final class ZenModeManager: ObservableObject {
     /// kept stable so shelf targets don't shuffle while working.
     private var controllers: [Weak<BaseTerminalController>] = []
 
+    /// Workspaces whose windows were created by new-tab actions while zen
+    /// mode was active. Their windows never belonged to a tab group, so
+    /// exiting zen mode folds them back into the stage's tab group (see
+    /// ``exitAll()``) instead of leaving them as separate windows.
+    private var tabsToRestore: Set<ObjectIdentifier> = []
+
     private init() {}
 
     /// True while zen mode is presenting across the app.
@@ -70,6 +76,7 @@ final class ZenModeManager: ObservableObject {
     private func begin(_ controller: BaseTerminalController) {
         guard controller.zenEnter() else { return }
 
+        tabsToRestore = []
         controllers = [Weak(controller)]
         activeID = controller.idObject
         controller.zenSetStageActive(true)
@@ -100,12 +107,23 @@ final class ZenModeManager: ObservableObject {
     ///
     /// - Parameter animated: Pass false when the window is freshly entering
     ///   zen mode, to skip the fade reserved for exchanging workspaces.
-    func activate(_ controller: BaseTerminalController, animated: Bool = true) {
+    /// - Parameter asNewTab: Pass true when the workspace is a window
+    ///   created by a new-tab action while zen mode is active. Exiting zen
+    ///   mode restores it as a native tab of the stage's tab group instead
+    ///   of a separate window (see ``exitAll()``).
+    func activate(
+        _ controller: BaseTerminalController,
+        animated: Bool = true,
+        asNewTab: Bool = false
+    ) {
         guard isActive else { return }
         guard controller.isZenMode || controller.zenEnter() else { return }
 
         if !controllers.contains(where: { $0.value === controller }) {
             controllers.append(Weak(controller))
+        }
+        if asNewTab {
+            tabsToRestore.insert(controller.idObject)
         }
 
         let wasActive = activeID == controller.idObject
@@ -221,24 +239,69 @@ final class ZenModeManager: ObservableObject {
     }
 
     /// Exits zen mode everywhere, restoring all windows.
+    ///
+    /// Workspaces created as tabs while zen was active become native tabs
+    /// of the stage's tab group again, in shelf order. Windows that
+    /// predated zen mode keep whatever arrangement they had: a stage that
+    /// left a tab group rejoins it through its fullscreen exit, and the
+    /// hidden windows are re-shown through their group's selected window
+    /// so group membership and selection survive.
     func exitAll() {
         guard isActive else { return }
 
         let stage = activeController
         let exiting = controllers.compactMap(\.value)
+        let newTabs = exiting.filter { controller in
+            controller !== stage && tabsToRestore.remove(controller.idObject) != nil
+        }
+        tabsToRestore.removeAll()
         controllers = []
         activeID = nil
 
-        // Restore the hidden workspaces first so the stage's exit lands
-        // last and leaves it key. zenExit is a no-op for workspaces that
-        // never took the stage; those only need to be un-hidden.
+        // Tear down every workspace's zen presentation but the stage's.
+        // Windows that never took the stage are untouched (zenExit is a
+        // no-op for them); fullscreen workspaces get their titled window
+        // back at the frame they had before joining zen.
         for controller in exiting where controller !== stage {
             controller.zenExit()
-
-            controller.window?.makeKeyAndOrderFront(nil)
         }
 
+        // The stage must exit fullscreen before re-tabbing: its exit is
+        // what restores the titled style (and rejoins its original tab
+        // group) that native tabs require.
         stage?.zenExit()
+
+        // Turn the zen shelf back into a real tab bar. All of this runs in
+        // one event-loop tick with the exits above, so the workspaces never
+        // visibly pass through their restored standalone frames on the way
+        // into the group.
+        if let stageWindow = stage?.window {
+            for controller in newTabs {
+                guard let window = controller.window else { continue }
+                let target = stageWindow.tabGroup?.windows.last ?? stageWindow
+                target.addTabbedWindowSafely(window, ordered: .above)
+            }
+            stageWindow.tabGroup?.selectedWindow = stageWindow
+        }
+
+        // Re-show the windows zen mode ordered out. Tab groups are revealed
+        // once through their selected window because ordering in one member
+        // of a group brings the whole group along; this keeps the group's
+        // selection state instead of cycling through every tab.
+        var revealedGroups = Set<ObjectIdentifier>()
+        for controller in exiting where controller !== stage {
+            guard !newTabs.contains(where: { $0 === controller }) else { continue }
+            guard let window = controller.window else { continue }
+            if let group = window.tabGroup {
+                guard revealedGroups.insert(ObjectIdentifier(group)).inserted else { continue }
+                (group.selectedWindow ?? window).makeKeyAndOrderFront(nil)
+            } else {
+                window.makeKeyAndOrderFront(nil)
+            }
+        }
+
+        // The stage was on screen when zen mode ended; it ends key.
+        stage?.window?.makeKeyAndOrderFront(nil)
 
         refresh()
     }
@@ -248,6 +311,7 @@ final class ZenModeManager: ObservableObject {
         guard controllers.contains(where: { $0.value === controller }) else { return }
 
         controllers.removeAll(where: { $0.value === controller })
+        tabsToRestore.remove(controller.idObject)
 
         // The closing window must not run the normal fullscreen exit: it
         // would restore the window's pre-zen frame and title bar mid-close

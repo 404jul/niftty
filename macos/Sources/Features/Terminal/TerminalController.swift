@@ -597,7 +597,9 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
             // Stage the workspace onto the zen shelf and bring it to the
             // stage. activate reveals the window with its exchange fade.
-            ZenModeManager.shared.activate(controller)
+            // asNewTab records it so leaving zen mode restores it as a
+            // real tab rather than a separate window.
+            ZenModeManager.shared.activate(controller, asNewTab: true)
 
             // Zen mode shouldn't fail to present the window, but if it
             // does, fall back to a regular terminal window.
