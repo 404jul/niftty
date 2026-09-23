@@ -90,12 +90,19 @@ extension Ghostty {
                     }
                 }
 
-                // Show key state indicator for active key tables and/or pending key sequences
-                KeyStateIndicator(
-                    keyTables: surfaceView.keyTables,
-                    keySequence: surfaceView.keySequence
-                )
-                .zIndex(1)
+                // Show key state indicator for active key tables
+                KeyStateIndicator(keyTables: surfaceView.keyTables)
+                    .zIndex(1)
+
+                // Command chord overlay: shows available follow-up commands while a
+                // key sequence is pending. Centered (Spotlight-style) on the surface.
+                if !surfaceView.keySequence.isEmpty {
+                    KeySequenceChordOverlay(
+                        keySequence: surfaceView.keySequence,
+                        config: ghostty.config)
+                        .zIndex(2)
+                        .transition(.opacity)
+                }
 
                 VStack(spacing: 0) {
                     // If we have a URL from hovering a link, we show that.
@@ -812,11 +819,10 @@ extension Ghostty {
         }
     }
 
-    /// Floating indicator that shows active key tables and pending key sequences.
+    /// Floating indicator that shows active key tables.
     /// Displayed as a compact draggable pill that can be positioned at the top or bottom.
     struct KeyStateIndicator: View {
         let keyTables: [String]
-        let keySequence: [KeyboardShortcut]
 
         @State private var isShowingPopover = false
         @State private var position: Position = .bottom
@@ -849,14 +855,13 @@ extension Ghostty {
 
         var body: some View {
             Group {
-                if !keyTables.isEmpty || !keySequence.isEmpty {
+                if !keyTables.isEmpty {
                     content
                         .backport.pointerStyle(!keyTables.isEmpty ? .link : nil)
                 }
             }
             .transition(.move(edge: position.transitionEdge).combined(with: .opacity))
             .animation(.spring(response: 0.3, dampingFraction: 0.8), value: keyTables)
-            .animation(.spring(response: 0.3, dampingFraction: 0.8), value: keySequence.count)
         }
 
         var content: some View {
@@ -909,23 +914,6 @@ extension Ghostty {
                     }
                 }
 
-                // Separator when both are active
-                if !keyTables.isEmpty && !keySequence.isEmpty {
-                    Divider()
-                        .frame(height: 14)
-                }
-
-                // Key sequence indicator
-                if !keySequence.isEmpty {
-                    HStack(alignment: .center, spacing: 4) {
-                        ForEach(Array(keySequence.enumerated()), id: \.offset) { _, key in
-                            KeyCap(key.description)
-                        }
-
-                        // Animated ellipsis to indicate waiting for next key
-                        PendingIndicator(paused: isDragging)
-                    }
-                }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
@@ -947,20 +935,6 @@ extension Ghostty {
                             Label("Key Table", systemImage: "keyboard.badge.ellipsis")
                                 .font(.headline)
                             Text("A key table is a named set of keybindings, activated by some other key. Keys are interpreted using this table until it is deactivated.")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-
-                    if !keyTables.isEmpty && !keySequence.isEmpty {
-                        Divider()
-                    }
-
-                    if !keySequence.isEmpty {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Label("Key Sequence", systemImage: "character.cursor.ibeam")
-                                .font(.headline)
-                            Text("A key sequence is a series of key presses that trigger an action. A pending key sequence is currently active.")
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
                         }

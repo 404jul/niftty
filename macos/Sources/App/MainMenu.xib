@@ -403,8 +403,7 @@
                                     <action selector="toggleGhosttyFullScreen:" target="-1" id="QB9-7R-xyc"/>
                                 </connections>
                             </menuItem>
-                            <menuItem title="Toggle Zen Mode" keyEquivalent="z" id="yZ2-9x-4Vn">
-                                <modifierMask key="keyEquivalentModifierMask" control="YES" option="YES" command="YES"/>
+                            <menuItem title="Toggle Zen Mode" id="yZ2-9x-4Vn">
                                 <connections>
                                     <action selector="toggleZenMode:" target="-1" id="m4Q-8s-1Lv"/>
                                 </connections>

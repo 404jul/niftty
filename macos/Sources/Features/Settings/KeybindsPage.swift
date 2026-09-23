@@ -739,7 +739,7 @@ enum KeybindPretty {
         return chords.map { prettyChord(String($0)) }.joined(separator: " › ")
     }
 
-    private static func prettyChord(_ chord: String) -> String {
+    static func prettyChord(_ chord: String) -> String {
         let parts = chord.split(separator: "+", omittingEmptySubsequences: false)
 
         // A chord with no "+" is a bare key (possibly the "+" key itself).
