@@ -46,6 +46,24 @@ A file for [guiding coding agents](https://agents.md/).
 - macOS app: `macos/`
 - GTK (Linux and FreeBSD) app: `src/apprt/gtk`
 
+## Feature Integration
+
+- Every new user-facing feature must be evaluated for a keybinding action. If
+  invoking or toggling the feature is a sensible repeatable command, add a
+  documented action to `src/input/Binding.zig` and implement its complete
+  dispatch path. The graphical keybind editor catalog is generated from this
+  action union by `src/config/CApi.zig`; never maintain a separate Swift action
+  list.
+- Every user-configurable feature must appear in the graphical Settings UI.
+  Declare and document its option in `src/config/Config.zig`, ensure
+  `src/config/CApi.zig` can represent it, and deliberately categorize it in
+  `SettingsModel.category(for:)` in
+  `macos/Sources/Features/Settings/SettingsModel.swift`. Use a dedicated
+  Settings page when the generic field editor cannot represent the option
+  safely.
+- If a new feature is intentionally not keybindable or configurable, state the
+  concrete reason in the final report. Do not silently omit either integration.
+
 ## Issue and PR Guidelines
 
 - Never create an issue.
