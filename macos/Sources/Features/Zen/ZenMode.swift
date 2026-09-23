@@ -46,6 +46,12 @@ final class ZenModeManager: ObservableObject {
     /// ``exitAll()``) instead of leaving them as separate windows.
     private var tabsToRestore: Set<ObjectIdentifier> = []
 
+    /// Last-on-stage content snapshot per workspace, shown on shelf cards.
+    @Published private(set) var snapshots: [ObjectIdentifier: NSImage] = [:]
+
+    /// Target width of captured shelf snapshots, in points.
+    private static let snapshotWidth: CGFloat = 300
+
     private init() {}
 
     /// True while zen mode is presenting across the app.
@@ -93,6 +99,7 @@ final class ZenModeManager: ObservableObject {
         DispatchQueue.main.async { [weak self] in
             guard let self, self.isActive else { return }
             for other in others {
+                self.captureSnapshot(of: other)
                 other.window?.orderOut(nil)
             }
         }
@@ -145,6 +152,7 @@ final class ZenModeManager: ObservableObject {
             guard let self, self.isActive, self.activeID == controller?.idObject else { return }
             for other in self.controllers.compactMap(\.value)
             where other.idObject != self.activeID {
+                self.captureSnapshot(of: other)
                 other.window?.orderOut(nil)
             }
         }
@@ -257,6 +265,7 @@ final class ZenModeManager: ObservableObject {
         tabsToRestore.removeAll()
         controllers = []
         activeID = nil
+        snapshots = [:]
 
         // Tear down every workspace's zen presentation but the stage's.
         // Windows that never took the stage are untouched (zenExit is a
@@ -312,6 +321,7 @@ final class ZenModeManager: ObservableObject {
 
         controllers.removeAll(where: { $0.value === controller })
         tabsToRestore.remove(controller.idObject)
+        snapshots.removeValue(forKey: controller.idObject)
 
         // The closing window must not run the normal fullscreen exit: it
         // would restore the window's pre-zen frame and title bar mid-close
@@ -353,6 +363,35 @@ final class ZenModeManager: ObservableObject {
                 shape: ZenStageLayout.shape(of: controller.surfaceTree),
                 isActive: controller.idObject == activeID)
         }
+    }
+
+    /// Captures the given controller's window content for its shelf card.
+    /// Called immediately before the window is ordered out, while it is
+    /// still on screen and composited; hidden zen workspaces cannot have
+    /// live thumbnails, so this snapshot is what the card shows until the
+    /// workspace next leaves the stage.
+    private func captureSnapshot(of controller: BaseTerminalController) {
+        guard let window = controller.window,
+              window.occlusionState.contains(.visible),
+              window.alphaValue >= 0.99 else { return }
+
+        // Deprecated on macOS 14 in favor of ScreenCaptureKit but still
+        // functional and the only synchronous API; capturing our own
+        // windows requires no screen-recording permission.
+        guard let cgImage = CGWindowListCreateImage(
+            .null, [.optionIncludingWindow], CGWindowID(window.windowNumber),
+            [.bestResolution, .boundsIgnoreFraming]) else { return }
+
+        let scale = Self.snapshotWidth / CGFloat(cgImage.width)
+        let size = NSSize(width: Self.snapshotWidth,
+                          height: CGFloat(cgImage.height) * scale)
+
+        let image = NSImage(size: size)
+        image.lockFocus()
+        NSImage(cgImage: cgImage, size: size)
+            .draw(in: NSRect(origin: .zero, size: size))
+        image.unlockFocus()
+        snapshots[controller.idObject] = image
     }
 }
 

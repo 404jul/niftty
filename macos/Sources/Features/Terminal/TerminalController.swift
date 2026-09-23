@@ -651,6 +651,11 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
         if let windows = window?.tabbedWindows as? [TerminalWindow] {
             for (tab, window) in zip(1..., windows) {
+                // Number every tab so the label always shows what Super+N
+                // activates. Tabs beyond 9 keep their number but no shortcut
+                // (only goto_tab:1..9 are bound keys).
+                window.tabIndex = tab
+
                 // We need to clear any windows beyond this because they have had
                 // a keyEquivalent set previously.
                 guard tab <= 9 else {

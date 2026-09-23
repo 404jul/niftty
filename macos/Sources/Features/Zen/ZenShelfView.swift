@@ -5,7 +5,11 @@ import SwiftUI
 /// card brings that workspace to the stage. The stack scrolls when there
 /// are more workspaces than fit vertically.
 struct ZenShelfView: View {
+    /// The full workspace list, in shelf order. The active workspace is
+    /// skipped below (not renumbered) so card numbers always match what
+    /// Super+N activates, which indexes this same full list.
     let workspaces: [ZenWorkspace]
+    let snapshots: [ObjectIdentifier: NSImage]
     let appeared: Bool
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -23,10 +27,14 @@ struct ZenShelfView: View {
                 ScrollView(showsIndicators: false) {
                     VStack(spacing: 26) {
                         ForEach(Array(workspaces.enumerated()), id: \.element.id) { index, workspace in
-                            ZenShelfCard(
-                                workspace: workspace,
-                                appeared: appeared,
-                                delay: reduceMotion ? 0 : Double(min(index, 6)) * 0.035)
+                            if !workspace.isActive {
+                                ZenShelfCard(
+                                    workspace: workspace,
+                                    number: index + 1,
+                                    snapshot: snapshots[workspace.id],
+                                    appeared: appeared,
+                                    delay: reduceMotion ? 0 : Double(min(index, 6)) * 0.035)
+                            }
                         }
                     }
                     .padding(.vertical, 16)
@@ -54,6 +62,12 @@ struct ZenShelfView: View {
 /// of the workspace's split layout and its title.
 private struct ZenShelfCard: View {
     let workspace: ZenWorkspace
+    /// The workspace's 1-based position in the full zen list, matching
+    /// what Super+N activates.
+    let number: Int
+    /// Last-on-stage content snapshot, or nil before the workspace's
+    /// first stage exit.
+    let snapshot: NSImage?
     let appeared: Bool
     let delay: Double
 
@@ -84,6 +98,14 @@ private struct ZenShelfCard: View {
         VStack(spacing: 0) {
             preview
                 .frame(width: Self.cardWidth - 16, height: previewHeight)
+                .overlay(alignment: .topLeading) {
+                    Text("\(number)")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.primary)
+                        .frame(width: 18, height: 18)
+                        .background(Circle().fill(.quaternary))
+                        .padding(6)
+                }
                 .padding(.top, 8)
 
             Text(workspace.title)
@@ -124,10 +146,19 @@ private struct ZenShelfCard: View {
         .accessibilityHint(workspace.shape.map { "Terminal with \($0.paneCount) pane\($0.paneCount == 1 ? "" : "s")" } ?? "")
     }
 
-    /// The miniature split layout diagram.
+    /// The card preview: the last-on-stage content snapshot when available,
+    /// otherwise the miniature split layout diagram.
     @ViewBuilder
     private var preview: some View {
-        if let shape = workspace.shape {
+        if let snapshot {
+            // Self-contained frame + clip: scaledToFill overflows, so the
+            // clip must follow the frame inside this branch to take effect.
+            Image(nsImage: snapshot)
+                .resizable()
+                .scaledToFill()
+                .frame(width: Self.cardWidth - 16, height: previewHeight)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        } else if let shape = workspace.shape {
             ZenShapeDiagram(shape: shape)
                 .padding(10)
                 .background {

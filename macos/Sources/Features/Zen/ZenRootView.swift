@@ -30,7 +30,8 @@ struct ZenRootView: View {
 
             if !zen.workspaces.isEmpty {
                 ZenShelfView(
-                    workspaces: zen.workspaces.filter { !$0.isActive },
+                    workspaces: zen.workspaces,
+                    snapshots: zen.snapshots,
                     appeared: appeared)
                     .transition(.opacity)
             }

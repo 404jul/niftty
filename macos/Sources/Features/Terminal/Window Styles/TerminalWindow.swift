@@ -186,7 +186,7 @@ class TerminalWindow: NSWindow {
         stackView.spacing = 4
         stackView.alignment = .centerY
         stackView.addArrangedSubview(tabColorIndicator)
-        stackView.addArrangedSubview(keyEquivalentLabel)
+        stackView.addArrangedSubview(tabNumberLabel)
         stackView.addArrangedSubview(resetZoomTabButton)
         tab.accessoryView = stackView
 
@@ -347,27 +347,29 @@ class TerminalWindow: NSWindow {
         }
     }
 
-    // MARK: Tab Key Equivalents
+    // MARK: Tab Numbers
 
-    var keyEquivalent: String? {
+    var keyEquivalent: String?
+
+    /// The 1-based position of this window within its tab group, or 0 when
+    /// unknown. Displayed so it matches what Super+N activates.
+    var tabIndex: Int = 0 {
         didSet {
-            // When our key equivalent is set, we must update the tab label.
-            guard let keyEquivalent else {
-                keyEquivalentLabel.attributedStringValue = NSAttributedString()
-                return
-            }
-
-            keyEquivalentLabel.attributedStringValue = NSAttributedString(
-                string: "\(keyEquivalent) ",
-                attributes: [
-                    .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
+            // Re-render unconditionally: relabelTabs() runs on every key-window
+            // change, and the label color tracks isKeyWindow even when the
+            // index itself is unchanged.
+            tabNumberLabel.attributedStringValue = tabIndex > 0
+                ? NSAttributedString(string: "\(tabIndex) ", attributes: [
+                    .font: NSFont.monospacedDigitSystemFont(
+                        ofSize: NSFont.smallSystemFontSize, weight: .regular),
                     .foregroundColor: isKeyWindow ? NSColor.labelColor : NSColor.secondaryLabelColor,
                 ])
+                : NSAttributedString()
         }
     }
 
-    /// The label that has the key equivalent for tab views.
-    private lazy var keyEquivalentLabel: NSTextField = {
+    /// The label that shows the tab's 1-based index for tab views.
+    private lazy var tabNumberLabel: NSTextField = {
         let label = NSTextField(labelWithAttributedString: NSAttributedString())
         label.setContentCompressionResistancePriority(.windowSizeStayPut, for: .horizontal)
         label.postsFrameChangedNotifications = true
