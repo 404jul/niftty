@@ -97,25 +97,23 @@ private struct ZenShelfCard: View {
     var body: some View {
         VStack(spacing: 0) {
             preview
-                .frame(width: Self.cardWidth - 16, height: previewHeight)
-                .overlay(alignment: .topLeading) {
-                    Text("\(number)")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.primary)
-                        .frame(width: 18, height: 18)
-                        .background(Circle().fill(.quaternary))
-                        .padding(6)
-                }
-                .padding(.top, 8)
 
-            Text(workspace.title)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .padding(.horizontal, 10)
-                .padding(.top, 6)
-                .padding(.bottom, 9)
+            HStack(spacing: 5) {
+                Text("\(number)")
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.primary)
+                    .frame(width: 16, height: 16)
+                    .background(Circle().fill(.quaternary))
+
+                Text(workspace.title)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            .padding(.horizontal, 10)
+            .padding(.top, 6)
+            .padding(.bottom, 9)
         }
         .background {
             RoundedRectangle(cornerRadius: 11, style: .continuous)
@@ -151,25 +149,32 @@ private struct ZenShelfCard: View {
     @ViewBuilder
     private var preview: some View {
         if let snapshot {
-            // Self-contained frame + clip: scaledToFill overflows, so the
-            // clip must follow the frame inside this branch to take effect.
+            // Edge-to-edge and flush with the card's top edge; the card's
+            // own rounded clipShape trims the corners. The clip must follow
+            // the frame here because scaledToFill overflows it.
             Image(nsImage: snapshot)
                 .resizable()
                 .scaledToFill()
-                .frame(width: Self.cardWidth - 16, height: previewHeight)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        } else if let shape = workspace.shape {
-            ZenShapeDiagram(shape: shape)
-                .padding(10)
-                .background {
+                .frame(width: Self.cardWidth, height: previewHeight)
+                .clipped()
+        } else {
+            Group {
+                if let shape = workspace.shape {
+                    ZenShapeDiagram(shape: shape)
+                        .padding(10)
+                        .background {
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(Color.black.opacity(0.28))
+                        }
+                } else {
+                    // Empty trees shouldn't appear in the shelf in practice,
+                    // but keep a quiet placeholder just in case.
                     RoundedRectangle(cornerRadius: 6, style: .continuous)
                         .fill(Color.black.opacity(0.28))
                 }
-        } else {
-            // Empty trees shouldn't appear in the shelf in practice, but
-            // keep a quiet placeholder just in case.
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(Color.black.opacity(0.28))
+            }
+            .frame(width: Self.cardWidth - 16, height: previewHeight)
+            .padding(.top, 8)
         }
     }
 

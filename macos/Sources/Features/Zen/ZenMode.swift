@@ -135,7 +135,13 @@ final class ZenModeManager: ObservableObject {
 
         let wasActive = activeID == controller.idObject
         if !wasActive {
-            activeController?.zenSetStageActive(false)
+            // Snapshot the outgoing stage before demoting it: its content
+            // drops to 30% opacity once it is no longer active, so the
+            // delayed hide below would capture a washed-out image.
+            if let outgoing = activeController {
+                captureSnapshot(of: outgoing)
+                outgoing.zenSetStageActive(false)
+            }
             activeID = controller.idObject
             controller.zenSetStageActive(true)
         }
@@ -152,7 +158,6 @@ final class ZenModeManager: ObservableObject {
             guard let self, self.isActive, self.activeID == controller?.idObject else { return }
             for other in self.controllers.compactMap(\.value)
             where other.idObject != self.activeID {
-                self.captureSnapshot(of: other)
                 other.window?.orderOut(nil)
             }
         }
@@ -365,11 +370,11 @@ final class ZenModeManager: ObservableObject {
         }
     }
 
-    /// Captures the given controller's window content for its shelf card.
-    /// Called immediately before the window is ordered out, while it is
-    /// still on screen and composited; hidden zen workspaces cannot have
-    /// live thumbnails, so this snapshot is what the card shows until the
-    /// workspace next leaves the stage.
+    /// Captures the given controller's terminal content for its shelf card.
+    /// Called at the moment the workspace leaves the stage, while its window
+    /// is still on screen, fully opaque, and composited; hidden zen
+    /// workspaces cannot have live thumbnails, so this snapshot is what the
+    /// card shows until the workspace next leaves the stage.
     private func captureSnapshot(of controller: BaseTerminalController) {
         guard let window = controller.window,
               window.occlusionState.contains(.visible),
@@ -378,9 +383,42 @@ final class ZenModeManager: ObservableObject {
         // Deprecated on macOS 14 in favor of ScreenCaptureKit but still
         // functional and the only synchronous API; capturing our own
         // windows requires no screen-recording permission.
-        guard let cgImage = CGWindowListCreateImage(
+        guard var cgImage = CGWindowListCreateImage(
             .null, [.optionIncludingWindow], CGWindowID(window.windowNumber),
             [.bestResolution, .boundsIgnoreFraming]) else { return }
+
+        // Crop to the terminal itself: the union of the window's surface
+        // views, expanded by the stage padding so the snapshot matches the
+        // rounded stage card. Without this the capture would include the
+        // zen backdrop and shelf.
+        if let content = window.contentView {
+            var terminalRect: NSRect?
+            Self.forEachDescendant(of: content) { view in
+                guard view is Ghostty.SurfaceView else { return }
+                let frame = view.convert(view.bounds, to: content)
+                terminalRect = terminalRect.map { $0.union(frame) } ?? frame
+            }
+            if let terminalRect, terminalRect.width > 1, terminalRect.height > 1,
+               window.frame.width > 0 {
+                // The capture covers the window frame in points; the crop
+                // rect flips to the image's top-left origin and pixels.
+                let scale = CGFloat(cgImage.width) / window.frame.width
+                let pixel = NSRect(
+                    x: terminalRect.minX * scale,
+                    y: (window.frame.height - terminalRect.maxY) * scale,
+                    width: terminalRect.width * scale,
+                    height: terminalRect.height * scale)
+                let pad = ZenStageLayout.stagePadding * scale
+                let crop = pixel
+                    .insetBy(dx: -pad, dy: -pad)
+                    .intersection(CGRect(x: 0, y: 0, width: cgImage.width, height: cgImage.height))
+                    .integral
+                if let cropped = cgImage.cropping(to: crop),
+                   cropped.width > 1, cropped.height > 1 {
+                    cgImage = cropped
+                }
+            }
+        }
 
         let scale = Self.snapshotWidth / CGFloat(cgImage.width)
         let size = NSSize(width: Self.snapshotWidth,
@@ -392,6 +430,13 @@ final class ZenModeManager: ObservableObject {
             .draw(in: NSRect(origin: .zero, size: size))
         image.unlockFocus()
         snapshots[controller.idObject] = image
+    }
+
+    private static func forEachDescendant(of view: NSView, _ body: (NSView) -> Void) {
+        body(view)
+        for child in view.subviews {
+            forEachDescendant(of: child, body)
+        }
     }
 }
 
