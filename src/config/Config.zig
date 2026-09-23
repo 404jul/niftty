@@ -4095,8 +4095,12 @@ pub fn default(alloc_gpa: Allocator) Allocator.Error!Config {
     errdefer result.deinit();
     const alloc = result._arena.?.allocator();
 
-    // Add our default keybindings
-    try result.keybind.init(alloc);
+    // Add our default keybindings. All default binding strings are
+    // statically known-valid so parse errors are programming errors.
+    result.keybind.init(alloc) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => unreachable,
+    };
 
     // Add our default command palette entries
     try result.@"command-palette-entry".init(alloc);
@@ -7259,12 +7263,14 @@ pub const Keybinds = struct {
                 .{ .key = .{ .unicode = 'q' }, .mods = .{ .super = true } },
                 .{ .quit = {} },
             );
-            try self.set.putFlags(
-                alloc,
-                .{ .key = .{ .unicode = 'k' }, .mods = .{ .super = true } },
-                .{ .clear_screen = {} },
-                .{ .performable = true },
-            );
+            // Command chord, similar to VSCode: "super+k" is a leader key. While
+            // the sequence is pending, the apprt shows the available follow-up
+            // commands in an overlay. The "Toggle Zen Mode" menu item has no key
+            // equivalent because menu items cannot express multi-key chords.
+            try self.set.parseAndPut(alloc, "super+k>z=toggle_zen_mode");
+            try self.set.parseAndPut(alloc, "super+k>c=clear_screen");
+            try self.set.parseAndPut(alloc, "super+k>p=toggle_command_palette");
+            try self.set.parseAndPut(alloc, "super+k>escape=end_key_sequence");
             try self.set.put(
                 alloc,
                 .{ .key = .{ .unicode = 'a' }, .mods = .{ .super = true } },
@@ -7289,14 +7295,6 @@ pub const Keybinds = struct {
                 .{ .key = .{ .unicode = 'z' }, .mods = .{ .super = true, .shift = true } },
                 .{ .redo = {} },
                 .{ .performable = true },
-            );
-
-            // Toggle zen mode. This matches the shortcut shown on the
-            // "Toggle Zen Mode" menu item.
-            try self.set.put(
-                alloc,
-                .{ .key = .{ .unicode = 'z' }, .mods = .{ .super = true, .ctrl = true, .alt = true } },
-                .{ .toggle_zen_mode = {} },
             );
 
             // Viewport scrolling

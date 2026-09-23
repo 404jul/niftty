@@ -726,6 +726,22 @@ test "ghostty_config_keybind_data: default config" {
         try testing.expect(std.mem.indexOf(u8, json,
             \\{"trigger":"super+c","actions":["copy_to_clipboard:mixed"],"table":null,"default":true
         ) != null);
+        try testing.expect(std.mem.indexOf(u8, json,
+            \\{"trigger":"super+k>z","actions":["toggle_zen_mode"],"table":null,"default":true
+        ) != null);
+        try testing.expect(std.mem.indexOf(u8, json,
+            \\{"trigger":"super+k>c","actions":["clear_screen"],"table":null,"default":true
+        ) != null);
+        try testing.expect(std.mem.indexOf(u8, json,
+            \\{"trigger":"super+k>p","actions":["toggle_command_palette"],"table":null,"default":true
+        ) != null);
+        try testing.expect(std.mem.indexOf(u8, json,
+            \\{"trigger":"super+k>escape","actions":["end_key_sequence"],"table":null,"default":true
+        ) != null);
+        // The old defaults are gone. The exact-string check cannot collide with
+        // the chord entries because their trigger strings continue past "super+k".
+        try testing.expect(std.mem.indexOf(u8, json, "\\\"trigger\\\":\\\"super+k\\\"") == null);
+        try testing.expect(std.mem.indexOf(u8, json, "\\\"trigger\\\":\\\"super+ctrl+alt+z\\\"") == null);
     }
 
     // Predictions default to performable Tab and Right acceptance.
