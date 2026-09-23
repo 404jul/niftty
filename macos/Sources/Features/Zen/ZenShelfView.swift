@@ -30,16 +30,21 @@ struct ZenShelfView: View {
                         }
                     }
                     .padding(.vertical, 16)
+                    // Room around the cards so the hover scale-up and its
+                    // shadow are not clipped by the scroll view's bounds.
+                    .padding(.horizontal, ZenShelfCard.hoverRoom)
                     // Center the cards vertically when they fit the
                     // screen; scroll when they don't.
                     .frame(minHeight: proxy.size.height)
                 }
             }
-            .frame(width: ZenShelfCard.cardWidth)
+            .frame(width: ZenShelfCard.cardWidth + 2 * ZenShelfCard.hoverRoom)
 
             Spacer(minLength: 0)
         }
-        .padding(.leading, 28)
+        // Reduced by hoverRoom so the extra viewport width extends
+        // outwards without moving the cards on screen.
+        .padding(.leading, 28 - ZenShelfCard.hoverRoom)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Workspace shelf")
     }
@@ -58,6 +63,11 @@ private struct ZenShelfCard: View {
     @State private var pressing = false
 
     static let cardWidth: CGFloat = 148
+
+    /// Horizontal room the shelf's scroll viewport keeps around each card
+    /// so the hover scale-up (1.03 → 2.2pt per side) and shadow stay inside
+    /// the scroll view's clipping bounds.
+    static let hoverRoom: CGFloat = 8
 
     /// The width to height aspect of the preview area, derived from the
     /// workspace's split shape.
