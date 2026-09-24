@@ -84,3 +84,39 @@ pub fn detect(b: *std.Build) !Version {
         .branch = std.mem.trimEnd(u8, branch, "\r\n "),
     };
 }
+
+/// Parse a Niftty release tag in strict vX.Y.Z form.
+///
+/// Niftty release versions are independent of the inherited Ghostty version
+/// in build.zig.zon, so the exact Git tag is the release version source.
+pub fn parseReleaseTag(tag: []const u8) error{InvalidReleaseTag}!std.SemanticVersion {
+    if (tag.len < 2 or tag[0] != 'v') return error.InvalidReleaseTag;
+
+    const version = std.SemanticVersion.parse(tag[1..]) catch
+        return error.InvalidReleaseTag;
+    if (version.pre != null or version.build != null) {
+        return error.InvalidReleaseTag;
+    }
+
+    return version;
+}
+
+test "parseReleaseTag accepts a stable Niftty release" {
+    const expected = try std.SemanticVersion.parse("0.5.1");
+    try std.testing.expectEqualDeep(expected, try parseReleaseTag("v0.5.1"));
+}
+
+test "parseReleaseTag rejects anything except stable vX.Y.Z" {
+    const invalid_tags = [_][]const u8{
+        "",
+        "0.5.1",
+        "v0.5",
+        "v0.5.1-rc.1",
+        "v0.5.1+build.1",
+        "vv0.5.1",
+    };
+
+    inline for (invalid_tags) |tag| {
+        try std.testing.expectError(error.InvalidReleaseTag, parseReleaseTag(tag));
+    }
+}

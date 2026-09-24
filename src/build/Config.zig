@@ -311,6 +311,7 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
         if (vsn.tag) |tag| {
             // Tip releases behave just like any other pre-release so we skip.
             if (!std.mem.eql(u8, tag, "tip")) {
+<<<<<<< Updated upstream
                 // A release tag is the source of truth for its own
                 // version: derive X.Y.Z straight from the `vX.Y.Z` tag
                 // instead of requiring lockstep with build.zig.zon.
@@ -321,6 +322,17 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
                 const tagged = std.SemanticVersion.parse(tag[1..]) catch
                     @panic("tagged releases must be tagged in vX.Y.Z format");
                 break :version tagged;
+=======
+                // Niftty's release versions are independent of the inherited
+                // Ghostty version in build.zig.zon, so an exact release tag is
+                // the source of truth for the app version.
+                const tagged_version = GitVersion.parseReleaseTag(tag) catch |err| {
+                    std.log.err("tagged releases must be in vX.Y.Z format; got '{s}'", .{tag});
+                    return err;
+                };
+
+                break :version tagged_version;
+>>>>>>> Stashed changes
             }
         }
 

@@ -367,6 +367,18 @@ pub fn build(b: *std.Build) !void {
 
     // Tests (skip when building libghostty-vt)
     if (!config.emit_lib_vt) {
+        const build_test = b.addTest(.{
+            .name = "build-test",
+            .filters = test_filters,
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/build/GitVersion.zig"),
+                .target = config.baselineTarget(b.graph.io),
+                .optimize = .Debug,
+            }),
+        });
+        const build_test_run = b.addRunArtifact(build_test);
+        test_step.dependOn(&build_test_run.step);
+
         // Full unit tests
         const test_exe = b.addTest(.{
             .name = "ghostty-test",
