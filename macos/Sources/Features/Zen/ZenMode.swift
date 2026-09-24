@@ -46,6 +46,16 @@ final class ZenModeManager: ObservableObject {
     /// ``exitAll()``) instead of leaving them as separate windows.
     private var tabsToRestore: Set<ObjectIdentifier> = []
 
+    /// Native tab grouping captured when zen mode began: one entry per
+    /// multi-window tab group, listing its members in tab-bar order.
+    /// Each workspace that takes the stage leaves its tab group (zen
+    /// fullscreen removes the titled style); when every member of a
+    /// group has done so, the group is empty at exit time and the
+    /// rejoin in NonNativeFullscreen.exit() finds no window to anchor
+    /// to, so every former tab comes back as a separate window.
+    /// ``exitAll()`` rebuilds the grouping from this snapshot instead.
+    private var preZenTabGroups: [[Weak<BaseTerminalController>]] = []
+
     /// Last-on-stage content snapshot per workspace, shown on shelf cards.
     @Published private(set) var snapshots: [ObjectIdentifier: NSImage] = [:]
 
@@ -80,8 +90,16 @@ final class ZenModeManager: ObservableObject {
     /// Every other terminal window joins the presentation hidden so zen
     /// mode reads as a single global window.
     private func begin(_ controller: BaseTerminalController) {
+        // Snapshot the native tab grouping before the stage enters zen:
+        // zenEnter removes the titled style, which pulls the window out
+        // of its tab group, and every workspace that later takes the
+        // stage leaves its own group the same way. exitAll() rebuilds
+        // fully dissolved groups from the snapshot (see there).
+        let tabGroups = Self.snapshotTabGroups(TerminalController.all)
+
         guard controller.zenEnter() else { return }
 
+        preZenTabGroups = tabGroups
         tabsToRestore = []
         controllers = [Weak(controller)]
         activeID = controller.idObject
@@ -285,13 +303,34 @@ final class ZenModeManager: ObservableObject {
         // group) that native tabs require.
         stage?.zenExit()
 
+        // Rebuild the native tab groups zen mode dissolved. Every
+        // workspace that took the stage left its tab group, and once a
+        // group's last member left, the rejoin in
+        // NonNativeFullscreen.exit() had no window to anchor to — each
+        // member came back as a separate window. Merge each snapshot
+        // group back together in its pre-zen tab order; groups that
+        // kept a member throughout rejoined on their own already and
+        // are skipped by the group identity check.
+        for members in preZenTabGroups {
+            let windows = members.compactMap { $0.value?.window }
+            var anchor: NSWindow?
+            for window in windows {
+                if let anchor, window.tabGroup !== anchor.tabGroup {
+                    guard anchor.addTabbedWindowSafely(window, ordered: .above) else { continue }
+                }
+                anchor = window
+            }
+        }
+        preZenTabGroups = []
+
         // Turn the zen shelf back into a real tab bar. All of this runs in
         // one event-loop tick with the exits above, so the workspaces never
         // visibly pass through their restored standalone frames on the way
         // into the group.
         if let stageWindow = stage?.window {
             for controller in newTabs {
-                guard let window = controller.window else { continue }
+                guard let window = controller.window,
+                      window.tabGroup !== stageWindow.tabGroup else { continue }
                 let target = stageWindow.tabGroup?.windows.last ?? stageWindow
                 target.addTabbedWindowSafely(window, ordered: .above)
             }
@@ -430,6 +469,26 @@ final class ZenModeManager: ObservableObject {
             .draw(in: NSRect(origin: .zero, size: size))
         image.unlockFocus()
         snapshots[controller.idObject] = image
+    }
+
+    /// Captures the native tab grouping of the given controllers: one
+    /// entry per tab group holding more than one of them, each listing
+    /// its members in tab-bar order. See ``begin(_:)`` for why zen mode
+    /// needs this snapshot.
+    private static func snapshotTabGroups(
+        _ controllers: [TerminalController]
+    ) -> [[Weak<BaseTerminalController>]] {
+        var byGroup: [ObjectIdentifier: [(index: Int, controller: BaseTerminalController)]] = [:]
+        for controller in controllers {
+            guard let window = controller.window,
+                  let group = window.tabGroup,
+                  let index = group.windows.firstIndex(of: window) else { continue }
+            byGroup[ObjectIdentifier(group), default: []].append((index, controller))
+        }
+
+        return byGroup.values
+            .filter { $0.count > 1 }
+            .map { $0.sorted { $0.index < $1.index }.map { Weak($0.controller) } }
     }
 
     private static func forEachDescendant(of view: NSView, _ body: (NSView) -> Void) {
