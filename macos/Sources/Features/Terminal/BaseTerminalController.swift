@@ -96,6 +96,9 @@ class BaseTerminalController: NSWindowController,
     /// resize with font changes.
     @Published var zenCellSize: CGSize = .zero
 
+    /// Supersedes pending zen resize releases when transitions overlap.
+    var zenResizeGeneration = 0
+
     /// Event monitor (see individual events for why)
     private var eventMonitor: Any?
 

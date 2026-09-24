@@ -130,8 +130,7 @@ extension Ghostty {
 
         /// When true, core surface size updates are collapsed: the latest size
         /// is remembered and pushed once the suppression ends. Zen mode uses
-        /// this during its exit content swap so the pty only ever sees the
-        /// final window size instead of the transient fullscreen layout.
+        /// this across entry and exit so transient layouts never resize the pty.
         var surfaceResizeSuppressed = false
         private var suppressedSize: CGSize?
 
@@ -530,12 +529,8 @@ extension Ghostty {
 
         /// Collapses core surface resizes while `suppressed` is true. Every
         /// size observed while suppressed is dropped in favor of the most
-        /// recent one, which is pushed once the suppression ends. Zen exit
-        /// uses this because its content swap lays the surfaces out at the
-        /// fullscreen size right before the window restores its frame:
-        /// pushing both sizes resizes the pty twice in quick succession, and
-        /// shells redraw their prompt from stale geometry on the second
-        /// SIGWINCH, leaving the cursor stranded below the prompt.
+        /// recent one, which is pushed once the suppression ends. Zen entry
+        /// and exit use this to avoid extra prompt clears on transient resizes.
         func setSurfaceResizeSuppressed(_ suppressed: Bool) {
             surfaceResizeSuppressed = suppressed
 
