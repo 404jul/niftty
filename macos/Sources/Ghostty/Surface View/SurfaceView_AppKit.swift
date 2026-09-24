@@ -128,6 +128,13 @@ extension Ghostty {
             set { contentSizeBacking = newValue }
         }
 
+        /// When true, core surface size updates are collapsed: the latest size
+        /// is remembered and pushed once the suppression ends. Zen mode uses
+        /// this during its exit content swap so the pty only ever sees the
+        /// final window size instead of the transient fullscreen layout.
+        var surfaceResizeSuppressed = false
+        private var suppressedSize: CGSize?
+
         // Set whether the surface is currently on a password input or not. This is
         // detected with the set_password_input_cb on the Ghostty state.
         var passwordInput: Bool = false {
@@ -506,10 +513,37 @@ extension Ghostty {
             // here that we use "size" and NOT the view frame. If we're in the middle of
             // an animation (i.e. a fullscreen animation), the frame will not yet be updated.
             // The size represents our final size we're going for.
-            let scaledSize = self.convertToBacking(size)
-            setSurfaceSize(width: UInt32(scaledSize.width), height: UInt32(scaledSize.height))
             // Store this size so we can reuse it when backing properties change
             contentSize = size
+
+            // While suppressed, remember the latest size and stop; it is
+            // pushed by setSurfaceResizeSuppressed(_:). See that method for
+            // why this exists.
+            if surfaceResizeSuppressed {
+                suppressedSize = size
+                return
+            }
+
+            let scaledSize = self.convertToBacking(size)
+            setSurfaceSize(width: UInt32(scaledSize.width), height: UInt32(scaledSize.height))
+        }
+
+        /// Collapses core surface resizes while `suppressed` is true. Every
+        /// size observed while suppressed is dropped in favor of the most
+        /// recent one, which is pushed once the suppression ends. Zen exit
+        /// uses this because its content swap lays the surfaces out at the
+        /// fullscreen size right before the window restores its frame:
+        /// pushing both sizes resizes the pty twice in quick succession, and
+        /// shells redraw their prompt from stale geometry on the second
+        /// SIGWINCH, leaving the cursor stranded below the prompt.
+        func setSurfaceResizeSuppressed(_ suppressed: Bool) {
+            surfaceResizeSuppressed = suppressed
+
+            if !suppressed, let size = suppressedSize {
+                suppressedSize = nil
+                let scaledSize = self.convertToBacking(size)
+                setSurfaceSize(width: UInt32(scaledSize.width), height: UInt32(scaledSize.height))
+            }
         }
 
         private func setSurfaceSize(width: UInt32, height: UInt32) {

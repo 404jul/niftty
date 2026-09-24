@@ -311,21 +311,16 @@ pub fn init(b: *std.Build, appVersion: []const u8, libVersion: []const u8) !Conf
         if (vsn.tag) |tag| {
             // Tip releases behave just like any other pre-release so we skip.
             if (!std.mem.eql(u8, tag, "tip")) {
-                const expected = b.fmt("v{d}.{d}.{d}", .{
-                    app_version.major,
-                    app_version.minor,
-                    app_version.patch,
-                });
-
-                if (!std.mem.eql(u8, tag, expected)) {
-                    @panic("tagged releases must be in vX.Y.Z format matching build.zig");
-                }
-
-                break :version .{
-                    .major = app_version.major,
-                    .minor = app_version.minor,
-                    .patch = app_version.patch,
-                };
+                // A release tag is the source of truth for its own
+                // version: derive X.Y.Z straight from the `vX.Y.Z` tag
+                // instead of requiring lockstep with build.zig.zon.
+                // This fork tags releases independently of the
+                // upstream-inherited zon version, and release CI
+                // injects the tag version the same way via
+                // -Dversion-string.
+                const tagged = std.SemanticVersion.parse(tag[1..]) catch
+                    @panic("tagged releases must be tagged in vX.Y.Z format");
+                break :version tagged;
             }
         }
 

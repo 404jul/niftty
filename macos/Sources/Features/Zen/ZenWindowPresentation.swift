@@ -103,6 +103,17 @@ extension BaseTerminalController {
         // would flash the scroll indicators on every pane.
         setScrollbarsSuppressed(true)
 
+        // Collapse the transient surface resize: swapping the content back
+        // while the window is still fullscreen lays every surface out at the
+        // fullscreen size before the window restores its frame. Pushing that
+        // size resizes the pty twice in quick succession, and shells redraw
+        // their prompt from stale geometry on the second SIGWINCH, leaving
+        // the cursor below the prompt. Holding both sizes and pushing only
+        // the final one gives exit the single surface resize entry has.
+        for view in surfaceTree {
+            view.setSurfaceResizeSuppressed(true)
+        }
+
         // Swap back to the regular terminal layout before exiting
         // fullscreen so the window restores with its real content.
         restoreTerminalContent()
@@ -130,6 +141,16 @@ extension BaseTerminalController {
         // Restore the scrollbars after the exit transition settles.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
             self?.setScrollbarsSuppressed(false)
+        }
+
+        // Lift the resize suppression once the exit layout has settled so the
+        // final window size is pushed exactly once. Anything laid out after
+        // this point flows through the regular sizeDidChange path.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            guard let self else { return }
+            for view in self.surfaceTree {
+                view.setSurfaceResizeSuppressed(false)
+            }
         }
 
         // Refocus once the content swap has settled.

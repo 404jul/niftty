@@ -108,13 +108,15 @@ final class HistoryRecorder {
             guard !normalizedTyped.isEmpty else { return nil }
 
             // Tier 1: context transitions out of the previous command,
-            // matched under the context it was recorded in.
+            // matched under the context it was recorded in. An unknown
+            // exit code is recorded as 0 by `record`, so query with 0:
+            // a NULL bind would never match any row.
             if let last = lastCommandBySurface[context.surfaceID] {
                 let rows = await store.contextPrefixCandidates(
                     previous: last.text,
                     directory: last.directory,
                     host: last.host,
-                    exitCode: last.exitCode,
+                    exitCode: last.exitCode ?? 0,
                     prefix: normalizedTyped,
                     extractor: CommandFeatureExtractor.version,
                     limit: 20)
@@ -142,7 +144,7 @@ final class HistoryRecorder {
             previous: last.text,
             directory: directory,
             host: context.host,
-            exitCode: last.exitCode,
+            exitCode: last.exitCode ?? 0,
             extractor: CommandFeatureExtractor.version,
             limit: 20)
         guard let top = rows.first,
@@ -164,25 +166,62 @@ final class HistoryRecorder {
 
     /// The remaining suffix of `command` after the typed `typed`
     /// prefix, compared token-by-token so quoting and spacing
-    /// differences in either text still match: every typed token must
-    /// be a case-insensitive prefix of the command token at the same
-    /// position. The suffix completes the partially-typed last token
-    /// (prepended without a space) and appends the remaining command
-    /// tokens, all in normalized form — quoting in the stored raw
-    /// text is flattened. Returns nil when the tokens already match
-    /// exactly (nothing to add) or any token fails to prefix-match.
+    /// differences in either text still match. A typed token the line
+    /// has moved past — every token when the typed line ends in a
+    /// separator, all but the last otherwise — must match the command
+    /// token at the same position exactly (case-insensitively); only
+    /// the trailing unterminated token may prefix-match, completing
+    /// the partially-typed token (prepended without a space). When the
+    /// typed line ends in a separator, the suggested text is the raw
+    /// remainder of the stored command after the last matched token,
+    /// so quoting and substitutions survive verbatim (matching happens
+    /// on flattened tokens, insertion must not); commands whose
+    /// matched tokens came from inside a substitution fall back to the
+    /// flattened form. Returns nil when the tokens already match
+    /// exactly (nothing to add) or any token fails to match.
     nonisolated static func suffix(of command: String, afterTyped typed: String) -> String? {
         let typedTokens = ShellLexer.tokens(typed)
-        let commandTokens = ShellLexer.tokens(command)
+        let located = ShellLexer.locatedTokens(command)
+        let commandTokens = located.map(\.token)
         guard typedTokens.count <= commandTokens.count else { return nil }
+
+        // A trailing separator terminates the final typed token: the
+        // user left it behind, so nothing mid-token can complete and
+        // the suggestion continues with the next whole command token
+        // (the separator is already on screen).
+        let terminated = typed.last?.isWhitespace ?? false
 
         var exact = typedTokens.count == commandTokens.count
         for (i, token) in typedTokens.enumerated() {
             let target = commandTokens[i].text
-            guard target.lowercased().hasPrefix(token.text.lowercased()) else { return nil }
+            if !terminated && i == typedTokens.count - 1 {
+                guard target.lowercased().hasPrefix(token.text.lowercased()) else { return nil }
+            } else {
+                guard target.lowercased() == token.text.lowercased() else { return nil }
+            }
             if target != token.text { exact = false }
         }
         if exact { return nil }
+
+        if terminated {
+            guard typedTokens.count < commandTokens.count else { return nil }
+            let matched = located[..<typedTokens.count]
+            // Raw remainder: the stored text after the last matched
+            // token, so quotes and substitutions are suggested (and
+            // therefore executed) exactly as they were recorded. Only
+            // usable when every matched token is top-level; a token
+            // from inside `$(...)` has no raw boundary to slice at.
+            if matched.allSatisfy({ !$0.nested }) {
+                let chars = Array(command)
+                var idx = matched.last!.end
+                while idx < chars.count, chars[idx].isWhitespace { idx += 1 }
+                guard idx < chars.count else { return nil }
+                return String(command[command.index(command.startIndex, offsetBy: idx)...])
+            }
+            return commandTokens[typedTokens.count...]
+                .map(\.text)
+                .joined(separator: " ")
+        }
 
         let last = typedTokens.count - 1
         var suffix = String(

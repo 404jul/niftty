@@ -23,6 +23,22 @@ struct PredictionCascadeTests {
         #expect(HistoryRecorder.suffix(of: "git status", afterTyped: "GIT STATUS") == nil)
     }
 
+    @Test func suffixIsNilWhenTrailingSeparatorTerminatesNonMatchingToken() {
+        // Regression: a trailing separator terminates the final typed
+        // token, so "ss " is the complete token "ss", not a prefix of
+        // "ssh" — suggesting would push the ghost text past the space.
+        #expect(HistoryRecorder.suffix(of: "ssh julian@gx10", afterTyped: "ss ") == nil)
+    }
+
+    @Test func suffixContinuesWithWholeTokensAfterTrailingSeparator() {
+        // After a trailing separator the suggestion starts at the next
+        // whole command token; the separator is already on screen.
+        #expect(HistoryRecorder.suffix(of: "git status", afterTyped: "git ") == "status")
+        #expect(HistoryRecorder.suffix(of: "git status", afterTyped: "GIT ") == "status")
+        // Fully typed plus separator: nothing left to suggest.
+        #expect(HistoryRecorder.suffix(of: "git status", afterTyped: "git status ") == nil)
+    }
+
     @Test func suffixIsNilOnTokenMismatch() {
         // "gt" is not a prefix of "git".
         #expect(HistoryRecorder.suffix(of: "git status", afterTyped: "gt") == nil)
@@ -37,6 +53,35 @@ struct PredictionCascadeTests {
         #expect(
             HistoryRecorder.suffix(of: "echo \"hello world\"", afterTyped: "echo hello")
                 == " world")
+    }
+
+    @Test func suffixPreservesQuotingAfterTokenBoundary() {
+        // After a trailing separator the suggestion is the raw stored
+        // text: inserting it must reproduce the recorded command, not
+        // its flattened form (which would run something else).
+        #expect(
+            HistoryRecorder.suffix(of: "grep \"foo bar\" file.txt", afterTyped: "grep ")
+                == "\"foo bar\" file.txt")
+        #expect(
+            HistoryRecorder.suffix(of: "echo 'single quoted' arg", afterTyped: "echo ")
+                == "'single quoted' arg")
+    }
+
+    @Test func suffixPreservesSubstitutionAfterTokenBoundary() {
+        // Flattened tokens would turn `$(date)` into the literal word
+        // `date`; the raw remainder keeps the substitution.
+        #expect(
+            HistoryRecorder.suffix(of: "tar czf backup-$(date +%F).tgz ~/docs", afterTyped: "tar czf ")
+                == "backup-$(date +%F).tgz ~/docs")
+        #expect(HistoryRecorder.suffix(of: "echo $(date)", afterTyped: "echo ") == "$(date)")
+    }
+
+    @Test func suffixFallsBackToFlattenedInsideSubstitution() {
+        // Tokens matched from inside a substitution have no top-level
+        // raw boundary to slice at: fall back to the flattened join.
+        #expect(
+            HistoryRecorder.suffix(of: "echo nested $(x y) done", afterTyped: "echo nested x ")
+                == "y done")
     }
 
     // MARK: meetsGate(count:total:)

@@ -92,6 +92,20 @@ enum ShellLexer {
         var kind: Kind
     }
 
+    /// A token plus its raw position in the lexed line, so callers can
+    /// slice the original text instead of the flattened token stream.
+    /// `start`/`end` are character offsets into the line (half-open,
+    /// `end` exclusive) covering exactly the raw characters that
+    /// produced the token, quotes and escapes included. `nested` is
+    /// true when the token came from inside a `$(...)`, backtick, or
+    /// process substitution rather than the top-level line.
+    struct LocatedToken: Sendable {
+        var token: Token
+        var start: Int
+        var end: Int
+        var nested: Bool
+    }
+
     /// Three-character operators merged into single tokens.
     private static let threeCharOperators: Set<String> = [";;&", "<<<", "<<-"]
 
@@ -100,10 +114,16 @@ enum ShellLexer {
         "&&", "||", ";;", ";&", "|&", "&>", ">>", "<<", ">&", "<&",
     ]
 
-    /// Split a command line into tokens. Unquoted `#` at the start of a
-    /// token comments out the rest of the line. Unterminated quotes
+    /// Split a command line into tokens. Unquoted `#` at the start of
+    /// a token comments out the rest of the line. Unterminated quotes
     /// simply end at end-of-input.
     static func tokens(_ line: String) -> [Token] {
+        locatedTokens(line).map(\.token)
+    }
+
+    /// `tokens(_:)` with each token's raw range and substitution
+    /// nesting recorded.
+    static func locatedTokens(_ line: String) -> [LocatedToken] {
         var lexer = Scanner(chars: Array(line))
         return lexer.scan()
     }
@@ -121,9 +141,11 @@ enum ShellLexer {
     /// substitution: nested `(` increments it, `)` at depth 0 closes.
     private struct Scanner {
         let chars: [Character]
-        private var tokens: [Token] = []
+        private var tokens: [LocatedToken] = []
         private var word: [Character] = []
         private var wordOpen = false
+        /// Char offset of the first raw character of the open word.
+        private var wordStart = 0
         private var i = 0
         private var substitutionDepth: Int?
         /// Heredoc bodies (oldest first) not yet consumed.
@@ -139,12 +161,28 @@ enum ShellLexer {
             self.chars = chars
         }
 
-        mutating func scan() -> [Token] {
+        /// True while lexing substitution contents rather than the
+        /// top-level line.
+        private var nested: Bool { substitutionDepth != nil }
+
+        mutating func scan() -> [LocatedToken] {
             while i < chars.count {
                 if step(closer: nil) { break }
             }
             flushWord()
             return tokens
+        }
+
+        /// Record one token whose raw characters ended just before the
+        /// read cursor.
+        private mutating func appendToken(
+            _ text: String, _ kind: Token.Kind, start: Int
+        ) {
+            tokens.append(LocatedToken(
+                token: Token(text: text, kind: kind),
+                start: start,
+                end: i,
+                nested: nested))
         }
 
         /// Advance one character. Returns true when a substitution
@@ -176,6 +214,7 @@ enum ShellLexer {
             // Backslash escape outside quotes: `\<newline>` is a line
             // continuation, `\x` is a literal x.
             if c == "\\" {
+                if !wordOpen { wordStart = i }
                 wordOpen = true
                 if i + 1 < chars.count {
                     let n = chars[i + 1]
@@ -193,6 +232,7 @@ enum ShellLexer {
 
             // Single quotes: everything literal until the closing quote.
             if c == "'" {
+                if !wordOpen { wordStart = i }
                 wordOpen = true
                 i += 1
                 while i < chars.count, chars[i] != "'" {
@@ -206,6 +246,7 @@ enum ShellLexer {
             // Double quotes: `$ ` " \ newline` are escapes; a backslash
             // before anything else stays literal.
             if c == "\"" {
+                if !wordOpen { wordStart = i }
                 wordOpen = true
                 i += 1
                 while i < chars.count, chars[i] != "\"" {
@@ -262,14 +303,14 @@ enum ShellLexer {
                 return false
             }
 
-            // `)` closes a nested `(` inside a substitution, closes the
-            // substitution itself at depth 0, or is a plain operator.
+            // `)` closes a nested `(` inside a substitution, closes
+            // the substitution itself at depth 0, or is a plain operator.
             if c == ")" {
                 flushWord()
                 if substitutionDepth != nil {
                     if substitutionDepth! > 0 {
                         substitutionDepth! -= 1
-                        tokens.append(Token(text: ")", kind: .op))
+                        appendToken(")", .op, start: i)
                         i += 1
                         return false
                     }
@@ -277,7 +318,7 @@ enum ShellLexer {
                     i += 1
                     return true
                 }
-                tokens.append(Token(text: ")", kind: .op))
+                appendToken(")", .op, start: i)
                 i += 1
                 return false
             }
@@ -288,7 +329,7 @@ enum ShellLexer {
                 if substitutionDepth != nil {
                     substitutionDepth! += 1
                 }
-                tokens.append(Token(text: "(", kind: .op))
+                appendToken("(", .op, start: i)
                 i += 1
                 return false
             }
@@ -298,6 +339,7 @@ enum ShellLexer {
             if !wordOpen, c.isASCII, c.isNumber,
                i + 1 < chars.count, chars[i + 1] == ">" {
                 var text = String(c) + ">"
+                let start = i
                 i += 2
                 if i < chars.count, chars[i] == ">" {
                     text.append(">")
@@ -310,21 +352,21 @@ enum ShellLexer {
                         i += 1
                     }
                 }
-                tokens.append(Token(text: text, kind: .redirect))
+                appendToken(text, .redirect, start: start)
                 return false
             }
 
             // Operators and redirects.
             if "|&;<>".contains(c) {
                 flushWord()
+                let start = i
                 // Three-character operators first.
                 if i + 2 < chars.count {
                     let triple = String(chars[i]) + String(chars[i + 1])
                         + String(chars[i + 2])
                     if threeCharOperators.contains(triple) {
-                        tokens.append(Token(
-                            text: triple,
-                            kind: triple == ";;&" ? .op : .redirect))
+                        appendToken(
+                            triple, triple == ";;&" ? .op : .redirect, start: start)
                         if triple == "<<" {
                             awaitingHeredocDelimiter = false
                         }
@@ -340,7 +382,7 @@ enum ShellLexer {
                     if twoCharOperators.contains(pair) {
                         let kind: Token.Kind = (pair.contains("<") || pair.contains(">"))
                             ? .redirect : .op
-                        tokens.append(Token(text: pair, kind: kind))
+                        appendToken(pair, kind, start: start)
                         if pair == "<<" {
                             awaitingHeredocDelimiter = false
                         }
@@ -349,11 +391,12 @@ enum ShellLexer {
                     }
                 }
                 let kind: Token.Kind = (c == "<" || c == ">") ? .redirect : .op
-                tokens.append(Token(text: String(c), kind: kind))
+                appendToken(String(c), kind, start: start)
                 i += 1
                 return false
             }
 
+            if !wordOpen { wordStart = i }
             word.append(c)
             wordOpen = true
             i += 1
@@ -401,7 +444,7 @@ enum ShellLexer {
                 awaitingHeredocDelimiter = nil
                 pendingHeredocs.append((String(word), stripTabs))
             } else {
-                tokens.append(Token(text: String(word), kind: .word))
+                appendToken(String(word), .word, start: wordStart)
             }
             word = []
         }
