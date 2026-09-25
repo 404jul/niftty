@@ -744,7 +744,13 @@ test "ghostty_config_keybind_data: default config" {
         try testing.expect(std.mem.indexOf(u8, json, "\\\"trigger\\\":\\\"super+ctrl+alt+z\\\"") == null);
     }
 
-    // Predictions default to performable Tab and Right acceptance.
+    // Predictions default to performable Shift+Tab and Right acceptance.
+    try testing.expect(std.mem.indexOf(u8, json,
+        \\{"trigger":"shift+tab","actions":["accept_prediction"],"table":null,"default":true
+    ) != null);
+    try testing.expect(std.mem.indexOf(u8, json,
+        \\{"trigger":"tab","actions":["accept_prediction"]
+    ) == null);
     try testing.expect(std.mem.indexOf(u8, json,
         \\{"trigger":"arrow_right","actions":["accept_prediction"],"table":null,"default":true
     ) != null);

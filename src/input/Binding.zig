@@ -740,7 +740,7 @@ pub const Action = union(enum) {
     /// configuration is disabled, the terminal is not sitting at a shell
     /// prompt, or a candidate was already invalidated by other input).
     /// Binding this action with the `performable:` flag (the default
-    /// for Tab and Right) makes the key fall through to the terminal
+    /// for Shift+Tab and Right) makes the key fall through to the terminal
     /// in those cases.
     accept_prediction,
 
@@ -3401,18 +3401,18 @@ test "parse: action no parameters" {
     try testing.expectError(Error.InvalidFormat, parseSingle("a=ignore:A"));
 }
 
-test "parse: accept_prediction performable tab" {
+test "parse: accept_prediction performable shift tab" {
     const testing = std.testing;
 
-    // The default prediction acceptance binding: a performable, plain Tab
+    // The default prediction acceptance binding: a performable Shift+Tab
     // so the key falls through to the terminal when no candidate shows.
     try testing.expectEqual(
         Binding{
-            .trigger = .{ .key = .{ .physical = .tab } },
+            .trigger = .{ .key = .{ .physical = .tab }, .mods = .{ .shift = true } },
             .action = .{ .accept_prediction = {} },
             .flags = .{ .performable = true },
         },
-        try parseSingle("performable:tab=accept_prediction"),
+        try parseSingle("performable:shift+tab=accept_prediction"),
     );
 
     // The action takes no parameters.

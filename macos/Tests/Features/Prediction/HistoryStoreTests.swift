@@ -364,9 +364,9 @@ struct HistoryStoreTests {
         }
     }
 
-    // MARK: Degradation
+    // MARK: Upgrades and degradation
 
-    @Test func olderDatabaseIsWipedToV2() async throws {
+    @Test func olderDatabaseMigratesToV2WithoutLosingHistory() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("niftty-history-tests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -374,19 +374,148 @@ struct HistoryStoreTests {
         try seedV1Database(at: url)
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        // The v1 content is discarded, not migrated.
         let store = HistoryStore(url: url)
         let disabled = await store.disabled
         #expect(!disabled)
         #expect(scalar(url, "PRAGMA user_version") == 2)
-        #expect(scalar(url, "SELECT COUNT(*) FROM command") == 0)
-        #expect(scalar(url, "SELECT COUNT(*) FROM transition") == 0)
-        #expect(scalar(url, "SELECT COUNT(*) FROM occurrence") == 0)
+        #expect(scalar(url, "SELECT COUNT(*) FROM command") == 2)
+        #expect(scalar(url, "SELECT id FROM command WHERE normalized = 'git stash'") == 20)
+        #expect(scalar(url, "SELECT use_count FROM command WHERE id = 20") == 4)
+        #expect(scalar(url, "SELECT success_count FROM command WHERE id = 20") == 3)
+        #expect(scalar(url, "SELECT accepted_count FROM command WHERE id = 20") == 1)
+        #expect(scalar(url, "SELECT COUNT(*) FROM feature") == 1)
+        #expect(scalar(url, "SELECT COUNT(*) FROM meta WHERE key = 'saved'") == 1)
+        #expect(scalar(url, "SELECT COUNT(*) FROM occurrence WHERE command_id = 20 AND directory = '/repo'") == 1)
+
+        let rows = await followUps(store, previous: "git status", directory: "/repo")
+        #expect(rows.first?.text == "git stash")
+        #expect(rows.first?.contextCount == 3)
+        let prefixRows = await store.recentPrefixCandidates(prefix: "git sta", directory: "/repo", limit: 20)
+        #expect(prefixRows.first?.text == "git stash")
+
+        // New observations must continue to update the old rows, not
+        // create a second history after the schema change.
+        await record(store, "git stash", directory: "/repo", previous: "git status")
+        #expect(scalar(url, "SELECT use_count FROM command WHERE id = 20") == 5)
+        #expect(scalar(url, "SELECT count FROM transition WHERE prev_id = 10 AND next_id = 20") == 4)
+        await store.close()
+
+        let reopened = HistoryStore(url: url)
+        let reopenedDisabled = await reopened.disabled
+        let reopenedRows = await followUps(reopened, previous: "git status", directory: "/repo")
+        #expect(!reopenedDisabled)
+        #expect(reopenedRows.first?.contextCount == 4)
+        await reopened.close()
+    }
+
+    @Test func unversionedV1DatabaseIsNotWiped() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("niftty-history-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("history.db")
+        try seedV1Database(at: url, version: 0)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = HistoryStore(url: url)
+        let disabled = await store.disabled
+        #expect(!disabled)
+        #expect(scalar(url, "PRAGMA user_version") == 2)
+        #expect(scalar(url, "SELECT COUNT(*) FROM command") == 2)
+        #expect(scalar(url, "SELECT count FROM transition WHERE prev_id = 10 AND next_id = 20") == 3)
+        await store.close()
+    }
+
+    @Test func unversionedV2DatabaseIsNotWiped() async throws {
+        let (store, url) = makeStore()
+        await record(store, "git stash")
+        await store.close()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        try executeSQL(at: url, "PRAGMA user_version = 0")
+
+        let reopened = HistoryStore(url: url)
+        let disabled = await reopened.disabled
+        #expect(!disabled)
+        #expect(scalar(url, "PRAGMA user_version") == 2)
+        #expect(scalar(url, "SELECT COUNT(*) FROM command") == 1)
+        await reopened.close()
+    }
+
+    @Test func newerDatabaseIsLeftIntactByOlderBuild() async throws {
+        let (store, url) = makeStore()
+        await record(store, "git stash")
+        await store.close()
+        defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
+        try executeSQL(at: url, "PRAGMA user_version = 3")
+
+        let olderBuild = HistoryStore(url: url)
+        let disabled = await olderBuild.disabled
+        #expect(disabled)
+        #expect(scalar(url, "PRAGMA user_version") == 3)
+        #expect(scalar(url, "SELECT COUNT(*) FROM command") == 1)
+        await olderBuild.close()
+    }
+
+    @Test func failedMigrationRollsBackWithoutDeletingV1History() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("niftty-history-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let url = directory.appendingPathComponent("history.db")
+        try seedV1Database(at: url)
+        // Force a migration error after renaming the old transition
+        // table. The entire upgrade must roll back on this path.
+        try executeSQL(at: url, "CREATE TABLE occurrence (incompatible TEXT)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = HistoryStore(url: url)
+        let disabled = await store.disabled
+        #expect(disabled)
+        #expect(scalar(url, "PRAGMA user_version") == 1)
+        #expect(scalar(url, "SELECT COUNT(*) FROM command") == 2)
+        #expect(scalar(url, "SELECT count FROM transition WHERE prev_id = 10 AND next_id = 20") == 3)
+        #expect(scalar(url, "SELECT COUNT(*) FROM sqlite_master WHERE name = 'transition_v1'") == 0)
         await store.close()
     }
 
     /// Write a populated v1 database with `user_version = 1`.
-    private func seedV1Database(at url: URL) throws {
+    private func seedV1Database(at url: URL, version: Int = 1) throws {
+        try executeSQL(at: url, """
+            CREATE TABLE command (
+              id INTEGER PRIMARY KEY,
+              text TEXT NOT NULL,
+              normalized TEXT NOT NULL UNIQUE,
+              first_seen REAL NOT NULL,
+              last_seen REAL NOT NULL,
+              use_count INTEGER NOT NULL DEFAULT 1,
+              success_count INTEGER NOT NULL DEFAULT 0,
+              accepted_count INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE transition (
+              prev_id INTEGER NOT NULL,
+              next_id INTEGER NOT NULL,
+              directory TEXT NOT NULL,
+              count INTEGER NOT NULL,
+              PRIMARY KEY (prev_id, next_id, directory)
+            );
+            CREATE TABLE feature (
+              command_id INTEGER NOT NULL,
+              extractor INTEGER NOT NULL,
+              hash INTEGER NOT NULL,
+              weight REAL NOT NULL,
+              PRIMARY KEY (command_id, extractor, hash)
+            ) WITHOUT ROWID;
+            CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            INSERT INTO command (id, text, normalized, first_seen, last_seen, use_count, success_count, accepted_count)
+              VALUES (10, 'git status', 'git status', 1700000000, 1700000000, 7, 6, 2),
+                     (20, 'git stash', 'git stash', 1700000000, 1700000100, 4, 3, 1);
+            INSERT INTO transition (prev_id, next_id, directory, count) VALUES (10, 20, '/repo', 3);
+            INSERT INTO feature (command_id, extractor, hash, weight)
+              VALUES (10, \(CommandFeatureExtractor.version), 42, 1.0);
+            INSERT INTO meta (key, value) VALUES ('saved', 'yes');
+            PRAGMA user_version = \(version);
+            """)
+    }
+
+    private func executeSQL(at url: URL, _ sql: String) throws {
         var db: OpaquePointer?
         let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE
         guard sqlite3_open_v2(url.path, &db, flags, nil) == SQLITE_OK, let db else {
@@ -394,28 +523,7 @@ struct HistoryStoreTests {
             throw CocoaError(.fileWriteUnknown)
         }
         defer { sqlite3_close_v2(db) }
-        let v1 = """
-        CREATE TABLE command (
-          id INTEGER PRIMARY KEY,
-          text TEXT NOT NULL,
-          normalized TEXT NOT NULL UNIQUE,
-          first_seen REAL NOT NULL,
-          last_seen REAL NOT NULL,
-          use_count INTEGER NOT NULL DEFAULT 1,
-          success_count INTEGER NOT NULL DEFAULT 0,
-          accepted_count INTEGER NOT NULL DEFAULT 0
-        );
-        CREATE TABLE transition (
-          prev_id INTEGER NOT NULL,
-          next_id INTEGER NOT NULL,
-          directory TEXT NOT NULL,
-          count INTEGER NOT NULL,
-          PRIMARY KEY (prev_id, next_id, directory)
-        );
-        INSERT INTO command (text, normalized, first_seen, last_seen) VALUES ('old', 'old', 0, 0);
-        PRAGMA user_version = 1;
-        """
-        guard sqlite3_exec(db, v1, nil, nil, nil) == SQLITE_OK else {
+        guard sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK else {
             throw CocoaError(.fileWriteUnknown)
         }
     }

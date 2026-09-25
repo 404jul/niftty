@@ -113,6 +113,20 @@ Going public requires no other changes.
   release within seconds (on public repos); clients check periodically
   (default once a day).
 
+## Prediction history across updates
+
+Predictions learned from commands are stored in
+`~/.local/state/niftty/prediction/history.db`, **not** in `Niftty.app`.
+Replacing the app bundle or its executable must not remove this file.
+An older app build may be unable to read a newer database format, but
+must leave it intact so upgrading again restores predictions.
+
+When changing the history schema, migrate existing commands and ranking
+data in a single SQLite transaction with `PRAGMA user_version`; never
+drop an older database just because its ranking format changed. Keep a
+unit test that opens a populated database from the previous format and
+checks its history after the upgrade, and a rollback test for failures.
+
 ## Local dry run
 
 To exercise the packaging step without publishing:

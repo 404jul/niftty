@@ -174,14 +174,17 @@ pub const Options = struct {
 ///      `/proc/<child>/cwd`. Unresolved `lsof` `readlink:` paths are
 ///      discarded. The parent `wait`s the shell once so the session
 ///      exits. Skipped when a remote command is given, or with
-///      `-N`/`-T`/`-W`. The login shell's stdin/stdout/stderr are opened
-///      on the real terminal device path (resolved with `tty` before the
-///      background subshell's stdin becomes `/dev/null`, falling back to
-///      `/dev/tty` if resolution fails) rather than on the `/dev/tty`
-///      path itself: `ttyname()` returns the path an fd was opened with,
-///      and tmux 3.7+ rejects clients whose terminal path is `/dev/tty`
-///      ("open terminal failed: can't use /dev/tty") because its server
-///      runs in a different session where `/dev/tty` resolves elsewhere.
+///      `-N`/`-T`/`-W`. Backgrounding reassigns the subshell's stdin to
+///      `/dev/null`, so before starting the subshell the middleman dups
+///      its own stdin (the pty sshd opened on the remote device path) to
+///      fd 9, and the login shell's stdin/stdout/stderr are dup'd back
+///      from fd 9. The shell thus sits on the same open file description
+///      as sshd's pty, so `ttyname()` reports the real pts path. This
+///      cannot be done by opening `/dev/tty`: that names the
+///      controlling-terminal device (5:0), and tmux 3.7+ rejects clients
+///      whose terminal name is `/dev/tty` ("open terminal failed: can't
+///      use /dev/tty") because its server runs in a different session
+///      where `/dev/tty` resolves elsewhere.
 ///
 /// If `--terminfo` install fails (e.g. `tic` not available on the
 /// remote, filesystem permissions), a warning is logged and the
@@ -983,14 +986,13 @@ const port_watch_script = port_watch_head ++ port_scan_script ++ port_watch_tail
 const cwd_reporter_head =
     \\exec /bin/sh -c 'trap "" INT TTOU TTIN
     \\set +m
-    \\tt=$(tty 2>/dev/null)
-    \\case "$tt" in /*) ;; *) tt=/dev/tty ;; esac
+    \\exec 9<&0
     \\(trap - INT TTOU TTIN;
 ;
 
 /// The cwd reporter script from the login-shell `exec` line onward.
 const cwd_reporter_tail =
-    \\ exec "${SHELL:-/bin/sh}" -l <>"$tt" >&0 2>&0) &
+    \\ exec "${SHELL:-/bin/sh}" -l 0<&9 1>&9 2>&9 9<&-) &
     \\spid=$!
     \\last=
     \\while :; do
@@ -1154,9 +1156,14 @@ test "shouldInjectCwdReporter: skip remote command and no-shell" {
 test "cwd reporter watches child not parent" {
     const testing = std.testing;
     try testing.expect(std.mem.indexOf(u8, cwd_reporter_command, "/proc/$spid/cwd") != null);
-    try testing.expect(std.mem.indexOf(u8, cwd_reporter_command, "tt=$(tty 2>/dev/null)") != null);
-    try testing.expect(std.mem.indexOf(u8, cwd_reporter_command, "<>\"$tt\" >&0 2>&0") != null);
-    try testing.expect(std.mem.indexOf(u8, cwd_reporter_command, "<>/dev/tty") == null);
+    // The login shell must sit on the middleman's saved pty fd (9), never
+    // on the /dev/tty device or a path resolved by an external command:
+    // tmux 3.7+ rejects clients whose ttyname() is "/dev/tty", and a
+    // `tty`-based resolution silently degraded to exactly that.
+    try testing.expect(std.mem.indexOf(u8, cwd_reporter_command, "exec 9<&0") != null);
+    try testing.expect(std.mem.indexOf(u8, cwd_reporter_command, "0<&9 1>&9 2>&9 9<&-") != null);
+    try testing.expect(std.mem.indexOf(u8, cwd_reporter_command, "/dev/tty") == null);
+    try testing.expect(std.mem.indexOf(u8, cwd_reporter_command, "tt=") == null);
     try testing.expect(std.mem.indexOf(u8, cwd_reporter_command, "wait $spid") != null);
     try testing.expect(std.mem.indexOf(u8, cwd_reporter_command, "trap - INT TTOU TTIN") != null);
     try testing.expect(std.mem.indexOf(u8, cwd_reporter_command, "/proc/$PPID/cwd") == null);

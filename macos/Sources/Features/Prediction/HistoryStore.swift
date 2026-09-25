@@ -622,8 +622,8 @@ actor HistoryStore {
         """
     }
 
-    /// v2 schema. Older databases are discarded rather than migrated
-    /// (see `configureDatabase`).
+    /// v2 schema. Existing command and feature rows survive upgrades;
+    /// only the transition and occurrence layouts change from v1.
     private static let schemaV2 = """
     CREATE TABLE IF NOT EXISTS command (
       id INTEGER PRIMARY KEY,
@@ -663,6 +663,55 @@ actor HistoryStore {
     CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     """
 
+    /// Preserve v1's commands, usage/acceptance counts and features,
+    /// while supplying the context fields that v1 did not record. A
+    /// v1 transition's exit code and host are unknown, so use the same
+    /// host-less, exit-0 defaults used for unknown observations today.
+    /// The successor's last-seen time is the best available timestamp.
+    /// Everything, including user_version, commits together or rolls back.
+    private static func migrateV1ToV2(_ db: OpaquePointer) throws {
+        try execOn(db, "BEGIN IMMEDIATE")
+        do {
+            try execOn(db, "ALTER TABLE transition RENAME TO transition_v1")
+            try execOn(db, schemaV2)
+            try execOn(db, """
+                INSERT INTO transition (prev_id, next_id, directory, host, exit_code, count, last_seen)
+                SELECT t.prev_id, t.next_id, t.directory, '', 0, t.count, c.last_seen
+                FROM transition_v1 t JOIN command c ON c.id = t.next_id;
+                INSERT INTO occurrence (command_id, directory, host, last_seen)
+                SELECT t.next_id, t.directory, '', MAX(c.last_seen)
+                FROM transition_v1 t JOIN command c ON c.id = t.next_id
+                GROUP BY t.next_id, t.directory;
+                INSERT OR IGNORE INTO occurrence (command_id, directory, host, last_seen)
+                SELECT id, '', '', last_seen FROM command;
+                DROP TABLE transition_v1;
+                PRAGMA user_version = 2;
+                """)
+            try execOn(db, "COMMIT")
+        } catch {
+            try? execOn(db, "ROLLBACK")
+            throw error
+        }
+    }
+
+    private static func createSchemaV2(_ db: OpaquePointer) throws {
+        try execOn(db, "BEGIN IMMEDIATE")
+        do {
+            try execOn(db, schemaV2)
+            // Version 0 may be a partially initialized v1 database
+            // with commands but no transition table yet.
+            try execOn(db, """
+                INSERT OR IGNORE INTO occurrence (command_id, directory, host, last_seen)
+                SELECT id, '', '', last_seen FROM command
+                """)
+            try execOn(db, "PRAGMA user_version = 2")
+            try execOn(db, "COMMIT")
+        } catch {
+            try? execOn(db, "ROLLBACK")
+            throw error
+        }
+    }
+
     /// Open the database file. Throws without leaving a handle behind.
     private static func openDatabase(at url: URL) throws -> OpaquePointer {
         var handle: OpaquePointer?
@@ -686,15 +735,24 @@ actor HistoryStore {
         }
         let version = try queryIntOn(db, "PRAGMA user_version")
         switch version {
-        case 0, 1:
-            // v2 is a clean break: the v1 ranking is gone, so its
-            // data is dead weight. Wipe rather than migrate
-            // (single-user local history).
-            for table in ["feature", "transition", "occurrence", "command", "meta"] {
-                try execOn(db, "DROP TABLE IF EXISTS \(table)")
+        case 0:
+            // An interrupted initialization can leave either schema
+            // with an unset user_version. Never overwrite its rows.
+            let hasTransition = try queryIntOn(db, """
+                SELECT COUNT(*) FROM sqlite_master
+                WHERE type = 'table' AND name = 'transition'
+                """) != 0
+            let alreadyV2 = try queryIntOn(db, """
+                SELECT COUNT(*) FROM pragma_table_info('transition')
+                WHERE name = 'exit_code'
+                """) != 0
+            if hasTransition && !alreadyV2 {
+                try migrateV1ToV2(db)
+            } else {
+                try createSchemaV2(db)
             }
-            try execOn(db, schemaV2)
-            try execOn(db, "PRAGMA user_version = 2")
+        case 1:
+            try migrateV1ToV2(db)
         case 2:
             break
         case let v:

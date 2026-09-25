@@ -374,32 +374,42 @@ private struct KeybindEditorSheet: View {
                             .textFieldStyle(.roundedBorder)
                             .disabled(recorder.isRecording)
 
-                        Button {
-                            if recorder.isRecording {
-                                recorder.stop()
-                            } else {
+                        if recorder.isRecording {
+                            if recorder.isRecordingSequence {
+                                Button("Done") { recorder.finish() }
+                                    .disabled(recorder.recordedKeys.isEmpty)
+                            }
+                            Button("Cancel") { recorder.stop() }
+                        } else {
+                            Button {
                                 recorder.onRecord = { keys in trigger = keys }
                                 recorder.start()
+                            } label: {
+                                Label("Record", systemImage: "record.circle")
                             }
-                        } label: {
-                            Label(
-                                recorder.isRecording ? "Press keys…" : "Record",
-                                systemImage: recorder.isRecording
-                                    ? "circle.fill" : "record.circle"
-                            )
+                            Button("Record Sequence") {
+                                recorder.onRecord = { keys in trigger = keys }
+                                recorder.start(sequence: true)
+                            }
                         }
                     }
 
                     if recorder.isRecording {
-                        Text("Press the key combination to bind. Esc cancels.")
+                        Text(recorder.isRecordingSequence
+                             ? "Press each key combination in order, then click Done. Esc cancels."
+                             : "Press the key combination to bind. Esc cancels.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
+                        if recorder.isRecordingSequence, !recorder.recordedKeys.isEmpty {
+                            Text("Recorded: \(recorder.recordedKeys.joined(separator: ">"))")
+                                .font(.caption.monospaced())
+                        }
                     } else {
                         validationText
                     }
 
-                    Text("Niftty syntax: modifiers (cmd, ctrl, alt, shift), a key, and sequences joined with >. Example: cmd+shift+c")
+                    Text("Niftty syntax: modifiers (cmd, ctrl, alt, shift) + a key; join sequential shortcuts with >. Example: cmd+k>c")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -458,7 +468,7 @@ private struct KeybindEditorSheet: View {
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
-                .disabled(!validation.isValid || !isChanged)
+                .disabled(recorder.isRecording || !validation.isValid || !isChanged)
             }
             .padding(.top, 16)
         }
@@ -560,11 +570,13 @@ private struct KeybindEditorSheet: View {
 
 // MARK: - Key recorder
 
-/// Records a key combination from the keyboard while active using a local
-/// NSEvent monitor and converts it to Ghostty trigger syntax.
+/// Records one key combination or an ordered sequence using a local NSEvent
+/// monitor and converts it to Ghostty trigger syntax.
 @MainActor
 final class KeyRecorder: ObservableObject {
     @Published private(set) var isRecording = false
+    @Published private(set) var isRecordingSequence = false
+    @Published private(set) var recordedKeys: [String] = []
     var onRecord: ((String) -> Void)?
 
     private var monitor: Any?
@@ -572,8 +584,10 @@ final class KeyRecorder: ObservableObject {
     /// The owner stops the recorder on disappear; the monitor holds a weak
     /// reference so an unstopped monitor is harmless.
 
-    func start() {
+    func start(sequence: Bool = false) {
         guard monitor == nil, !isRecording else { return }
+        recordedKeys = []
+        isRecordingSequence = sequence
         isRecording = true
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self, self.isRecording else { return event }
@@ -584,10 +598,17 @@ final class KeyRecorder: ObservableObject {
                 return nil
             }
 
+            // Holding a key should not add repeated steps to a sequence.
+            if event.isARepeat { return nil }
+
             if let trigger = Self.trigger(for: event) {
-                let value = trigger
-                self.stop()
-                self.onRecord?(value)
+                if self.isRecordingSequence {
+                    self.recordedKeys.append(trigger)
+                } else {
+                    let onRecord = self.onRecord
+                    self.stop()
+                    onRecord?(trigger)
+                }
                 return nil
             }
 
@@ -596,12 +617,23 @@ final class KeyRecorder: ObservableObject {
         }
     }
 
+    func finish() {
+        guard isRecording, isRecordingSequence, !recordedKeys.isEmpty else { return }
+        let sequence = recordedKeys.joined(separator: ">")
+        let onRecord = onRecord
+        stop()
+        onRecord?(sequence)
+    }
+
     func stop() {
         if let monitor {
             NSEvent.removeMonitor(monitor)
             self.monitor = nil
         }
         isRecording = false
+        isRecordingSequence = false
+        recordedKeys = []
+        onRecord = nil
     }
 
     private static let escapeCode: CGKeyCode = 53
