@@ -472,6 +472,7 @@ pub fn performAction(
         .toggle_quick_terminal => _ = try rt_app.performAction(.app, .toggle_quick_terminal, {}),
         .toggle_visibility => _ = try rt_app.performAction(.app, .toggle_visibility, {}),
         .check_for_updates => _ = try rt_app.performAction(.app, .check_for_updates, {}),
+        .install_cli_tool => _ = try rt_app.performAction(.app, .install_cli_tool, {}),
         .show_gtk_inspector => _ = try rt_app.performAction(.app, .show_gtk_inspector, {}),
         .undo => _ = try rt_app.performAction(.app, .undo, {}),
 

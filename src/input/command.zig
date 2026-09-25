@@ -691,6 +691,12 @@ fn actionCommands(action: Action.Key) []const Command {
             .description = i18n.N_("Check for updates to the application."),
         }},
 
+        .install_cli_tool => comptime &.{.{
+            .action = .install_cli_tool,
+            .title = i18n.N_("Install CLI Tool"),
+            .description = i18n.N_("Make the niftty command available in any shell by creating a symlink in /usr/local/bin."),
+        }},
+
         .undo => comptime &.{.{
             .action = .undo,
             .title = i18n.N_("Undo"),

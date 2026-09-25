@@ -34,6 +34,7 @@
                 <outlet property="menuFloatOnTop" destination="uRj-7z-1Nh" id="94n-o9-Jol"/>
                 <outlet property="menuHideFindBar" destination="xzC-AG-HAc" id="HCo-o6-VWv"/>
                 <outlet property="menuIncreaseFontSize" destination="CIH-ey-Z6x" id="hkc-9C-80E"/>
+                <outlet property="menuInstallCliTool" destination="CL1-T0o-L4b" id="CL1-T0o-L4b-o"/>
                 <outlet property="menuMoveSplitDividerDown" destination="Zj7-2W-fdF" id="997-LL-nlN"/>
                 <outlet property="menuMoveSplitDividerLeft" destination="wSR-ny-j1a" id="HCZ-CI-2ob"/>
                 <outlet property="menuMoveSplitDividerRight" destination="CcX-ql-QU4" id="rIn-PK-fVM"/>
@@ -92,6 +93,12 @@
                                 <modifierMask key="keyEquivalentModifierMask"/>
                                 <connections>
                                     <action selector="checkForUpdates:" target="bbz-4X-AYv" id="z2n-lC-48f"/>
+                                </connections>
+                            </menuItem>
+                            <menuItem title="Install CLI Tool…" id="CL1-T0o-L4b">
+                                <modifierMask key="keyEquivalentModifierMask"/>
+                                <connections>
+                                    <action selector="installCliTool:" target="bbz-4X-AYv" id="CL1-T0o-L4b-a"/>
                                 </connections>
                             </menuItem>
                             <menuItem isSeparatorItem="YES" id="VOq-y0-SEH"/>

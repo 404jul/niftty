@@ -915,6 +915,16 @@ pub const Action = union(enum) {
     /// Only implemented on macOS.
     check_for_updates,
 
+    /// Install the `niftty` command line tool so it can be used from any
+    /// shell, not only from terminals spawned by Niftty. This creates a
+    /// symlink at `/usr/local/bin/niftty` pointing to the running
+    /// application bundle's executable and requires administrator
+    /// approval. Running it again repoints the symlink, which also
+    /// repairs it after the app is moved or updated.
+    ///
+    /// Only implemented on macOS.
+    install_cli_tool,
+
     /// Undo the last undoable action for the focused surface or terminal,
     /// if possible. This can undo actions such as closing tabs or
     /// windows.
@@ -1395,6 +1405,7 @@ pub const Action = union(enum) {
             .toggle_quick_terminal,
             .toggle_visibility,
             .check_for_updates,
+            .install_cli_tool,
             .show_gtk_inspector,
             => .app,
 

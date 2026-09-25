@@ -212,6 +212,7 @@ pub const CommandPalette = extern struct {
             .close_all_windows,
             .toggle_secure_input,
             .check_for_updates,
+            .install_cli_tool,
             .redo,
             .undo,
             .reset_window_size,

@@ -810,6 +810,9 @@ extension Ghostty {
             case GHOSTTY_ACTION_CHECK_FOR_UPDATES:
                 checkForUpdates(app)
 
+            case GHOSTTY_ACTION_INSTALL_CLI_TOOL:
+                installCliTool(app)
+
             case GHOSTTY_ACTION_OPEN_URL:
                 return openURL(action.action.open_url)
 
@@ -881,6 +884,14 @@ extension Ghostty {
         ) {
             if let appDelegate = NSApplication.shared.delegate as? AppDelegate {
                 appDelegate.checkForUpdates(nil)
+            }
+        }
+
+        private static func installCliTool(
+            _ app: ghostty_app_t
+        ) {
+            if let appDelegate = NSApplication.shared.delegate as? AppDelegate {
+                appDelegate.installCliTool(nil)
             }
         }
 

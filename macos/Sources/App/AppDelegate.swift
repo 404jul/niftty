@@ -21,6 +21,7 @@ class AppDelegate: NSObject,
     @IBOutlet private var menuAbout: NSMenuItem?
     @IBOutlet private var menuServices: NSMenu?
     @IBOutlet private var menuCheckForUpdates: NSMenuItem?
+    @IBOutlet private var menuInstallCliTool: NSMenuItem?
     @IBOutlet private var menuOpenConfig: NSMenuItem?
     @IBOutlet private var menuReloadConfig: NSMenuItem?
     @IBOutlet private var menuSecureInput: NSMenuItem?
@@ -1166,6 +1167,7 @@ extension AppDelegate {
         // modify this stuff as code.
         self.menuAbout?.setImageIfDesired(systemSymbolName: "info.circle")
         self.menuCheckForUpdates?.setImageIfDesired(systemSymbolName: "square.and.arrow.down")
+        self.menuInstallCliTool?.setImageIfDesired(systemSymbolName: "terminal")
         self.menuOpenConfig?.setImageIfDesired(systemSymbolName: "gear")
         self.menuReloadConfig?.setImageIfDesired(systemSymbolName: "arrow.trianglehead.2.clockwise.rotate.90")
         self.menuSecureInput?.setImageIfDesired(systemSymbolName: "lock.display")
@@ -1212,6 +1214,7 @@ extension AppDelegate {
         menuShortcutManager.reset()
 
         syncMenuShortcut(config, action: "check_for_updates", menuItem: self.menuCheckForUpdates)
+        syncMenuShortcut(config, action: "install_cli_tool", menuItem: self.menuInstallCliTool)
         syncMenuShortcut(config, action: "open_config", menuItem: self.menuOpenConfig)
         syncMenuShortcut(config, action: "reload_config", menuItem: self.menuReloadConfig)
         syncMenuShortcut(config, action: "quit", menuItem: self.menuQuit)
@@ -1332,6 +1335,164 @@ extension AppDelegate {
                 alert.runModal()
             }
         }
+    }
+}
+
+// MARK: CLI Tool
+
+extension AppDelegate {
+    /// Where the `niftty` command is exposed. /usr/local/bin is on the
+    /// default shell PATH for every shell, unlike the app bundle's
+    /// Contents/MacOS directory which is only added by shell integration
+    /// inside Niftty-spawned terminals.
+    private static let cliToolInstallPath = "/usr/local/bin/niftty"
+
+    @IBAction func installCliTool(_ sender: Any?) {
+        let fm = FileManager.default
+        let linkPath = Self.cliToolInstallPath
+
+        // A symlink into a transient location breaks as soon as the app
+        // is ejected or re-mounted, so require a stable home first.
+        let bundlePath = Bundle.main.bundleURL.path
+        if bundlePath.hasPrefix("/Volumes/") || bundlePath.contains("/AppTranslocation/") {
+            let alert = NSAlert()
+            alert.messageText = "Move Niftty to the Applications Folder"
+            alert.informativeText = """
+            Niftty is running from “\(bundlePath)”, which is a temporary \
+            location. Move Niftty.app into the Applications folder and run \
+            “Install CLI Tool” again so the niftty command keeps working.
+            """
+            alert.alertStyle = .warning
+            alert.runModal()
+            return
+        }
+
+        guard let exePath = Bundle.main.executableURL?
+            .resolvingSymlinksInPath().path
+        else {
+            let alert = NSAlert()
+            alert.messageText = "Failed to Install CLI Tool"
+            alert.informativeText = """
+            Niftty could not determine the path of its own executable.
+            """
+            alert.alertStyle = .warning
+            alert.runModal()
+            return
+        }
+
+        do {
+            let dest = try fm.destinationOfSymbolicLink(atPath: linkPath)
+            let destResolved = URL(fileURLWithPath: dest)
+                .resolvingSymlinksInPath().path
+            if dest == exePath || destResolved == exePath {
+                let alert = NSAlert()
+                alert.messageText = "niftty Is Already Installed"
+                alert.informativeText = """
+                The niftty command already points to this copy of Niftty \
+                at \(linkPath).
+                """
+                alert.alertStyle = .informational
+                alert.runModal()
+                return
+            }
+        } catch {
+            // Not a symlink. If something real occupies the path, refuse
+            // to clobber it rather than guessing what it is.
+            if fm.fileExists(atPath: linkPath) {
+                let alert = NSAlert()
+                alert.messageText = "Failed to Install CLI Tool"
+                alert.informativeText = """
+                \(linkPath) already exists and is not a niftty symlink. \
+                Remove it manually if you want Niftty to take it over.
+                """
+                alert.alertStyle = .warning
+                alert.runModal()
+                return
+            }
+        }
+
+        // ln -sf needs root for /usr/local/bin. Run it through osascript
+        // so the user gets the standard administrator authorization prompt.
+        func shellQuote(_ s: String) -> String {
+            "'\(s.replacingOccurrences(of: "'", with: "'\\''"))'"
+        }
+        func appleEscape(_ s: String) -> String {
+            s.replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+        }
+        let shellCommand = "mkdir -p /usr/local/bin && ln -sf "
+            + shellQuote(exePath) + " " + shellQuote(linkPath)
+        let script = "do shell script \"\(appleEscape(shellCommand))\" "
+            + "with administrator privileges"
+
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        task.arguments = ["-e", script]
+        let stderrPipe = Pipe()
+        task.standardError = stderrPipe
+        task.standardOutput = Pipe()
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            do {
+                try task.run()
+            } catch {
+                Task { @MainActor [weak self] in
+                    self?.cliToolInstallFailed("""
+                    Niftty could not start the installation helper.
+
+                    Error: \(error.localizedDescription)
+                    """)
+                }
+                return
+            }
+            task.waitUntilExit()
+
+            let message: String
+            if task.terminationStatus == 0 {
+                message = """
+                The niftty command is now available in any shell, for \
+                example: niftty ssh <host>. Shells that were already \
+                open may need to be restarted to see it.
+                """
+            } else {
+                let stderrData = stderrPipe.fileHandleForReading
+                    .readDataToEndOfFile()
+                let stderrText = String(
+                    decoding: stderrData,
+                    as: UTF8.self
+                ).trimmingCharacters(in: .whitespacesAndNewlines)
+                message = """
+                Niftty could not create \(linkPath).
+
+                Error: \(stderrText.isEmpty ? "unknown error" : stderrText)
+                """
+            }
+
+            let succeeded = task.terminationStatus == 0
+            Task { @MainActor [weak self] in
+                if succeeded {
+                    self?.cliToolInstallSucceeded(message)
+                } else {
+                    self?.cliToolInstallFailed(message)
+                }
+            }
+        }
+    }
+
+    private func cliToolInstallSucceeded(_ message: String) {
+        let alert = NSAlert()
+        alert.messageText = "niftty Command Installed"
+        alert.informativeText = message
+        alert.alertStyle = .informational
+        alert.runModal()
+    }
+
+    private func cliToolInstallFailed(_ message: String) {
+        let alert = NSAlert()
+        alert.messageText = "Failed to Install CLI Tool"
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.runModal()
     }
 }
 

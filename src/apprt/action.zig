@@ -387,6 +387,12 @@ pub const Action = union(Key) {
     /// context was invalidated.
     prediction_candidate_dismissed: PredictionCandidateDismissed,
 
+    /// Install the `niftty` command line tool on the user PATH by creating
+    /// a symlink at `/usr/local/bin/niftty` to the running application
+    /// bundle's executable. This requires administrator approval and is
+    /// only implemented by the macOS apprt.
+    install_cli_tool,
+
     /// Sync with: ghostty_action_tag_e
     pub const Key = enum(c_int) {
         quit,
@@ -464,6 +470,7 @@ pub const Action = union(Key) {
         prediction_command_started,
         prediction_candidate_accepted,
         prediction_candidate_dismissed,
+        install_cli_tool,
 
         test "ghostty.h Action.Key" {
             try lib.checkGhosttyHEnum(Key, "GHOSTTY_ACTION_");

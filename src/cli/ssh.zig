@@ -169,12 +169,19 @@ pub const Options = struct {
 ///
 ///   4. **Working directory reporting**. Interactive logins (no remote
 ///      command) inject a POSIX middleman that runs the login shell as
-///      a child (stdin/stdout/stderr kept on the TTY), polls that
-///      child's cwd, and emits OSC 7 with host `niftty-ssh`. The
-///      watcher is the parent so Linux Yama allows `/proc/<child>/cwd`.
-///      Unresolved `lsof` `readlink:` paths are discarded. The parent
-///      `wait`s the shell once so the session exits. Skipped when a
-///      remote command is given, or with `-N`/`-T`/`-W`.
+///      a child, polls that child's cwd, and emits OSC 7 with host
+///      `niftty-ssh`. The watcher is the parent so Linux Yama allows
+///      `/proc/<child>/cwd`. Unresolved `lsof` `readlink:` paths are
+///      discarded. The parent `wait`s the shell once so the session
+///      exits. Skipped when a remote command is given, or with
+///      `-N`/`-T`/`-W`. The login shell's stdin/stdout/stderr are opened
+///      on the real terminal device path (resolved with `tty` before the
+///      background subshell's stdin becomes `/dev/null`, falling back to
+///      `/dev/tty` if resolution fails) rather than on the `/dev/tty`
+///      path itself: `ttyname()` returns the path an fd was opened with,
+///      and tmux 3.7+ rejects clients whose terminal path is `/dev/tty`
+///      ("open terminal failed: can't use /dev/tty") because its server
+///      runs in a different session where `/dev/tty` resolves elsewhere.
 ///
 /// If `--terminfo` install fails (e.g. `tic` not available on the
 /// remote, filesystem permissions), a warning is logged and the
@@ -976,12 +983,14 @@ const port_watch_script = port_watch_head ++ port_scan_script ++ port_watch_tail
 const cwd_reporter_head =
     \\exec /bin/sh -c 'trap "" INT TTOU TTIN
     \\set +m
+    \\tt=$(tty 2>/dev/null)
+    \\case "$tt" in /*) ;; *) tt=/dev/tty ;; esac
     \\(trap - INT TTOU TTIN;
 ;
 
 /// The cwd reporter script from the login-shell `exec` line onward.
 const cwd_reporter_tail =
-    \\ exec "${SHELL:-/bin/sh}" -l <>/dev/tty >&0 2>&0) &
+    \\ exec "${SHELL:-/bin/sh}" -l <>"$tt" >&0 2>&0) &
     \\spid=$!
     \\last=
     \\while :; do
@@ -1145,7 +1154,9 @@ test "shouldInjectCwdReporter: skip remote command and no-shell" {
 test "cwd reporter watches child not parent" {
     const testing = std.testing;
     try testing.expect(std.mem.indexOf(u8, cwd_reporter_command, "/proc/$spid/cwd") != null);
-    try testing.expect(std.mem.indexOf(u8, cwd_reporter_command, "<>/dev/tty") != null);
+    try testing.expect(std.mem.indexOf(u8, cwd_reporter_command, "tt=$(tty 2>/dev/null)") != null);
+    try testing.expect(std.mem.indexOf(u8, cwd_reporter_command, "<>\"$tt\" >&0 2>&0") != null);
+    try testing.expect(std.mem.indexOf(u8, cwd_reporter_command, "<>/dev/tty") == null);
     try testing.expect(std.mem.indexOf(u8, cwd_reporter_command, "wait $spid") != null);
     try testing.expect(std.mem.indexOf(u8, cwd_reporter_command, "trap - INT TTOU TTIN") != null);
     try testing.expect(std.mem.indexOf(u8, cwd_reporter_command, "/proc/$PPID/cwd") == null);
