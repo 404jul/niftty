@@ -62,6 +62,7 @@ struct HistoryStoreTests {
         directory: String? = nil,
         host: String? = nil,
         previous: String? = nil,
+        previousExitCode: Int32? = nil,
         at date: Date = HistoryStoreTests.frozenDate
     ) async {
         await store.record(
@@ -71,7 +72,8 @@ struct HistoryStoreTests {
             finishedAt: date,
             host: host,
             directory: directory,
-            previousCommand: previous
+            previousCommand: previous,
+            previousExitCode: previousExitCode
         )
     }
 
@@ -108,23 +110,63 @@ struct HistoryStoreTests {
         }
     }
 
-    @Test func transitionRowsSplitByExitCode() async throws {
+    @Test func transitionRowsSplitByPredecessorExitCode() async throws {
         try await withStore { store, url in
-            await record(store, "git st", directory: "/x")
-            await record(store, "git push", exitCode: 0, directory: "/x", previous: "git st")
-            await record(store, "git push", exitCode: 1, directory: "/x", previous: "git st")
+            // The transition context is the exit code of the
+            // *predecessor* — the result the user saw at the prompt that
+            // followed it — not the successor's own result.
+            await record(store, "git st", exitCode: 0, directory: "/x")
+            await record(store, "git st", exitCode: 1, directory: "/x")
+            await record(
+                store, "git push", exitCode: 0, directory: "/x",
+                previous: "git st", previousExitCode: 0)
+            await record(
+                store, "git push", exitCode: 0, directory: "/x",
+                previous: "git st", previousExitCode: 1)
 
             // One upserted command identity...
             let useCount = try #require(scalar(url, "SELECT use_count FROM command WHERE normalized = 'git push'"))
             #expect(useCount == 2)
-            // ...but its transition rows split per exit code, so the
-            // exit-0 query only ever counts exit-0 evidence.
+            // ...but its transition rows split per predecessor exit
+            // code, so the exit-0 query only ever counts exit-0 evidence.
             let transitionRows = try #require(scalar(url, """
                 SELECT COUNT(*) FROM transition t
                 JOIN command n ON n.id = t.next_id
                 WHERE n.normalized = 'git push'
                 """))
             #expect(transitionRows == 2)
+        }
+    }
+
+    /// Regression: the transition's exit code is the predecessor's, so
+    /// "what did I run after a failure" actually finds the successor
+    /// that followed a failure instead of one that itself failed.
+    @Test func transitionIsStoredUnderThePredecessorExitCode() async throws {
+        try await withStore { store, _ in
+            // The predecessor must exist before it can anchor a
+            // transition.
+            await record(store, "cargo check", exitCode: 101)
+            // `cargo fix` only ever followed a *failing* `cargo check`.
+            await record(
+                store, "cargo fix", previous: "cargo check",
+                previousExitCode: 101)
+            // `cargo build` only ever followed a *succeeding* one.
+            await record(
+                store, "cargo build", previous: "cargo check",
+                previousExitCode: 0)
+
+            // Context: the last command (`cargo check`) exited 101, so
+            // the follow-up recorded under that context must surface
+            // here...
+            let afterFailure = await followUps(
+                store, previous: "cargo check", exitCode: 101)
+            #expect(afterFailure.map(\.text) == ["cargo fix"])
+
+            // ...and the two must not cross over: the successful context
+            // only ever saw `cargo build`.
+            let afterSuccess = await followUps(
+                store, previous: "cargo check", exitCode: 0)
+            #expect(afterSuccess.map(\.text) == ["cargo build"])
         }
     }
 
@@ -247,22 +289,34 @@ struct HistoryStoreTests {
     @Test func contextExcludesExitCodeAndHostMismatches() async throws {
         try await withStore { store, _ in
             await record(store, "git st")
-            await record(store, "git push", exitCode: 1, previous: "git st")
+            // `git push` only ever followed a *failing* `git st`, so it
+            // belongs to the exit-1 context and nothing else.
+            await record(
+                store, "git push", exitCode: 0,
+                previous: "git st", previousExitCode: 1)
             await record(store, "git pull", host: "other.example", previous: "git st")
+            await record(store, "npm ci", host: "third.example", previous: "git st")
+            // Recorded without a host: an unidentified host is a
+            // wildcard that every host query also sees, because a remote
+            // session cannot report one.
             await record(store, "cargo build", previous: "git st")
 
-            // Exit-0, host-less context: only rows recorded under it.
+            // An unidentified host (NULL) sees only unidentified rows.
             let rows = await followUps(store, previous: "git st")
             #expect(rows.map(\.text) == ["cargo build"])
             #expect(rows.first?.contextCount == 1)
             #expect(rows.first?.contextTotal == 1)
 
-            // A foreign host sees only its own rows, not host-less
-            // ones.
+            // A named host sees its own rows plus the unidentified ones,
+            // and never another host's. Equal scores leave the row order
+            // to SQLite, so compare as sets.
             let remote = await followUps(store, previous: "git st", host: "other.example")
-            #expect(remote.map(\.text) == ["git pull"])
+            #expect(Set(remote.map(\.text)) == ["git pull", "cargo build"])
+            let third = await followUps(store, previous: "git st", host: "third.example")
+            #expect(Set(third.map(\.text)) == ["npm ci", "cargo build"])
 
-            // Exit-code mismatch excludes the failing follow-up.
+            // Exit-code mismatch excludes the follow-up that was only
+            // ever recorded under a failing predecessor.
             let failing = await followUps(store, previous: "git st", exitCode: 1)
             #expect(failing.map(\.text) == ["git push"])
         }
@@ -306,15 +360,23 @@ struct HistoryStoreTests {
     @Test func acceptanceTipsTieBetweenIdenticalPeers() async throws {
         try await withStore { store, url in
             await record(store, "git st")
-            // Identical context mass: one exit-0 and one exit-1 use per
-            // candidate keeps the exit-0 transition rows at count 1
-            // while use counts reach 2. Frozen timestamps, so score and
-            // feature mass tie exactly and the strict comparison below
-            // rides on the prior tie-break.
-            await record(store, "git push", exitCode: 0, previous: "git st")
-            await record(store, "git push", exitCode: 1, previous: "git st")
-            await record(store, "git pull", exitCode: 0, previous: "git st")
-            await record(store, "git pull", exitCode: 1, previous: "git st")
+            // Identical context mass: splitting the predecessors by exit
+            // code keeps the exit-0 transition rows at count 1 while use
+            // counts reach 2. Frozen timestamps, so score and feature
+            // mass tie exactly and the strict comparison below rides on
+            // the prior tie-break.
+            await record(
+                store, "git push", exitCode: 0,
+                previous: "git st", previousExitCode: 0)
+            await record(
+                store, "git push", exitCode: 1,
+                previous: "git st", previousExitCode: 1)
+            await record(
+                store, "git pull", exitCode: 0,
+                previous: "git st", previousExitCode: 0)
+            await record(
+                store, "git pull", exitCode: 1,
+                previous: "git st", previousExitCode: 1)
 
             // Accepting `git push` lifts its feedback rate from 0.5 to
             // the cap, strictly outranking `git pull`.

@@ -80,7 +80,7 @@ struct SSHPortsPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
-                Text("SSH Ports")
+                Text("SSH Port Forwarding")
                     .font(.headline)
                 if !destination.isEmpty {
                     Text(destination)

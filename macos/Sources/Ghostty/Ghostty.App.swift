@@ -2643,9 +2643,18 @@ extension Ghostty {
                     let ghostty = Unmanaged<App>.fromOpaque(app_ud).takeUnretainedValue()
                     ghostty.config = config
 
-                    // Keep the prediction engine in sync with the runtime
-                    // prediction configuration. Disabling cancels in-flight
-                    // provider work; core clears candidates on its side.
+                    // Keep the prediction layer in sync with the runtime
+                    // prediction configuration. Disabling cancels
+                    // in-flight provider work; core clears candidates on
+                    // its side. The recorder follows the same flag so a
+                    // runtime toggle back on resumes recording and
+                    // serving without a restart. This handler is
+                    // nonisolated, but config changes are delivered on
+                    // the main thread, like the recorder's own
+                    // notifications.
+                    MainActor.assumeIsolated {
+                        ghostty.predictionHistoryRecorder?.setEnabled(config.prediction)
+                    }
                     if !config.prediction {
                         ghostty.predictionEngine.configDidChange(predictionEnabled: false)
                     }

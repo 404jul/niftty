@@ -1,0 +1,10 @@
+{
+  "hosts": {
+    "vps01": {
+      "host": "vps01",
+      "username": "root",
+      "port": 22,
+      "keyPath": "~/.ssh/id_ed25519"
+    }
+  }
+}

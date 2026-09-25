@@ -367,9 +367,11 @@ enum ShellLexer {
                     if threeCharOperators.contains(triple) {
                         appendToken(
                             triple, triple == ";;&" ? .op : .redirect, start: start)
-                        if triple == "<<" {
-                            awaitingHeredocDelimiter = false
-                        }
+                        // `<<-` is a tab-stripping heredoc whose delimiter
+                        // arrives as the next word; `<<<` is a herestring
+                        // and consumes the rest of the line instead, so it
+                        // must not arm delimiter collection. Plain `<<` is
+                        // two characters and is handled below.
                         if triple == "<<-" {
                             awaitingHeredocDelimiter = true
                         }

@@ -19,7 +19,13 @@ final class HistoryRecorder {
     private static let candidateIDPrefix = "history-"
 
     private let store: HistoryStore
-    private let enabled: Bool
+
+    /// Whether the prediction layer is currently enabled. Mutable: the
+    /// prediction config can change at runtime, and the recorder must
+    /// follow it or predictions stay dead (nothing recorded, nothing
+    /// served) until the app restarts. Main-actor isolated like the
+    /// rest of this type.
+    private(set) var enabled: Bool
     private var observer: (any NSObjectProtocol)?
     private var closeObserver: (any NSObjectProtocol)?
 
@@ -77,6 +83,18 @@ final class HistoryRecorder {
         if let closeObserver {
             NotificationCenter.default.removeObserver(closeObserver)
         }
+    }
+
+    // MARK: Runtime configuration
+
+    /// Follow the runtime prediction configuration. Disabling stops
+    /// serving candidates and stops recording observations; re-enabling
+    /// resumes both without needing a restart. Recorded command context
+    /// is kept, so a re-enable can still predict from the command that
+    /// last ran.
+    func setEnabled(_ newValue: Bool) {
+        guard newValue != enabled else { return }
+        enabled = newValue
     }
 
     // MARK: Provider seam
@@ -317,7 +335,8 @@ final class HistoryRecorder {
                     finishedAt: observation.command.finishedAt,
                     host: observation.host,
                     directory: observation.localPath ?? observation.remotePath,
-                    previousCommand: previous?.text
+                    previousCommand: previous?.text,
+                    previousExitCode: previous?.exitCode
                 )
             }
 

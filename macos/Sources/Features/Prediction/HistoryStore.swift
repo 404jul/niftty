@@ -119,6 +119,14 @@ actor HistoryStore {
     /// exit code), where it last ran (`occurrence`), and its feature
     /// rows for the current extractor version. Whitespace-only
     /// commands are skipped.
+    ///
+    /// The transition's `exit_code` is the exit code of the
+    /// *predecessor* (`previousExitCode`), not of the command being
+    /// recorded: retrieval matches a transition against the exit code
+    /// the user saw at the prompt that followed the predecessor, so
+    /// the two must agree. An unknown exit code is stored as 0, which
+    /// is exactly what retrieval queries with (`nil` binds would
+    /// never match any row).
     func record(
         command: String,
         exitCode: Int32?,
@@ -126,7 +134,8 @@ actor HistoryStore {
         finishedAt: Date,
         host: String?,
         directory: String?,
-        previousCommand: String?
+        previousCommand: String?,
+        previousExitCode: Int32?
     ) async {
         guard !disabled, db != nil else { return }
         let normalized = ShellLexer.normalize(command)
@@ -156,7 +165,9 @@ actor HistoryStore {
                         bindInt(transition, 2, id)
                         bindText(transition, 3, directory ?? "")
                         bindText(transition, 4, host ?? "")
-                        bindInt(transition, 5, Int64(exitCode ?? 0))
+                        // The predecessor's exit code is the context the
+                        // user was looking at when this command ran.
+                        bindInt(transition, 5, Int64(previousExitCode ?? 0))
                         bindDouble(transition, 6, finishedAt.timeIntervalSince1970)
                         try stepDone(transition, Self.upsertTransitionSQL)
                     }

@@ -338,11 +338,15 @@ final class PredictionEngine {
     }
 
     /// The prediction configuration changed at runtime. Disabling
-    /// prediction cancels all in-flight provider work; core clears
-    /// candidates and rejects further submissions on its side.
+    /// prediction cancels all in-flight provider work and drops the
+    /// live candidates: core clears them without reporting a
+    /// dismissal, so keeping them here would strand a stale entry that
+    /// later reports a bogus `replaced` outcome. Re-enabling needs no
+    /// action: the next prompt-ready event installs fresh work.
     func configDidChange(predictionEnabled: Bool) {
         guard !predictionEnabled else { return }
         for key in pending.keys { cancelPending(key) }
+        live = [:]
     }
 
     // MARK: Internals
