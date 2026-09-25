@@ -1,7 +1,7 @@
 <!-- LOGO -->
 <h1>
 <p align="center">
- <img src="images/icons/256x256.png" alt="Logo" width="128">
+ <img src="images/icons/256x256.jpg" alt="Logo" width="128">
  <br>Niftty
 </h1>
  <p align="center">

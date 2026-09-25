@@ -9,15 +9,8 @@
     {
       "layers" : [
         {
-          "image-name" : "Niffty.png",
-          "name" : "Niffty",
-          "position" : {
-            "scale" : 0.62,
-            "translation-in-points" : [
-              6,
-              -46
-            ]
-          }
+          "image-name" : "full-background.png",
+          "name" : "full-background"
         }
       ],
       "shadow" : {

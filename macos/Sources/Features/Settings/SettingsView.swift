@@ -41,6 +41,8 @@ struct SettingsView: View {
                     ShadersPage(model: model)
                 } else if model.search.isEmpty && model.selectedCategory == "Keybinds" {
                     KeybindsPage(model: model.keybinds)
+                } else if model.search.isEmpty && model.selectedCategory == "Updates" {
+                    UpdatesPage(model: model)
                 } else {
                     if let error = model.error {
                         HStack {
@@ -126,7 +128,7 @@ struct SettingsView: View {
     }
 }
 
-private struct SettingRow: View {
+struct SettingRow: View {
     @ObservedObject var model: SettingsModel
     let row: SettingsModel.Row
 

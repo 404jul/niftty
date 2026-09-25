@@ -133,9 +133,15 @@ final class SettingsModel: ObservableObject {
     /// participate in the shared Apply / unsaved-changes flow.
     let keybinds: KeybindsModel
 
+    /// The app's shared update view model, observed by the dedicated
+    /// Updates page for its manual check control. The update controller
+    /// owns this instance for the app's lifetime, so the reference is stable.
+    let updateViewModel: UpdateViewModel
+
     init(appDelegate: AppDelegate) {
         self.appDelegate = appDelegate
         self.keybinds = KeybindsModel(appDelegate: appDelegate)
+        self.updateViewModel = appDelegate.updateViewModel
 
         // Row edits inside the keybinds page must recompute the enabled
         // state of the shared Apply button.
@@ -263,6 +269,10 @@ final class SettingsModel: ObservableObject {
 
     func openConfigFile() {
         appDelegate?.ghostty.openConfigFile()
+    }
+
+    func checkForUpdates() {
+        appDelegate?.updateController.checkForUpdates()
     }
 
     func openThemeList() {
