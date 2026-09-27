@@ -39,9 +39,18 @@ class UpdateController {
     ///
     /// This must be called before the updater can check for updates. If starting fails,
     /// the error will be shown to the user.
+    ///
+    /// When automatic checks are enabled, this also checks immediately. Sparkle's own
+    /// scheduler only checks once its interval (a day) has elapsed since the last check,
+    /// persisted across launches, so a relaunch would otherwise not notice a new release.
+    /// Sparkle defers its scheduler by one run loop cycle after `start()` precisely so a
+    /// check issued here takes precedence; it reschedules itself when this check ends.
     func startUpdater() {
         do {
             try updater.start()
+            if updater.automaticallyChecksForUpdates {
+                updater.checkForUpdatesInBackground()
+            }
         } catch {
             userDriver.viewModel.state = .error(.init(
                 error: error,

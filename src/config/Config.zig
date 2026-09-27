@@ -4006,11 +4006,15 @@ term: []const u8 = "xterm-ghostty",
 ///  * `download` - Check for updates, automatically download the update,
 ///    notify the user, but do not automatically install the update.
 ///
-/// If unset, we defer to Sparkle's default behavior, which respects the
-/// preference stored in the standard user defaults (`defaults(1)`).
+/// The default is `check`. This setting is the single source of truth for
+/// update behavior: it overrides any Sparkle preference stored in the user
+/// defaults (`defaults(1)`), including values left behind by older versions.
+///
+/// When checking is enabled, Niftty checks for updates at every launch and
+/// then at least once a day while running.
 ///
 /// Changing this value at runtime works after a small delay.
-@"auto-update": ?AutoUpdate = null,
+@"auto-update": AutoUpdate = .check,
 
 /// The release channel to use for auto-updates.
 ///

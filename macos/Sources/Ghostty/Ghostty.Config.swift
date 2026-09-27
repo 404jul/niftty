@@ -768,14 +768,15 @@ extension Ghostty {
             return .milliseconds(v)
         }
 
-        var autoUpdate: AutoUpdate? {
-            guard let config = self.config else { return nil }
+        var autoUpdate: AutoUpdate {
+            let defaultValue = AutoUpdate.check
+            guard let config = self.config else { return defaultValue }
             var v: UnsafePointer<Int8>?
             let key = "auto-update"
-            guard ghostty_config_get(config, &v, key, UInt(key.lengthOfBytes(using: .utf8))) else { return nil }
-            guard let ptr = v else { return nil }
+            guard ghostty_config_get(config, &v, key, UInt(key.lengthOfBytes(using: .utf8))) else { return defaultValue }
+            guard let ptr = v else { return defaultValue }
             let str = String(cString: ptr)
-            return AutoUpdate(rawValue: str)
+            return AutoUpdate(rawValue: str) ?? defaultValue
         }
 
         var autoUpdateChannel: AutoUpdateChannel {
