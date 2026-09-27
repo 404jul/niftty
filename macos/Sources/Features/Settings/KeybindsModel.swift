@@ -470,9 +470,12 @@ final class KeybindsModel: ObservableObject {
             clash.map { Self.displayTrigger($0) }.sorted().joined(separator: ", ")
     }
 
+    /// True when an edited or added binding would write an invalid line.
+    /// Untouched rows are never re-rendered on save (their original lines
+    /// are kept verbatim), so they must not block applying other settings.
     var hasInvalidRows: Bool {
         rows.contains { row in
-            guard !row.removed else { return false }
+            guard !row.removed, isModified(row) else { return false }
             return !validation(for: row).isValid
         }
     }

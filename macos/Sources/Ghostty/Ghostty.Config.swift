@@ -198,13 +198,19 @@ extension Ghostty {
         /// the real Ghostty parser. Returns the canonical form on success or
         /// a user-presentable error.
         static func parseKeybindLine(_ line: String) -> KeybindParseResult {
+            // The C call must happen inside the closure: the buffer pointer
+            // is only valid there, and optimized builds free the array as
+            // soon as its last use has passed.
             let bytes = Array(line.utf8)
-            guard let base = bytes.withUnsafeBufferPointer({ $0.baseAddress }) else {
+            let result = bytes.withUnsafeBufferPointer { buffer -> String? in
+                guard let base = buffer.baseAddress else { return nil }
+                return AllocatedString(ghostty_keybind_parse(
+                    base,
+                    UInt(buffer.count))).string
+            }
+            guard let result else {
                 return KeybindParseResult(ok: false, error: "invalid keybind format")
             }
-            let result = AllocatedString(ghostty_keybind_parse(
-                base,
-                UInt(bytes.count))).string
             guard let decoded = try? JSONDecoder().decode(
                 KeybindParseResult.self,
                 from: Data(result.utf8))
