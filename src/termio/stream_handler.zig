@@ -55,6 +55,10 @@ pub const StreamHandler = struct {
     /// (OSC 5522) write transaction; exceeding it aborts with EFBIG.
     clipboard_write_limit: usize,
 
+    /// Whether inline prediction is enabled (the `prediction` config).
+    /// Gates `notifyPromptInput`.
+    prediction: bool,
+
     //---------------------------------------------------------------
     // Internal state
 
@@ -89,6 +93,17 @@ pub const StreamHandler = struct {
     /// this to determine if we need to default the window title.
     seen_title: bool = false,
 
+    /// Whether the last `notifyPromptInput` saw the cursor in a shell
+    /// input region, so leaving it notifies the surface once.
+    prompt_input_notified: bool = false,
+
+    /// Set when a `.prompt_input` surface message is queued and cleared
+    /// by the surface (GUI thread) when it handles it, so a burst of
+    /// output batches at a prompt (e.g. a large paste echoing in many
+    /// reads) queues one message instead of one per batch. The surface
+    /// reads the latest screen state when it handles the message.
+    prompt_input_pending: std.atomic.Value(bool) = .init(false),
+
     pub const Stream = terminal.Stream(StreamHandler);
 
     /// True if we have tmux control mode built in.
@@ -122,9 +137,35 @@ pub const StreamHandler = struct {
         self.enquiry_response = config.enquiry_response;
         self.terminal.setDefaultCursorStyle(config.cursor_style);
         self.terminal.setDefaultCursorBlink(config.cursor_blink);
+        self.prediction = config.prediction;
 
         // The config could have changed any of our colors so update mode 2031
         self.messageWriter(.{ .color_scheme_report = .{ .force = false } });
+    }
+
+    /// Tell the surface that the shell input line may have changed.
+    /// Call after a batch of pty output was processed, with the renderer
+    /// state mutex held. While the cursor is in a shell input region
+    /// (OSC 133 B..C) on the primary screen every batch notifies, since
+    /// echoes, completions, and history navigation all redraw the line
+    /// through output. Leaving the region without OSC 133 C (e.g. a
+    /// reset or the alternate screen) notifies once more so the surface
+    /// can drop its context. At most one message is queued at a time
+    /// (see `prompt_input_pending`).
+    pub fn notifyPromptInput(self: *StreamHandler) void {
+        if (!self.prediction) {
+            self.prompt_input_notified = false;
+            return;
+        }
+
+        const at_input = self.terminal.screens.active_key == .primary and
+            self.terminal.screens.active.cursor.semantic_content == .input;
+        if ((at_input or self.prompt_input_notified) and
+            !self.prompt_input_pending.swap(true, .acq_rel))
+        {
+            self.surfaceMessageWriter(.prompt_input);
+        }
+        self.prompt_input_notified = at_input;
     }
 
     inline fn surfaceMessageWriter(
@@ -1428,13 +1469,6 @@ pub const StreamHandler = struct {
         cmd: Stream.Action.SemanticPrompt,
     ) !void {
         switch (cmd.action) {
-            .end_prompt_start_input => {
-                // OSC 133 B: the shell finished drawing its prompt and
-                // input can begin. This is the boundary where a new
-                // prediction context starts.
-                self.surfaceMessageWriter(.prompt_ready);
-            },
-
             .end_input_start_output => {
                 // Decode the command line the shell reported (if any) so
                 // the surface can observe it. Shells without a cmdline
@@ -1478,7 +1512,11 @@ pub const StreamHandler = struct {
                 self.surfaceMessageWriter(.{ .stop_command = code });
             },
 
-            // Handled by Terminal, no special handling by us
+            // Handled by Terminal, no special handling by us. OSC 133 B
+            // needs no message of its own: it always arrives while
+            // processing pty output, after which `notifyPromptInput`
+            // tells the surface the input line may have changed.
+            .end_prompt_start_input,
             .end_prompt_start_input_terminate_eol,
             .fresh_line,
             .fresh_line_new_prompt,

@@ -360,6 +360,35 @@ actor HistoryStore {
         }
     }
 
+    /// The non-empty directories each of `commandIDs` was recorded in
+    /// on `host` (or on host-less rows), for directory-aware candidate
+    /// validation. Commands with no such occurrence are absent from
+    /// the result.
+    func occurrenceDirectories(commandIDs: [Int64], host: String?) async -> [Int64: [String]] {
+        guard !disabled, db != nil, !commandIDs.isEmpty else { return [:] }
+        let sql = Self.occurrenceDirectoriesSQL(ids: commandIDs)
+        do {
+            return try withStatement(sql) { stmt in
+                bindText(stmt, 1, host ?? "")
+                var directories: [Int64: [String]] = [:]
+                var rc = sqlite3_step(stmt)
+                while rc == SQLITE_ROW {
+                    directories[sqlite3_column_int64(stmt, 0), default: []]
+                        .append(columnText(stmt, 1))
+                    rc = sqlite3_step(stmt)
+                }
+                guard rc == SQLITE_DONE else {
+                    throw StoreError.step(sql, rc)
+                }
+                return directories
+            }
+        } catch {
+            historyLogger.error(
+                "occurrenceDirectories failed: \(String(describing: error), privacy: .public)")
+            return [:]
+        }
+    }
+
     // MARK: Retrieval helpers
 
     /// One row of the 8-column shape shared by both transition
@@ -630,6 +659,20 @@ actor HistoryStore {
               SELECT p.hash FROM feature p
               WHERE p.extractor = ?1 AND p.command_id = ?2)
         GROUP BY f.command_id
+        """
+    }
+
+    /// Distinct non-empty occurrence directories per command id (inline
+    /// IN list, interpolated like `featureMassSQL`) on host ?1 or on
+    /// host-less rows.
+    private static func occurrenceDirectoriesSQL(ids: [Int64]) -> String {
+        let list = ids.map(String.init).joined(separator: ",")
+        return """
+        SELECT DISTINCT o.command_id, o.directory
+        FROM occurrence o
+        WHERE o.command_id IN (\(list))
+          AND o.directory != ''
+          AND (o.host = ?1 OR o.host = '')
         """
     }
 

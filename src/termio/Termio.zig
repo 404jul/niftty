@@ -178,6 +178,7 @@ pub const DerivedConfig = struct {
     osc_color_report_format: configpkg.Config.OSCColorReportFormat,
     clipboard_write: configpkg.ClipboardAccess,
     clipboard_write_limit: usize,
+    prediction: bool,
     enquiry_response: []const u8,
     conditional_state: configpkg.ConditionalState,
 
@@ -215,6 +216,7 @@ pub const DerivedConfig = struct {
             .osc_color_report_format = config.@"osc-color-report-format",
             .clipboard_write = config.@"clipboard-write",
             .clipboard_write_limit = config.@"clipboard-write-limit-bytes".value,
+            .prediction = config.prediction,
             .enquiry_response = try alloc.dupe(u8, config.@"enquiry-response"),
             .conditional_state = config._conditional_state,
 
@@ -304,6 +306,7 @@ pub fn init(self: *Termio, alloc: Allocator, opts: termio.Options) !void {
         .osc_color_report_format = opts.config.osc_color_report_format,
         .clipboard_write = opts.config.clipboard_write,
         .clipboard_write_limit = opts.config.clipboard_write_limit,
+        .prediction = opts.config.prediction,
         .enquiry_response = opts.config.enquiry_response,
     };
 
@@ -723,12 +726,23 @@ fn processOutputLocked(self: *Termio, buf: []const u8) void {
         self.terminal_stream.nextSlice(buf);
     }
 
+    // Tell the surface when the shell input line may have changed so
+    // prediction can resync from the screen.
+    self.terminal_stream.handler.notifyPromptInput();
+
     // If our stream handling caused messages to be sent to the mailbox
     // thread, then we need to wake it up so that it processes them.
     if (self.terminal_stream.handler.termio_messaged) {
         self.terminal_stream.handler.termio_messaged = false;
         self.mailbox.notify();
     }
+}
+
+/// The surface is handling a `.prompt_input` message: allow the next one
+/// to be queued. Call from the surface thread before it reads the screen
+/// so output processed afterwards notifies again.
+pub fn promptInputHandled(self: *Termio) void {
+    self.terminal_stream.handler.prompt_input_pending.store(false, .release);
 }
 
 /// Sends a DSR response for the current color scheme to the pty.

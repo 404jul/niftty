@@ -1290,11 +1290,15 @@ command: ?Command = null,
 
 /// Enable Niftty's inline prediction layer.
 ///
-/// When enabled, Niftty tracks the terminal's shell prompt lifecycle (via
-/// OSC 133 semantic prompt markers), accepts prediction candidates supplied
-/// by the embedding application, and renders the candidate as faint "ghost"
-/// text at the cursor while the shell is sitting at an empty prompt. The
-/// candidate can then be accepted as ordinary typed input with the
+/// When enabled, Niftty accepts prediction candidates supplied by the
+/// embedding application and renders the candidate as faint "ghost" text
+/// at the end of the shell input line (empty or partially typed) on the
+/// primary screen. The typed line is read from the screen using OSC 133
+/// semantic prompt markers, so it follows completion, history navigation,
+/// paste, and focus changes. Ghost text is hidden when the cursor is not at
+/// the end of the line or the shell draws its own suggestion after the
+/// cursor, and it stops before any text already on screen. The candidate
+/// can then be accepted as ordinary typed input with the
 /// `accept_prediction` keybinding action (`performable:shift+tab` and
 /// `performable:arrow_right` by default; when no candidate is visible the key
 /// falls through to the program in the terminal as usual).
@@ -1305,10 +1309,14 @@ command: ?Command = null,
 /// `GHOSTTY_PREDICTION` environment variable, which is only set to `1`
 /// for shells started while this configuration is enabled.
 ///
-/// This has no effect on remote sessions beyond what the local renderer
-/// displays: no prediction-related sequences are ever sent to the terminal,
-/// and accepting a candidate only writes the candidate text as ordinary
-/// keyboard input.
+/// Predictions work wherever the shell emits Niftty's shell integration
+/// marks. Over SSH that means the remote shell must load the integration:
+/// `niftty +ssh` does this for zsh and bash 4+ login shells when the
+/// `ssh-integration` feature of `shell-integration-features` is enabled.
+/// Inside tmux the marks never reach Niftty (tmux does not forward OSC
+/// 133), so there are no predictions there. No prediction-related
+/// sequences are ever sent to the terminal, and accepting a candidate only
+/// writes the candidate text as ordinary keyboard input.
 prediction: bool = true,
 
 /// Extra environment variables to pass to commands launched in a terminal
@@ -3021,6 +3029,18 @@ keybind: Keybinds = .{},
 ///     cache manually using various arguments.
 ///     (Available since: 1.2.0)
 ///
+///   * `ssh-integration` - Enable Niftty's shell integration on remote hosts
+///     reached through the `ssh` wrapper. During the one-time remote setup
+///     (shared with `ssh-terminfo` and its cache, see `+ssh-cache`), installs
+///     Niftty's zsh and bash shell integration under
+///     `~/.local/share/niftty/shell-integration/<hash>` on the remote host,
+///     then loads it into the interactive login shell so prompt marks, the
+///     remote working directory, and command history for inline predictions
+///     work over SSH. The remote login shell must be zsh or bash 4+ (Apple's
+///     `/bin/bash` 3.2 is not supported); other shells start unchanged.
+///     Inside tmux on the remote host the prompt marks cannot
+///     reach Niftty, because tmux does not forward them.
+///
 ///   * `path` - Add Niftty's binary directory to PATH. This ensures the `niftty`
 ///     command is available in the shell even if shell init scripts reset PATH.
 ///     This is particularly useful on macOS where PATH is often overridden by
@@ -3030,6 +3050,7 @@ keybind: Keybinds = .{},
 /// when both `ssh-env` and `ssh-terminfo` are enabled, Niftty will install its
 /// terminfo on remote hosts and use `xterm-ghostty` as TERM, falling back to
 /// `xterm-256color` with environment variables if terminfo installation fails.
+/// `ssh-integration` shares the same one-time setup connection and cache entry.
 @"shell-integration-features": ShellIntegrationFeatures = .{},
 
 /// Automatically forward TCP ports opened by remote development processes
@@ -9033,6 +9054,7 @@ pub const ShellIntegrationFeatures = packed struct {
     title: bool = true,
     @"ssh-env": bool = false,
     @"ssh-terminfo": bool = false,
+    @"ssh-integration": bool = false,
     path: bool = true,
 };
 

@@ -9,7 +9,7 @@ export module ghostty {
   @complete external
   export def --wrapped ssh [...args] {
 
-    if not ((has_feature "ssh-env") or (has_feature "ssh-terminfo")) {
+    if not ((has_feature "ssh-env") or (has_feature "ssh-terminfo") or (has_feature "ssh-integration")) {
       ^ssh ...$args
       return
     }
@@ -21,6 +21,9 @@ export module ghostty {
     }
     if not (has_feature "ssh-terminfo") {
       $flags = ($flags ++ ["--terminfo=false"])
+    }
+    if not (has_feature "ssh-integration") {
+      $flags = ($flags ++ ["--shell-integration=false"])
     }
     ^$niftty "+ssh" ...$flags "--" ...$args
   }

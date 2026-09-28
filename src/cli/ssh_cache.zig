@@ -25,16 +25,21 @@ pub const Options = struct {
     }
 };
 
-/// Manage the SSH terminfo cache for automatic remote host setup.
+/// Manage the SSH remote setup cache for automatic remote host setup.
 ///
-/// The `+ssh` action installs Ghostty's terminfo on remote hosts and records
-/// each success in this cache so it doesn't re-upload on later connections.
-/// (`+ssh` runs automatically from the shell integration when
-/// `shell-integration-features` includes `ssh-terminfo`.) This command
-/// inspects and maintains that cache.
+/// The `+ssh` action installs Ghostty's terminfo and/or Niftty's zsh/bash
+/// shell integration on remote hosts and records each fully successful setup
+/// in this cache so it doesn't re-upload on later connections. (`+ssh` runs
+/// automatically from the shell integration when `shell-integration-features`
+/// includes `ssh-terminfo` or `ssh-integration`.) This command inspects and
+/// maintains that cache.
 ///
 /// The cache stores destinations (a hostname or user@hostname) along with
-/// timestamps.
+/// timestamps and a version naming what was installed there: the terminfo
+/// version, with a `+si-<hash>` suffix (or just `si-<hash>`) when the shell
+/// integration was installed too. A different version is a cache miss, so a
+/// changed payload is installed again. Removing a destination re-runs the
+/// setup on its next connection.
 ///
 /// A positional destination queries the cache: `user@hostname` shows that
 /// exact entry, while a bare `hostname` shows every cached entry for that

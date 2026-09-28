@@ -89,6 +89,9 @@
     if (not (has-value $features ssh-terminfo)) {
       set flags = (conj $flags --terminfo=false)
     }
+    if (not (has-value $features ssh-integration)) {
+      set flags = (conj $flags --shell-integration=false)
+    }
     $niftty +ssh $@flags -- $@args
   }
 

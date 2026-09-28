@@ -176,32 +176,22 @@ readonly: bool = false,
 command_timer: ?std.Io.Timestamp = null,
 
 /// Monotonic revision of the prediction context. Every event that
-/// invalidates the context (a new prompt, command lifecycle, focus
-/// loss, IME preedit, paste, disabling the configuration, or an edit
-/// to the typed input line) increments this. Modifier-only key events
-/// do not: a candidate stays valid while the typed prefix is
-/// unchanged. Candidate submissions and acceptance require an exact
-/// match against the current revision (and the typed input line the
-/// candidate was computed for) so stale candidates can never be
-/// displayed or inserted.
+/// invalidates the context (a change of the screen-derived input line,
+/// command lifecycle, focus loss, IME preedit, key input or paste,
+/// disabling the configuration) increments this. Candidate
+/// submissions and acceptance require an exact match against the
+/// current revision (and the input line the candidate was computed
+/// for) so stale candidates can never be displayed or inserted.
 prediction_revision: u64 = 0,
 
-/// The typed input line at the current prompt, tracked from printable
-/// key events while shell integration reports the cursor at a prompt.
-/// This is the prefix candidates are computed against; backspacing
-/// and re-typing keeps it in sync with the visible line. Any other
-/// key that reaches the pty (enter, arrows, control keys) stops
-/// tracking because the line-editing position can no longer be known.
+/// The screen-derived input line (see `Terminal.promptInput`) the
+/// current prediction context was requested for. Candidates are
+/// computed against this prefix.
 prediction_input: std.ArrayListUnmanaged(u8) = .empty,
 
-/// Whether `prediction_input` still matches the shell's editable line.
-/// Cursor movement and other opaque line-editor operations make it
-/// false until the next prompt.
+/// Whether a prediction context is open for `prediction_input`: a
+/// request was issued for it and a candidate may be shown.
 prediction_input_valid: bool = false,
-
-/// The active command line reported by shell integration (OSC 133 C),
-/// kept while the command runs. Owned by this surface.
-prediction_active_command: ?[]u8 = null,
 
 /// Search state
 search: ?Search = null,
@@ -873,7 +863,6 @@ pub fn deinit(self: *Surface) void {
     self.keyboard.sequence_queued.deinit(self.alloc);
     // Clean up our prediction state
     if (self.renderer_state.prediction) |p| p.deinit(self.alloc);
-    if (self.prediction_active_command) |cmd| self.alloc.free(cmd);
     self.prediction_input.deinit(self.alloc);
 
     // Clean up our font grid
@@ -1207,32 +1196,14 @@ pub fn handleMessage(self: *Surface, msg: Message) !void {
             // context and dismisses any visible candidate.
             self.predictionInvalidate(.command);
 
-            // Keep the active command for observation. When prediction is
-            // disabled we drop it: no observation is ever sent.
-            if (self.prediction_active_command) |old| {
-                self.alloc.free(old);
-                self.prediction_active_command = null;
-            }
-
+            // Report the command line for observation. When prediction
+            // is disabled no observation is ever sent.
             if (self.config.prediction) {
-                if (command.slice().len > 0) {
-                    self.prediction_active_command = self.alloc.dupe(
-                        u8,
-                        command.slice(),
-                    ) catch |err| {
-                        log.warn(
-                            "error storing active command for prediction err={}",
-                            .{err},
-                        );
-                        return;
-                    };
-                }
-
                 _ = self.rt_app.performAction(
                     .{ .surface = self },
                     .prediction_command_started,
                     .{
-                        .command = self.prediction_active_command orelse "",
+                        .command = command.slice(),
                         .revision = self.prediction_revision,
                     },
                 ) catch |err| {
@@ -1244,32 +1215,9 @@ pub fn handleMessage(self: *Surface, msg: Message) !void {
             }
         },
 
-        .prompt_ready => {
-            // A new prompt starts a new prediction context.
-            self.predictionInvalidate(.prompt);
-            self.prediction_input_valid = self.config.prediction;
-
-            // The command that was running (if any) has finished; clear
-            // the retained command line.
-            if (self.prediction_active_command) |old| {
-                self.alloc.free(old);
-                self.prediction_active_command = null;
-            }
-
-            log.info("prediction prompt ready revision={}", .{self.prediction_revision});
-
-            if (self.config.prediction) {
-                _ = self.rt_app.performAction(
-                    .{ .surface = self },
-                    .prediction_prompt_ready,
-                    .{ .revision = self.prediction_revision, .input = "" },
-                ) catch |err| {
-                    log.warn(
-                        "apprt failed to notify prediction prompt ready={}",
-                        .{err},
-                    );
-                };
-            }
+        .prompt_input => {
+            self.io.promptInputHandled();
+            self.predictionSync();
         },
 
         .stop_command => |v| timer: {
@@ -1908,16 +1856,15 @@ pub fn updateConfig(
     }
 
     // If prediction was disabled, immediately clear all prediction
-    // state: dismiss any visible candidate, drop the retained command
-    // line, and invalidate the context. New submissions are rejected by
-    // the config check in predictionSubmit and observations stop being
-    // sent, since every sender below is gated on the config.
+    // state: dismiss any visible candidate and invalidate the context.
+    // New submissions are rejected by the config check in
+    // predictionSubmit and observations stop being sent, since every
+    // sender below is gated on the config. If it is enabled, resync
+    // from the screen so a prompt already showing gets a context.
     if (!self.config.prediction) {
         self.predictionInvalidate(.disabled);
-        if (self.prediction_active_command) |old| {
-            self.alloc.free(old);
-            self.prediction_active_command = null;
-        }
+    } else {
+        self.predictionSync();
     }
 
     // If we are in the middle of a key sequence, clear it.
@@ -2676,7 +2623,8 @@ fn balancePaddingIfNeeded(self: *Surface) void {
 /// with dead key states, for example, when typing an accent character.
 /// This should be called with null to reset the preedit state.
 ///
-/// A non-empty preedit invalidates the prediction context.
+/// A non-empty preedit invalidates the prediction context; clearing the
+/// preedit resyncs it from the screen.
 ///
 /// The core surface will NOT reset the preedit state on charCallback or
 /// keyCallback and we rely completely on the apprt implementation to track
@@ -2693,9 +2641,12 @@ pub fn preeditCallback(self: *Surface, preedit_: ?[]const u8) !void {
     // A non-empty IME preedit invalidates the prediction context. This
     // must happen before the mutex is taken below since invalidation
     // takes it too.
-    if (preedit_) |text| {
-        if (text.len > 0) self.predictionInvalidate(.preedit);
-    }
+    const clearing = if (preedit_) |text| text.len == 0 else true;
+    if (!clearing) self.predictionInvalidate(.preedit);
+
+    // Clearing the preedit resyncs prediction. Declared before the lock
+    // so it runs after the unlock below, observing the cleared preedit.
+    defer if (clearing) self.predictionSync();
 
     self.renderer_state.mutex.lockUncancelable(global.io());
     defer self.renderer_state.mutex.unlock(global.io());
@@ -2770,9 +2721,9 @@ pub const PredictionSubmission = struct {
     /// exactly match the surface's current revision.
     revision: u64,
 
-    /// The typed input line the candidate was computed for. Must
-    /// exactly match the surface's currently tracked input line
-    /// (empty at a fresh empty prompt).
+    /// The input line the candidate was computed for. Must exactly
+    /// match the surface's current screen-derived input line (empty at
+    /// an empty prompt).
     input: []const u8,
     /// The insertion text. Must be non-empty valid UTF-8 with no C0/C1
     /// controls and at most `rendererpkg.State.Prediction.max_text_len`
@@ -2806,7 +2757,7 @@ pub fn predictionSubmit(self: *Surface, sub: PredictionSubmission) !bool {
         return false;
     }
     if (!self.prediction_input_valid) {
-        log.info("prediction submission rejected: input line is not tracked", .{});
+        log.info("prediction submission rejected: no open input context", .{});
         return false;
     }
 
@@ -2847,9 +2798,9 @@ pub fn predictionSubmit(self: *Surface, sub: PredictionSubmission) !bool {
         log.info("prediction submission rejected: cursor not at prompt", .{});
         return false;
     }
-    // The candidate must have been computed for exactly the typed
-    // input line that is still current; typing since then invalidates
-    // it even before the revision moves on.
+    // The candidate must have been computed for exactly the input line
+    // that is still current; a line change since then invalidates it
+    // even before the revision moves on.
     if (!std.mem.eql(u8, sub.input, self.prediction_input.items)) {
         log.info("prediction submission rejected: input prefix changed", .{});
         return false;
@@ -2899,7 +2850,7 @@ pub fn predictionClear(self: *Surface) void {
 /// ever appended. Returns false when there is no still-valid candidate
 /// (or the cursor is no longer at a prompt), so a performable keybinding
 /// falls through to the terminal. Failure does not invalidate the
-/// context: the candidate stays alive for the rest of the prompt.
+/// context.
 fn predictionAccept(self: *Surface) !bool {
     const accepted = accepted: {
         self.renderer_state.mutex.lockUncancelable(global.io());
@@ -2942,24 +2893,15 @@ fn predictionAccept(self: *Surface) !bool {
     };
     defer self.alloc.free(accepted.text);
 
-    // Build the write before updating the tracked line. Prediction
+    // Build the write before touching prediction state. Prediction
     // bookkeeping must never prevent accepted input from reaching the pty.
     const write_req = try termio.Message.writeReq(self.alloc, accepted.text);
-    var input_valid = self.prediction_input_valid and
-        self.prediction_input.items.len <= rendererpkg.State.Prediction.max_text_len and
-        accepted.text.len <=
-            rendererpkg.State.Prediction.max_text_len - self.prediction_input.items.len;
-    if (input_valid) {
-        self.prediction_input.appendSlice(self.alloc, accepted.text) catch |err| {
-            log.warn("error tracking accepted prediction input err={}", .{err});
-            input_valid = false;
-        };
-    }
-    if (input_valid) {
-        self.predictionInvalidateKeepInput(.key);
-    } else {
-        self.predictionInvalidate(.key);
-    }
+
+    // Start a new revision but keep the context open for the old input
+    // line: output processed before the shell echoes the insertion
+    // resyncs to that same line and is a no-op, while the echo changes
+    // the line and requests a fresh candidate.
+    self.predictionInvalidateKeepInput(.key);
 
     // Queue exactly the candidate bytes through the normal (readonly
     // checked) write path. No Enter is synthesized.
@@ -3013,8 +2955,8 @@ fn predictionDismissLocked(
 
 /// Invalidate the prediction context: bump the revision so in-flight or
 /// stored candidates for the old revision become stale, dismiss any
-/// visible candidate with the given reason, and reset the tracked
-/// typed input line.
+/// visible candidate with the given reason, and close the context for
+/// the current input line.
 fn predictionInvalidate(
     self: *Surface,
     reason: apprt.action.PredictionCandidateDismissed.DismissReason,
@@ -3024,8 +2966,8 @@ fn predictionInvalidate(
     self.prediction_input_valid = false;
 }
 
-/// `predictionInvalidate` without resetting the tracked input line,
-/// for the input-tracking path that has already updated it.
+/// `predictionInvalidate` without resetting the input line, for callers
+/// that keep (or have already replaced) it.
 fn predictionInvalidateKeepInput(
     self: *Surface,
     reason: apprt.action.PredictionCandidateDismissed.DismissReason,
@@ -3034,114 +2976,76 @@ fn predictionInvalidateKeepInput(
     self.predictionDismissLocked(reason);
 }
 
-/// Track a key press (or auto-repeat) that produced pty input and
-/// update the prediction input line. Plain printable text extends the
-/// line, backspace removes the last character, a plain right arrow is
-/// a no-op (forward-char at the end of the line, where the cursor
-/// always is while tracking is valid), and anything else (enter,
-/// other arrows, control keys) gives up on tracking: the
-/// line-editing position can no longer be known, so the context is
-/// invalidated without a new request. A changed line requests a fresh
-/// candidate for the new prefix.
+/// Resync the prediction context from the screen-derived input line
+/// (see `Terminal.promptInput`). An unchanged line keeps the context and
+/// any visible candidate (shell prompt redraws must not flicker it); a
+/// changed line starts a new context and requests a candidate for it;
+/// an undeterminable line closes the context.
 ///
-/// Must be called from the GUI thread, only for events that actually
-/// produced encoded pty input, and never for release actions.
-fn predictionTrackKey(self: *Surface, event: input.KeyEvent) void {
-    assert(event.action != .release);
+/// Must be called from the GUI thread without the renderer mutex held.
+fn predictionSync(self: *Surface) void {
     if (!self.config.prediction) return;
-    if (!self.prediction_input_valid) return;
+    if (self.child_exited) return;
+    if (self.readonly) return;
+    if (!self.focused) return;
 
-    // Only track while shell integration says the cursor is at a
-    // prompt on the primary screen.
-    const at_prompt = at_prompt: {
+    var buf: [rendererpkg.State.Prediction.max_text_len]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    const current: ?[]const u8 = current: {
         self.renderer_state.mutex.lockUncancelable(global.io());
         defer self.renderer_state.mutex.unlock(global.io());
-        break :at_prompt self.io.terminal.cursorIsAtPrompt();
+
+        const t: *terminal.Terminal = &self.io.terminal;
+        if (t.flags.password_input) break :current null;
+        if (self.renderer_state.preedit != null) break :current null;
+
+        // A write failure means the line is longer than the buffer.
+        const known = t.promptInput(&w) catch break :current null;
+        break :current if (known) w.buffered() else null;
     };
-    if (!at_prompt) {
-        self.predictionInvalidate(.key);
-        return;
-    }
 
-    // Plain text with no modifiers beyond shift extends the line.
-    const plain_text = event.utf8.len > 0 and
-        !event.mods.ctrl and !event.mods.alt and !event.mods.super and
-        event.key != .backspace and isPrintableUtf8(event.utf8);
-
-    if (plain_text and event.utf8.len + self.prediction_input.items.len <=
-        rendererpkg.State.Prediction.max_text_len)
-    {
-        self.prediction_input.appendSlice(self.alloc, event.utf8) catch |err| {
-            log.warn("error tracking prediction input err={}", .{err});
-            self.predictionInvalidate(.key);
-            return;
-        };
-    } else if (event.key == .backspace and
-        !event.mods.ctrl and !event.mods.alt and !event.mods.super)
-    {
-        // Remove the last UTF-8 scalar from the line.
-        const items = self.prediction_input.items;
-        if (items.len > 0) {
-            var len = items.len - 1;
-            while (len > 0 and (items[len] & 0xC0) == 0x80) len -= 1;
-            self.prediction_input.shrinkRetainingCapacity(len);
-        }
-    } else if (event.key == .arrow_right and
-        !event.mods.shift and !event.mods.ctrl and
-        !event.mods.alt and !event.mods.super)
-    {
-        // A plain right arrow is forward-char in the shell's line
-        // editor, and while input tracking is valid the cursor sits at
-        // the end of the line: printable keys append there, backspace
-        // deletes there, and anything else gives up on tracking below.
-        // forward-char at end of line is a no-op in the standard emacs
-        // and vi-insert editing modes, so the tracked line is still
-        // exact. Keep the context — including any visible candidate —
-        // rather than stopping predictions until the next prompt. A
-        // shell that binds right arrow to a line-changing widget
-        // (e.g. zsh-autosuggestions on the remote host) can desync
-        // the tracked prefix; the worst case is a stale-prefix
-        // candidate the user sees before Enter, never silent
-        // misinput.
+    const line = current orelse {
+        if (self.prediction_input_valid) self.predictionInvalidate(.prompt);
         return;
-    } else {
-        // Any other key that reaches the pty (enter, other arrows,
-        // control keys, an over-long line) can change the shell editor
-        // in ways we cannot reconstruct. Stop predicting until the
-        // next prompt.
-        self.predictionInvalidate(.key);
-        return;
-    }
+    };
 
-    // The line changed: the old candidate was computed for a different
-    // prefix, so start a new context and request a candidate for it.
-    self.predictionInvalidateKeepInput(.key);
-    const input_line: []const u8 = if (self.prediction_input.items.len > 0)
-        self.prediction_input.items
-    else
-        "";
+    if (self.prediction_input_valid and
+        std.mem.eql(u8, line, self.prediction_input.items)) return;
+
+    self.predictionInvalidateKeepInput(.prompt);
+    self.prediction_input.clearRetainingCapacity();
+    self.prediction_input.appendSlice(self.alloc, line) catch |err| {
+        log.warn("error storing prediction input err={}", .{err});
+        self.predictionInvalidate(.prompt);
+        return;
+    };
+    self.prediction_input_valid = true;
+
     _ = self.rt_app.performAction(
         .{ .surface = self },
         .prediction_prompt_ready,
-        .{ .revision = self.prediction_revision, .input = input_line },
+        .{ .revision = self.prediction_revision, .input = self.prediction_input.items },
     ) catch |err| {
         log.warn(
-            "apprt failed to notify prediction input change={}",
+            "apprt failed to notify prediction prompt ready={}",
             .{err},
         );
     };
 }
 
-/// True if the UTF-8 text contains only printable scalars: no C0/C1
-/// controls and no DEL.
-fn isPrintableUtf8(text: []const u8) bool {
-    var it = std.unicode.Utf8View.init(text) catch return false;
-    var iter = it.iterator();
-    while (iter.nextCodepoint()) |cp| {
-        if (cp < 0x20) return false;
-        if (cp >= 0x7F and cp <= 0x9F) return false;
-    }
-    return true;
+/// Handle a key press (or auto-repeat) that produced pty input. Any key
+/// reaching the pty may change the shell's line, so the candidate is
+/// dismissed immediately: a stale candidate can never be accepted
+/// before the shell echoes. The echo's output resyncs the context (see
+/// `predictionSync`). Modifier-only keys leave the context alone.
+///
+/// Must be called from the GUI thread, only for events that actually
+/// produced encoded pty input, and never for release actions.
+fn predictionKeyInput(self: *Surface, event: input.KeyEvent) void {
+    assert(event.action != .release);
+    if (!self.config.prediction) return;
+    if (event.key.modifier()) return;
+    self.predictionInvalidate(.key);
 }
 
 /// Returns true if the given key event would trigger a keybinding
@@ -3245,10 +3149,10 @@ pub fn keyCallback(
         event,
         if (insp_ev) |*ev| ev else null,
     )) |v| {
-        // Key events that change the typed input line invalidate the
-        // prediction context (see `predictionTrackKey`, called below
-        // once the encoded text is known). Modifier-only keys and
-        // events consumed here as bindings leave the context alone.
+        // Key events that reach the pty dismiss the prediction
+        // candidate (see `predictionKeyInput`, called below once the
+        // encoded text is known). Modifier-only keys and events
+        // consumed here as bindings leave the context alone.
         return v;
     }
 
@@ -3364,10 +3268,9 @@ pub fn keyCallback(
             return .closed;
         }
 
-        // Track the typed input line for prediction before the write:
-        // keys that change the line invalidate the context and request
-        // a fresh prefix candidate. Releases never encode new text.
-        if (event.action != .release) self.predictionTrackKey(event);
+        // Dismiss the prediction candidate before the write: the key
+        // may change the line. Releases never encode new text.
+        if (event.action != .release) self.predictionKeyInput(event);
 
         self.queueIo(switch (write_req) {
             .small => |v| .{ .write_small = v },
@@ -3846,9 +3749,6 @@ pub fn textCallback(self: *Surface, text: []const u8) !void {
     crash.sentry.thread_state = self.crashThreadState();
     defer crash.sentry.thread_state = null;
 
-    // Any text input or paste invalidates the prediction context.
-    self.predictionInvalidate(.text);
-
     try self.completeClipboardPaste(text, true);
 }
 
@@ -3975,6 +3875,9 @@ pub fn focusCallback(self: *Surface, focused: bool) !void {
         self.renderer_state.mutex.unlock(global.io());
         self.queueIo(.{ .focused = focused }, .unlocked);
     }
+
+    // Gaining focus resyncs prediction from the screen.
+    if (focused) self.predictionSync();
 }
 
 pub fn refreshCallback(self: *Surface) !void {
@@ -6735,6 +6638,10 @@ fn completeClipboardPaste(
 
         break :encode_opts opts;
     };
+
+    // A paste changes the shell's line: dismiss the candidate so it
+    // can't be accepted before the echo resyncs the context.
+    self.predictionInvalidate(.text);
 
     // Encode the data. In most cases this doesn't require any
     // copies, so we optimize for that case.

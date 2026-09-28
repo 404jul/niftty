@@ -22,9 +22,11 @@ const usage =
     \\Flags:
     \\  --forward-env[=bool]  Enable TERM / SendEnv forwarding. Default: true.
     \\  --terminfo[=bool]     Install Ghostty terminfo on first connect. Default: true.
+    \\  --shell-integration[=bool] Install and load Niftty's zsh/bash shell
+    \\                        integration on the remote host. Default: true.
     \\  --auto-forward[=bool] Enable automatic local forwarding. Default: true.
     \\  --forward-notify[=bool] Show automatic forwarding notifications. Default: true.
-    \\  --cache[=bool]        Use the terminfo install cache. Default: true.
+    \\  --cache[=bool]        Use the remote setup cache. Default: true.
     \\  --ssh=<path>          Path to the ssh binary. Default: first `ssh` on PATH.
     \\  --cwd=<path>         Start the interactive remote shell in this directory.
     \\  --verbose             Print +ssh status lines to stderr.
@@ -43,6 +45,9 @@ pub const Options = struct {
 
     /// Maps to the `ssh-terminfo` shell integration feature.
     terminfo: bool = true,
+
+    /// Maps to the `ssh-integration` shell integration feature.
+    @"shell-integration": bool = true,
 
     /// When false, both cache read and write are bypassed.
     cache: bool = true,
@@ -137,7 +142,7 @@ pub const Options = struct {
 ///
 /// `+ssh` also keeps one connection-scoped control socket for uploads.
 /// Panes that resolve to the same `user@host:port` share one ControlMaster.
-/// It performs up to four pieces of setup:
+/// It performs up to five pieces of setup:
 ///   1. **Environment forwarding** (`--forward-env`). Sets `TERM` to
 ///      `xterm-256color` and requests `SendEnv` forwarding of
 ///      `COLORTERM`, `TERM_PROGRAM`, and `TERM_PROGRAM_VERSION` so the
@@ -147,13 +152,26 @@ pub const Options = struct {
 ///
 ///   2. **Terminfo install** (`--terminfo`). On the first connection to a
 ///      given destination, installs Ghostty's embedded terminfo entry on the
-///      remote host using `ssh tic -x -` over a shared `ControlMaster`
-///      connection. Successful installs are cached
-///      (see `niftty +ssh-cache`) so subsequent connections skip this
-///      step. When terminfo is successfully installed or already cached,
+///      remote host with `tic -x -` during the one-time remote setup (see
+///      below). When terminfo is successfully installed or already cached,
 ///      `TERM` is set to `xterm-ghostty` instead of `xterm-256color`.
 ///
-///   3. **Port forwarding** (`--auto-forward`). Detects listening
+///   3. **Shell integration** (`--shell-integration`). On the first
+///      connection to a given destination, installs Niftty's zsh and bash
+///      shell integration under
+///      `~/.local/share/niftty/shell-integration/<hash>` during the
+///      one-time remote setup. Interactive logins then start the remote
+///      login shell with that integration loaded (zsh via `ZDOTDIR`, bash
+///      via `--posix` and `ENV`, as local shells do), so prompt marks
+///      (OSC 133) and command history for inline predictions work over
+///      SSH. `GHOSTTY_PREDICTION` and the `cursor` and `title` entries of
+///      `GHOSTTY_SHELL_FEATURES` are carried over from the local shell.
+///      Bash 3 (e.g. Apple's `/bin/bash`, which ignores `ENV` in POSIX
+///      mode) and other login shells start unchanged. Inside tmux on the
+///      remote host the marks never reach Niftty (tmux does not forward
+///      OSC 133).
+///
+///   4. **Port forwarding** (`--auto-forward`). Detects listening
 ///      unprivileged TCP ports on the remote host, including ports that
 ///      were already open when the session started, and forwards them to
 ///      loopback locally. A port qualifies when its owning process is
@@ -167,7 +185,7 @@ pub const Options = struct {
 ///      it stays listening; once the remote listener is gone the port
 ///      becomes eligible again.
 ///
-///   4. **Working directory reporting**. Interactive logins (no remote
+///   5. **Working directory reporting**. Interactive logins (no remote
 ///      command) inject a POSIX middleman that runs the login shell as
 ///      a child, polls that child's cwd, and emits OSC 7 with host
 ///      `niftty-ssh`. The watcher is the parent so Linux Yama allows
@@ -186,9 +204,17 @@ pub const Options = struct {
 ///      use /dev/tty") because its server runs in a different session
 ///      where `/dev/tty` resolves elsewhere.
 ///
-/// If `--terminfo` install fails (e.g. `tic` not available on the
+/// The terminfo and shell integration installs share one short-lived
+/// `ControlMaster` connection that feeds a POSIX setup script to
+/// `/bin/sh -s` on the remote host. The combined result is cached per
+/// destination (see `niftty +ssh-cache`) and only recorded when every
+/// requested part succeeded, so subsequent connections skip the setup.
+///
+/// If the terminfo install fails (e.g. `tic` not available on the
 /// remote, filesystem permissions), a warning is logged and the
-/// connection continues with `TERM=xterm-256color`.
+/// connection continues with `TERM=xterm-256color`. If the shell
+/// integration install fails, a warning is logged and the login shell
+/// starts without it.
 ///
 /// Flags:
 ///
@@ -198,13 +224,17 @@ pub const Options = struct {
 ///   * `--terminfo=<bool>`: Enable automatic terminfo install on first
 ///     connection. Default: `true`.
 ///
+///   * `--shell-integration=<bool>`: Enable automatic install and loading
+///     of Niftty's zsh/bash shell integration on the remote host.
+///     Default: `true`.
+///
 ///   * `--auto-forward=<bool>`: Enable automatic local forwarding of
 ///     remote development ports. Default: `true`.
 ///
 ///   * `--forward-notify=<bool>`: Show a desktop notification when a
 ///     forward is created. Independent of `--auto-forward`. Default: `true`.
 ///
-///   * `--cache=<bool>`: Use the terminfo install cache. Default: `true`.
+///   * `--cache=<bool>`: Use the remote setup cache. Default: `true`.
 ///     When `false`, both the cache read (skip-if-installed) and the
 ///     cache write (record-on-success) are bypassed, and every
 ///     connection performs the install. To one-shot reinstall a single
@@ -220,7 +250,7 @@ pub const Options = struct {
 ///     they were split from.
 ///
 ///   * `--verbose`: Print +ssh status lines to stderr, and surface
-///     remote stderr during the terminfo install.
+///     remote stderr during the remote setup.
 ///
 /// Examples:
 ///
@@ -298,20 +328,27 @@ fn runInner(
     const destination = if (g_out) |stdout| parseDestination(alloc, stdout) else null;
     const mux_key = if (g_out) |stdout| ssh_mux.keyFromG(alloc, stdout) else null;
 
+    const wanted: SetupParts = .{
+        .terminfo = opts.terminfo,
+        .integration = opts.@"shell-integration",
+    };
+    const si_version = integrationVersion(&integration_files);
+    const cache_version = try cacheVersion(alloc, wanted, terminfopkg.version, &si_version);
+
     const session: struct {
         term: []const u8,
         to_cache: ?struct { cache: DiskCache, dest: []const u8 } = null,
     } = session: {
-        if (!opts.terminfo) break :session .{ .term = "xterm-256color" };
+        if (!wanted.any()) break :session .{ .term = "xterm-256color" };
 
         const dest = destination orelse {
-            warnPrint(stderr, "could not resolve ssh destination; skipping terminfo install", .{});
+            warnPrint(stderr, "could not resolve ssh destination; skipping remote setup", .{});
             break :session .{ .term = "xterm-256color" };
         };
 
         const cache: ?DiskCache = if (opts.cache) cache: {
             const path = DiskCache.defaultPath(alloc, "niftty") catch |err| {
-                warnPrint(stderr, "niftty +terminfo cache unavailable: {t}", .{err});
+                warnPrint(stderr, "niftty +ssh cache unavailable: {t}", .{err});
                 break :session .{ .term = "xterm-256color" };
             };
             break :cache .{ .path = path };
@@ -321,7 +358,7 @@ fn runInner(
             const cached = c.contains(
                 alloc,
                 dest,
-                terminfopkg.version,
+                cache_version,
             ) catch |err| cached: {
                 if (DiskCache.isFailure(err)) warnPrint(
                     stderr,
@@ -333,7 +370,9 @@ fn runInner(
 
             if (cached) {
                 verbosePrint(opts, stderr, "dest: {s} (cached, skipping install)", .{dest});
-                break :session .{ .term = "xterm-ghostty" };
+                break :session .{
+                    .term = if (wanted.terminfo) "xterm-ghostty" else "xterm-256color",
+                };
             } else {
                 verbosePrint(opts, stderr, "dest: {s} (not cached, will install)", .{dest});
             }
@@ -341,16 +380,21 @@ fn runInner(
             verbosePrint(opts, stderr, "dest: {s} (cache disabled, will install)", .{dest});
         }
 
-        stderr.print("Setting up xterm-niftty +terminfo on {s}...\n", .{dest}) catch {};
+        const what: []const u8 = if (!wanted.integration)
+            "xterm-niftty +terminfo"
+        else if (!wanted.terminfo)
+            "shell integration"
+        else
+            "xterm-niftty +terminfo and shell integration";
+        stderr.print("Setting up {s} on {s}...\n", .{ what, dest }) catch {};
         stderr.flush() catch {};
 
-        installRemoteTerminfo(alloc, opts, stderr) catch |err| {
-            warnPrint(stderr, "failed to install terminfo: {t}", .{err});
-            break :session .{ .term = "xterm-256color" };
-        };
+        const failed = runRemoteSetup(alloc, opts, stderr, wanted, &si_version);
+        if (failed.terminfo) warnPrint(stderr, "failed to install terminfo", .{});
+        if (failed.integration) warnPrint(stderr, "failed to install shell integration", .{});
         break :session .{
-            .term = "xterm-ghostty",
-            .to_cache = if (cache) |c| .{ .cache = c, .dest = dest } else null,
+            .term = if (wanted.terminfo and !failed.terminfo) "xterm-ghostty" else "xterm-256color",
+            .to_cache = if (failed.any()) null else if (cache) |c| .{ .cache = c, .dest = dest } else null,
         };
     };
 
@@ -379,10 +423,16 @@ fn runInner(
         &.{ "-o", "RequestTTY=force" }
     else
         &.{};
-    const cwd_cmd: []const []const u8 = if (inject_cwd)
-        &.{try cwdReporterCommand(alloc, opts.cwd)}
-    else
-        &.{};
+    const cwd_cmd: []const []const u8 = if (inject_cwd) &.{try cwdReporterCommand(
+        alloc,
+        opts.cwd,
+        if (wanted.integration) try integrationLauncher(
+            alloc,
+            &si_version,
+            localEnv(alloc, "GHOSTTY_PREDICTION"),
+            localEnv(alloc, "GHOSTTY_SHELL_FEATURES") orelse "",
+        ) else null,
+    )} else &.{};
     const argv = try std.mem.concat(alloc, []const u8, &.{
         &.{opts.ssh},
         control_opts,
@@ -410,7 +460,7 @@ fn runInner(
         if (entry.cache.add(
             alloc,
             entry.dest,
-            terminfopkg.version,
+            cache_version,
             std.Io.Timestamp.now(global.io(), .real).toSeconds(),
         )) |_| {
             verbosePrint(opts, stderr, "cache: wrote {s}", .{entry.dest});
@@ -607,46 +657,222 @@ test "control socket path falls back when TMPDIR is long" {
     try testing.expect(path.len + 17 < 104);
 }
 
-/// Install Ghostty's terminfo on the remote host over a short-lived SSH
-/// ControlMaster connection. The master tears down with the client
-/// (`ControlPersist=no`) so no socket lingers.
-fn installRemoteTerminfo(
+/// The parts of the one-time remote setup. Also used for the parts that
+/// failed, mirroring the setup script's exit status bitmask.
+const SetupParts = packed struct {
+    /// Exit status bit 1.
+    terminfo: bool = false,
+    /// Exit status bit 2.
+    integration: bool = false,
+
+    fn any(self: SetupParts) bool {
+        return self.terminfo or self.integration;
+    }
+};
+
+/// A shell integration file installed on remote hosts. `path` is relative
+/// to the remote install dir and mirrors the local resources layout, since
+/// each script locates its siblings relative to its own path.
+const IntegrationFile = struct {
+    path: []const u8,
+    contents: []const u8,
+};
+
+/// Niftty's zsh and bash shell integration, as installed by
+/// `--shell-integration`. The order is fixed: it feeds `integrationVersion`.
+const integration_files = [_]IntegrationFile{
+    .{ .path = "zsh/.zshenv", .contents = @embedFile("../shell-integration/zsh/.zshenv") },
+    .{ .path = "zsh/ghostty-integration", .contents = @embedFile("../shell-integration/zsh/ghostty-integration") },
+    .{ .path = "bash/ghostty.bash", .contents = @embedFile("../shell-integration/bash/ghostty.bash") },
+    .{ .path = "bash/bash-preexec.sh", .contents = @embedFile("../shell-integration/bash/bash-preexec.sh") },
+};
+
+/// Remote parent of the versioned shell integration install dirs. Expanded
+/// by the remote `/bin/sh`, inside double quotes.
+const integration_remote_root = "$HOME/.local/share/niftty/shell-integration";
+
+/// Quoted heredoc delimiter for the setup script payloads. Payloads that
+/// contain it as a whole line are refused (see `heredocSafe`).
+const setup_heredoc_delim = "NIFTTY_SETUP_EOF_5B0D3C";
+
+/// Content-derived version of the shell integration payload: 16 lowercase
+/// hex chars of Wyhash over every file's relative path and contents. Names
+/// the remote install dir, so a changed payload installs side by side.
+fn integrationVersion(files: []const IntegrationFile) [16]u8 {
+    var hasher = std.hash.Wyhash.init(0);
+    for (files) |file| {
+        hasher.update(file.path);
+        hasher.update(&.{0});
+        hasher.update(file.contents);
+        hasher.update(&.{0});
+    }
+    var out: [16]u8 = undefined;
+    _ = std.fmt.bufPrint(&out, "{x:0>16}", .{hasher.final()}) catch unreachable;
+    return out;
+}
+
+/// The per-destination cache version for the requested setup parts. One
+/// cache entry per destination records every part installed with it, so a
+/// change to either payload (or to the requested parts) is a cache miss.
+fn cacheVersion(
+    alloc: Allocator,
+    wanted: SetupParts,
+    terminfo_version: []const u8,
+    integration_version: []const u8,
+) Allocator.Error![]const u8 {
+    if (!wanted.integration) return terminfo_version;
+    if (!wanted.terminfo) return std.fmt.allocPrint(alloc, "si-{s}", .{integration_version});
+    return std.fmt.allocPrint(alloc, "{s}+si-{s}", .{ terminfo_version, integration_version });
+}
+
+/// True when `body` can be emitted as a quoted heredoc: no line of it may
+/// equal the delimiter, or the heredoc would end early and the rest of the
+/// payload would run as shell commands.
+fn heredocSafe(body: []const u8) bool {
+    var lines = std.mem.splitScalar(u8, body, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.eql(u8, line, setup_heredoc_delim)) return false;
+    }
+    return true;
+}
+
+fn writeHeredocBody(w: *std.Io.Writer, body: []const u8) std.Io.Writer.Error!void {
+    try w.writeAll(body);
+    if (body.len > 0 and body[body.len - 1] != '\n') try w.writeByte('\n');
+    try w.writeAll(setup_heredoc_delim ++ "\n");
+}
+
+/// The POSIX sh script fed to the remote `/bin/sh -s`. It installs the
+/// `wanted` parts and exits with a bitmask of the parts that failed
+/// (1 = terminfo, 2 = shell integration). The script is the shell's stdin,
+/// so no command in it may read stdin other than through its own heredoc.
+/// A payload that cannot be quoted safely fails its part up front.
+fn remoteSetupScript(
+    alloc: Allocator,
+    wanted: SetupParts,
+    terminfo: []const u8,
+    files: []const IntegrationFile,
+    integration_version: []const u8,
+    verbose: bool,
+) Allocator.Error![]const u8 {
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    errdefer out.deinit();
+    writeRemoteSetupScript(
+        &out.writer,
+        wanted,
+        terminfo,
+        files,
+        integration_version,
+        verbose,
+    ) catch return error.OutOfMemory;
+    return out.toOwnedSlice();
+}
+
+fn writeRemoteSetupScript(
+    w: *std.Io.Writer,
+    wanted: SetupParts,
+    terminfo: []const u8,
+    files: []const IntegrationFile,
+    integration_version: []const u8,
+    verbose: bool,
+) std.Io.Writer.Error!void {
+    // Under --verbose, let remote stderr through (the `tic` step is the
+    // most common failure source).
+    const quiet = if (verbose) "" else " 2>/dev/null";
+    const delim = setup_heredoc_delim;
+
+    try w.writeAll("rc=0\n");
+    if (wanted.terminfo) {
+        if (heredocSafe(terminfo)) {
+            try w.print(
+                "if command -v tic >/dev/null 2>&1 && mkdir -p ~/.terminfo 2>/dev/null && tic -x -{s} <<'{s}'\n",
+                .{ quiet, delim },
+            );
+            try writeHeredocBody(w, terminfo);
+            try w.writeAll("then :; else rc=$((rc | 1)); fi\n");
+        } else {
+            try w.writeAll("rc=$((rc | 1))\n");
+        }
+    }
+    if (wanted.integration) {
+        const safe = for (files) |file| {
+            if (!heredocSafe(file.contents)) break false;
+        } else true;
+        if (safe) {
+            // The `ok` marker goes last: the login launcher only loads an
+            // install whose every file was written.
+            try w.print("d=\"{s}/{s}\"\n", .{ integration_remote_root, integration_version });
+            try w.print("if rm -f \"$d/ok\"{s} && mkdir -p \"$d/zsh\" \"$d/bash\"{s}; then\n", .{ quiet, quiet });
+            try w.writeAll("si=0\n");
+            for (files) |file| {
+                try w.print("cat >\"$d/{s}\"{s} <<'{s}' || si=1\n", .{ file.path, quiet, delim });
+                try writeHeredocBody(w, file.contents);
+            }
+            try w.print("if [ \"$si\" = 0 ] && touch \"$d/ok\"{s}; then :; else rc=$((rc | 2)); fi\n", .{quiet});
+            try w.writeAll("else rc=$((rc | 2)); fi\n");
+        } else {
+            try w.writeAll("rc=$((rc | 2))\n");
+        }
+    }
+    try w.writeAll("exit $rc\n");
+}
+
+/// The parts that failed, from the setup connection's exit status. ssh
+/// reports its own failures as 255; any status outside the script's
+/// bitmask (a missing `/bin/sh`, a signal) means the script did not finish.
+fn setupFailures(term: std.process.Child.Term, wanted: SetupParts) SetupParts {
+    const rc = switch (term) {
+        .exited => |rc| rc,
+        else => return wanted,
+    };
+    if (rc > 3) return wanted;
+    return .{
+        .terminfo = wanted.terminfo and rc & 1 != 0,
+        .integration = wanted.integration and rc & 2 != 0,
+    };
+}
+
+/// Run the one-time remote setup for the `wanted` parts over a single
+/// short-lived SSH ControlMaster connection and return the parts that
+/// failed. The master tears down with the client (`ControlPersist=no`) so
+/// no socket lingers.
+fn runRemoteSetup(
     alloc: Allocator,
     opts: *const Options,
     stderr: *std.Io.Writer,
-) !void {
-    var buf: std.Io.Writer.Allocating = .init(alloc);
-    defer buf.deinit();
-    try terminfopkg.ghostty.encode(&buf.writer);
-    const terminfo = buf.written();
+    wanted: SetupParts,
+    integration_version: []const u8,
+) SetupParts {
+    const script = script: {
+        var buf: std.Io.Writer.Allocating = .init(alloc);
+        if (wanted.terminfo) terminfopkg.ghostty.encode(&buf.writer) catch |err| {
+            log.warn("terminfo encode failed: {}", .{err});
+            return wanted;
+        };
+        break :script remoteSetupScript(
+            alloc,
+            wanted,
+            buf.written(),
+            &integration_files,
+            integration_version,
+            opts.verbose,
+        ) catch return wanted;
+    };
 
     // ControlPath is a Unix domain socket; macOS sockaddr_un.sun_path is
     // 104 bytes including NUL, and OpenSSH may append a connection hash.
-    const control_path = try allocControlSocketPath(alloc);
-    const control_path_opt = try std.fmt.allocPrint(
+    const control_path = allocControlSocketPath(alloc) catch return wanted;
+    const control_path_opt = std.fmt.allocPrint(
         alloc,
         "ControlPath={s}",
         .{control_path},
-    );
+    ) catch return wanted;
 
-    // Under --verbose, let remote stderr through (the `tic` step is
-    // the most common failure source) and inherit ssh's stderr so it
-    // reaches the user's terminal. Other steps stay quiet either way.
-    const remote_script = if (opts.verbose)
-        \\command -v tic >/dev/null 2>&1 || exit 1
-        \\mkdir -p ~/.terminfo 2>/dev/null && tic -x - && exit 0
-        \\exit 1
-    else
-        \\command -v tic >/dev/null 2>&1 || exit 1
-        \\mkdir -p ~/.terminfo 2>/dev/null && tic -x - 2>/dev/null && exit 0
-        \\exit 1
-    ;
-
-    // Set up an SSH ControlMaster scoped to this single install:
+    // Set up an SSH ControlMaster scoped to this single setup:
     //   - ControlMaster=yes makes our client also act as the master.
     //   - ControlPersist=no tears the master down when our client
     //     exits; no socket lingers on the remote side.
-    const argv = try std.mem.concat(alloc, []const u8, &.{
+    const argv = std.mem.concat(alloc, []const u8, &.{
         &.{opts.ssh},
         &.{
             "-o", "ControlMaster=yes",
@@ -654,31 +880,35 @@ fn installRemoteTerminfo(
             "-o", control_path_opt,
         },
         opts._ssh_args.items,
-        &.{remote_script},
-    });
+        &.{"/bin/sh -s"},
+    }) catch return wanted;
     verbosePrint(opts, stderr, "exec: {f}", .{Joined{ .items = argv }});
 
+    // Under --verbose, inherit ssh's stderr so remote errors reach the
+    // user's terminal.
     var child = std.process.spawn(global.io(), .{
         .argv = argv,
         .stdin = .pipe,
         .stdout = .ignore,
         .stderr = if (opts.verbose) .inherit else .ignore,
     }) catch |err| {
-        log.warn("terminfo install spawn failed: {}", .{err});
-        return error.InstallFailed;
+        log.warn("remote setup spawn failed: {}", .{err});
+        return wanted;
     };
 
     if (child.stdin) |stdin| {
-        stdin.writeStreamingAll(global.io(), terminfo) catch {};
+        stdin.writeStreamingAll(global.io(), script) catch {};
         stdin.close(global.io());
         child.stdin = null;
     }
 
     const term = child.wait(global.io()) catch |err| {
-        log.warn("terminfo install wait failed: {}", .{err});
-        return error.InstallFailed;
+        log.warn("remote setup wait failed: {}", .{err});
+        return wanted;
     };
-    checkExit(term, "terminfo install") catch return error.InstallFailed;
+    const failed = setupFailures(term, wanted);
+    if (failed.any()) log.warn("remote setup failed: {}", .{term});
+    return failed;
 }
 
 fn controlOpts(alloc: Allocator, mux: ssh_mux.Session) ![]const []const u8 {
@@ -982,7 +1212,8 @@ const port_watch_tail =
 
 const port_watch_script = port_watch_head ++ port_scan_script ++ port_watch_tail;
 /// The cwd reporter script before the login-shell `exec` line. Split so
-/// `--cwd` can insert a `cd` between head and tail.
+/// `--cwd` can insert a `cd`, and `--shell-integration` a launcher, between
+/// head and tail.
 const cwd_reporter_head =
     \\exec /bin/sh -c 'trap "" INT TTOU TTIN
     \\set +m
@@ -990,9 +1221,14 @@ const cwd_reporter_head =
     \\(trap - INT TTOU TTIN;
 ;
 
-/// The cwd reporter script from the login-shell `exec` line onward.
-const cwd_reporter_tail =
-    \\ exec "${SHELL:-/bin/sh}" -l 0<&9 1>&9 2>&9 9<&-) &
+/// The plain login-shell `exec` line of the cwd reporter.
+const cwd_reporter_login =
+    \\ exec "${SHELL:-/bin/sh}" -l 0<&9 1>&9 2>&9 9<&-
+;
+
+/// The cwd reporter script after the login-shell `exec` line.
+const cwd_reporter_watch =
+    \\) &
     \\spid=$!
     \\last=
     \\while :; do
@@ -1024,18 +1260,28 @@ const cwd_reporter_tail =
     \\exit $?'
 ;
 
-/// Composed cwd reporter. See `cwdReporterCommand` for the `--cwd` variant.
-const cwd_reporter_command = cwd_reporter_head ++ cwd_reporter_tail;
+/// Composed cwd reporter. See `cwdReporterCommand` for the `--cwd` and
+/// shell integration variants.
+const cwd_reporter_command = cwd_reporter_head ++ cwd_reporter_login ++ cwd_reporter_watch;
 
 /// The remote command for interactive logins: the cwd reporter, with an
 /// initial `cd` inserted before the login shell when `cwd` is an
 /// absolute path. The `cd` is best-effort (a failed `cd` falls back to
 /// the default directory). The path is escaped for the single-quoted
 /// script since it survives two shell parse levels (the remote shell,
-/// then the inner `/bin/sh -c`).
-fn cwdReporterCommand(alloc: Allocator, cwd: ?[]const u8) Allocator.Error![]const u8 {
-    const dir = cwd orelse return cwd_reporter_command;
-    if (!std.mem.startsWith(u8, dir, "/")) return cwd_reporter_command;
+/// then the inner `/bin/sh -c`). A non-null `launcher` (see
+/// `integrationLauncher`) replaces the plain login-shell `exec`.
+fn cwdReporterCommand(
+    alloc: Allocator,
+    cwd: ?[]const u8,
+    launcher: ?[]const u8,
+) Allocator.Error![]const u8 {
+    const login = launcher orelse cwd_reporter_login;
+    const dir = cwd orelse "";
+    if (!std.mem.startsWith(u8, dir, "/")) {
+        if (launcher == null) return cwd_reporter_command;
+        return std.mem.concat(alloc, u8, &.{ cwd_reporter_head, login, cwd_reporter_watch });
+    }
 
     var escaped: std.ArrayList(u8) = .empty;
     for (dir) |c| {
@@ -1051,7 +1297,88 @@ fn cwdReporterCommand(alloc: Allocator, cwd: ?[]const u8) Allocator.Error![]cons
         "cd -- '{s}' 2>/dev/null;",
         .{escaped.items},
     );
-    return std.mem.concat(alloc, u8, &.{ cwd_reporter_head, cd, cwd_reporter_tail });
+    return std.mem.concat(alloc, u8, &.{ cwd_reporter_head, cd, login, cwd_reporter_watch });
+}
+
+/// Local `GHOSTTY_SHELL_FEATURES` entries forwarded to the remote shell
+/// integration. The others need local binaries or `TERMINFO` (`path`,
+/// `sudo`) or would wrap the remote `ssh` with a missing `niftty`.
+const remote_shell_features = [_][]const u8{ "cursor", "cursor:blink", "cursor:steady", "title" };
+
+/// Append `value` keeping only characters that are inert inside the
+/// cwd reporter's single-quoted script and its double-quoted launcher.
+fn appendLauncherSafe(
+    alloc: Allocator,
+    list: *std.ArrayList(u8),
+    value: []const u8,
+) Allocator.Error!void {
+    for (value) |c| switch (c) {
+        'A'...'Z', 'a'...'z', '0'...'9', '_', '.', ':', ',', '+', '-' => try list.append(alloc, c),
+        else => {},
+    };
+}
+
+/// The login-shell launcher for `--shell-integration`: loads the remote
+/// install of `version` into zsh (`ZDOTDIR`) or bash 4+ (`--posix` +
+/// `ENV`) with the same environment contract as the local shell
+/// integration, and otherwise (no complete install, bash 3 such as
+/// Apple's `/bin/bash`, which ignores `ENV` in POSIX mode, other shells)
+/// runs the plain login shell. Runs inside the cwd reporter's
+/// single-quoted script, so it uses no single quotes and only inserts
+/// `appendLauncherSafe` values. `prediction` and `features` are the
+/// local `GHOSTTY_PREDICTION` and `GHOSTTY_SHELL_FEATURES` values.
+fn integrationLauncher(
+    alloc: Allocator,
+    version: []const u8,
+    prediction: ?[]const u8,
+    features: []const u8,
+) Allocator.Error![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    try out.appendSlice(alloc, " s=\"${SHELL:-/bin/sh}\"; d=\"" ++ integration_remote_root ++ "/");
+    try appendLauncherSafe(alloc, &out, version);
+    try out.appendSlice(alloc, "\"\nif [ -r \"$d/ok\" ]; then\nexport GHOSTTY_PREDICTION=");
+    const enabled = if (prediction) |p| std.mem.eql(u8, p, "1") else false;
+    try out.append(alloc, if (enabled) '1' else '0');
+
+    var forwarded: std.ArrayList(u8) = .empty;
+    var it = std.mem.splitScalar(u8, features, ',');
+    while (it.next()) |feature| {
+        for (remote_shell_features) |allowed| {
+            if (!std.mem.eql(u8, feature, allowed)) continue;
+            if (forwarded.items.len > 0) try forwarded.append(alloc, ',');
+            try appendLauncherSafe(alloc, &forwarded, feature);
+            break;
+        }
+    }
+    if (forwarded.items.len > 0) {
+        try out.appendSlice(alloc, " GHOSTTY_SHELL_FEATURES=");
+        try out.appendSlice(alloc, forwarded.items);
+    }
+
+    try out.appendSlice(alloc,
+        \\
+        \\case "${s##*/}" in
+        \\zsh) if [ -n "${ZDOTDIR+x}" ]; then export GHOSTTY_ZSH_ZDOTDIR="$ZDOTDIR"; fi
+        \\export ZDOTDIR="$d/zsh"; exec "$s" -l 0<&9 1>&9 2>&9 9<&- ;;
+        \\bash) case "$("$s" -c "echo \${BASH_VERSINFO[0]}" 2>/dev/null)" in
+        \\[4-9]|[1-9][0-9]) if [ -n "${ENV+x}" ]; then export GHOSTTY_BASH_ENV="$ENV"; fi
+        \\export ENV="$d/bash/ghostty.bash" GHOSTTY_BASH_INJECT=1
+        \\if [ -z "${HISTFILE+x}" ]; then export HISTFILE="$HOME/.bash_history" GHOSTTY_BASH_UNEXPORT_HISTFILE=1; fi
+        \\exec "$s" --posix -l 0<&9 1>&9 2>&9 9<&- ;;
+        \\esac ;;
+        \\esac
+        \\fi
+        \\exec "$s" -l 0<&9 1>&9 2>&9 9<&-
+    );
+    return out.items;
+}
+
+/// A copy of the local environment variable `name`, or null when unset.
+fn localEnv(alloc: Allocator, name: []const u8) ?[]const u8 {
+    var environ = global.environMap() catch return null;
+    defer environ.deinit();
+    const value = environ.get(name) orelse return null;
+    return alloc.dupe(u8, value) catch null;
 }
 
 fn sshFlagTakesArg(flag: u8) bool {
@@ -1174,7 +1501,7 @@ test "cwdReporterCommand: --cwd inserts escaped cd before login shell" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
-    const cmd = try cwdReporterCommand(arena.allocator(), "/srv/o'brien app");
+    const cmd = try cwdReporterCommand(arena.allocator(), "/srv/o'brien app", null);
     try testing.expect(std.mem.indexOf(
         u8,
         cmd,
@@ -1184,12 +1511,238 @@ test "cwdReporterCommand: --cwd inserts escaped cd before login shell" {
     // Non-absolute or absent cwd leaves the plain reporter untouched.
     try testing.expectEqualStrings(
         cwd_reporter_command,
-        try cwdReporterCommand(arena.allocator(), "relative"),
+        try cwdReporterCommand(arena.allocator(), "relative", null),
     );
     try testing.expectEqualStrings(
         cwd_reporter_command,
-        try cwdReporterCommand(arena.allocator(), null),
+        try cwdReporterCommand(arena.allocator(), null, null),
     );
+}
+
+test "cwdReporterCommand: plain login exec without shell integration" {
+    const testing = std.testing;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const cmd = try cwdReporterCommand(arena.allocator(), null, null);
+    try testing.expect(std.mem.indexOf(
+        u8,
+        cmd,
+        "(trap - INT TTOU TTIN; exec \"${SHELL:-/bin/sh}\" -l 0<&9 1>&9 2>&9 9<&-) &\nspid=$!\n",
+    ) != null);
+    try testing.expect(std.mem.indexOf(u8, cmd, "shell-integration") == null);
+}
+
+test "cwdReporterCommand: launcher replaces login exec after cd" {
+    const testing = std.testing;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const launcher = try integrationLauncher(alloc, "0123456789abcdef", "1", "title");
+    const cmd = try cwdReporterCommand(alloc, "/srv", launcher);
+    const cd = "cd -- '/srv' 2>/dev/null; s=\"${SHELL:-/bin/sh}\"";
+    try testing.expect(std.mem.indexOf(u8, cmd, cd) != null);
+    try testing.expect(std.mem.indexOf(u8, cmd, "exec \"${SHELL:-/bin/sh}\" -l") == null);
+    try testing.expect(std.mem.endsWith(u8, cmd, cwd_reporter_watch));
+    // The command is one single-quoted script: only the cd path may
+    // contribute quotes, and the launcher itself has none.
+    try testing.expect(std.mem.indexOfScalar(u8, launcher, '\'') == null);
+
+    const no_cwd = try cwdReporterCommand(alloc, null, launcher);
+    try testing.expect(std.mem.indexOf(u8, no_cwd, "(trap - INT TTOU TTIN; s=") != null);
+}
+
+test "integrationLauncher: zsh ZDOTDIR, bash --posix ENV, plain fallback" {
+    const testing = std.testing;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    const l = try integrationLauncher(arena.allocator(), "0123456789abcdef", "1", "cursor:blink,title");
+    const dir = "d=\"$HOME/.local/share/niftty/shell-integration/0123456789abcdef\"";
+    try testing.expect(std.mem.indexOf(u8, l, dir) != null);
+    try testing.expect(std.mem.indexOf(u8, l, "if [ -r \"$d/ok\" ]; then\n") != null);
+    try testing.expect(std.mem.indexOf(
+        u8,
+        l,
+        "export GHOSTTY_PREDICTION=1 GHOSTTY_SHELL_FEATURES=cursor:blink,title\n",
+    ) != null);
+    try testing.expect(std.mem.indexOf(
+        u8,
+        l,
+        "zsh) if [ -n \"${ZDOTDIR+x}\" ]; then export GHOSTTY_ZSH_ZDOTDIR=\"$ZDOTDIR\"; fi\n" ++
+            "export ZDOTDIR=\"$d/zsh\"; exec \"$s\" -l 0<&9 1>&9 2>&9 9<&- ;;",
+    ) != null);
+    try testing.expect(std.mem.indexOf(
+        u8,
+        l,
+        "export ENV=\"$d/bash/ghostty.bash\" GHOSTTY_BASH_INJECT=1\n",
+    ) != null);
+    try testing.expect(std.mem.indexOf(
+        u8,
+        l,
+        "export HISTFILE=\"$HOME/.bash_history\" GHOSTTY_BASH_UNEXPORT_HISTFILE=1",
+    ) != null);
+    try testing.expect(std.mem.indexOf(u8, l, "exec \"$s\" --posix -l 0<&9 1>&9 2>&9 9<&- ;;") != null);
+    // Only bash 4+ honors ENV in POSIX mode; older bash gets the plain login.
+    try testing.expect(std.mem.indexOf(
+        u8,
+        l,
+        "bash) case \"$(\"$s\" -c \"echo \\${BASH_VERSINFO[0]}\" 2>/dev/null)\" in\n[4-9]|[1-9][0-9]) ",
+    ) != null);
+    // Without a complete install, or for other shells, the plain login.
+    try testing.expect(std.mem.endsWith(u8, l, "esac\nfi\nexec \"$s\" -l 0<&9 1>&9 2>&9 9<&-"));
+}
+
+test "integrationLauncher: only safe values and remote-capable features" {
+    const testing = std.testing;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Local-only features are dropped; cursor/title survive.
+    const filtered = try integrationLauncher(
+        alloc,
+        "v",
+        null,
+        "cursor:blink,path,ssh-env,ssh-integration,ssh-terminfo,sudo,title",
+    );
+    try testing.expect(std.mem.indexOf(
+        u8,
+        filtered,
+        "export GHOSTTY_PREDICTION=0 GHOSTTY_SHELL_FEATURES=cursor:blink,title\n",
+    ) != null);
+
+    // Unsafe characters never reach the single-quoted script.
+    const unsafe = try integrationLauncher(
+        alloc,
+        "ab'c$(x)d",
+        "1'; rm -rf /",
+        "title'$(x),ti tle,`id`,sudo",
+    );
+    try testing.expect(std.mem.indexOf(u8, unsafe, "shell-integration/abcxd\"") != null);
+    try testing.expect(std.mem.indexOf(u8, unsafe, "export GHOSTTY_PREDICTION=0\n") != null);
+    try testing.expect(std.mem.indexOf(u8, unsafe, "GHOSTTY_SHELL_FEATURES") == null);
+    try testing.expect(std.mem.indexOfAny(u8, unsafe, "'`") == null);
+}
+
+test "remoteSetupScript: installs every payload file and ends with exit $rc" {
+    const testing = std.testing;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const version = integrationVersion(&integration_files);
+    const script = try remoteSetupScript(
+        alloc,
+        .{ .terminfo = true, .integration = true },
+        "xterm-ghostty|test,\n",
+        &integration_files,
+        &version,
+        false,
+    );
+    try testing.expect(std.mem.startsWith(u8, script, "rc=0\n"));
+    try testing.expect(std.mem.endsWith(u8, script, "exit $rc\n"));
+    try testing.expect(std.mem.indexOf(u8, script, "tic -x - 2>/dev/null <<'" ++ setup_heredoc_delim ++ "'\n" ++
+        "xterm-ghostty|test,\n" ++ setup_heredoc_delim ++ "\n") != null);
+
+    const dir = try std.fmt.allocPrint(
+        alloc,
+        "d=\"$HOME/.local/share/niftty/shell-integration/{s}\"\n",
+        .{&version},
+    );
+    try testing.expect(std.mem.indexOf(u8, script, dir) != null);
+    for (integration_files) |file| {
+        const heredoc = try std.fmt.allocPrint(
+            alloc,
+            "cat >\"$d/{s}\" 2>/dev/null <<'{s}' || si=1\n{s}{s}\n",
+            .{ file.path, setup_heredoc_delim, file.contents, setup_heredoc_delim },
+        );
+        try testing.expect(std.mem.indexOf(u8, script, heredoc) != null);
+    }
+    // The ok marker comes after the last file.
+    const ok = std.mem.indexOf(u8, script, "touch \"$d/ok\"").?;
+    const last = std.mem.lastIndexOf(u8, script, "cat >\"$d/").?;
+    try testing.expect(ok > last);
+
+    // Only the wanted parts are emitted.
+    const terminfo_only = try remoteSetupScript(alloc, .{ .terminfo = true }, "t\n", &integration_files, &version, false);
+    try testing.expect(std.mem.indexOf(u8, terminfo_only, "shell-integration") == null);
+    const integration_only = try remoteSetupScript(alloc, .{ .integration = true }, "", &integration_files, &version, false);
+    try testing.expect(std.mem.indexOf(u8, integration_only, "tic -x") == null);
+}
+
+test "remoteSetupScript: payload containing the delimiter fails its part" {
+    const testing = std.testing;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const files = [_]IntegrationFile{
+        .{ .path = "zsh/.zshenv", .contents = "echo ok\n" },
+        .{ .path = "bash/ghostty.bash", .contents = "a\n" ++ setup_heredoc_delim ++ "\nrm -rf ~\n" },
+    };
+    const script = try remoteSetupScript(
+        alloc,
+        .{ .terminfo = true, .integration = true },
+        "terminfo\n",
+        &files,
+        "v",
+        false,
+    );
+    try testing.expect(std.mem.indexOf(u8, script, "rm -rf") == null);
+    try testing.expect(std.mem.indexOf(u8, script, "cat >") == null);
+    try testing.expect(std.mem.indexOf(u8, script, "\nrc=$((rc | 2))\nexit $rc\n") != null);
+    // The terminfo part is unaffected.
+    try testing.expect(std.mem.indexOf(u8, script, "tic -x -") != null);
+
+    // The delimiter as the last line without a newline is caught too.
+    try testing.expect(!heredocSafe("x\n" ++ setup_heredoc_delim));
+    try testing.expect(heredocSafe("x " ++ setup_heredoc_delim ++ "\n"));
+}
+
+test "setupFailures: exit status bitmask" {
+    const testing = std.testing;
+    const both: SetupParts = .{ .terminfo = true, .integration = true };
+    try testing.expectEqual(SetupParts{}, setupFailures(.{ .exited = 0 }, both));
+    try testing.expectEqual(SetupParts{ .terminfo = true }, setupFailures(.{ .exited = 1 }, both));
+    try testing.expectEqual(SetupParts{ .integration = true }, setupFailures(.{ .exited = 2 }, both));
+    try testing.expectEqual(both, setupFailures(.{ .exited = 3 }, both));
+    // ssh's own failure, or a status the script never produces.
+    try testing.expectEqual(both, setupFailures(.{ .exited = 255 }, both));
+    try testing.expectEqual(both, setupFailures(.{ .exited = 127 }, both));
+    // Unrequested parts never count as failed.
+    try testing.expectEqual(SetupParts{}, setupFailures(.{ .exited = 1 }, .{ .integration = true }));
+}
+
+test "cacheVersion: composes terminfo and shell integration versions" {
+    const testing = std.testing;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    try testing.expectEqualStrings("t1", try cacheVersion(alloc, .{ .terminfo = true }, "t1", "h"));
+    try testing.expectEqualStrings("si-h", try cacheVersion(alloc, .{ .integration = true }, "t1", "h"));
+    try testing.expectEqualStrings("t1+si-h", try cacheVersion(
+        alloc,
+        .{ .terminfo = true, .integration = true },
+        "t1",
+        "h",
+    ));
+
+    // The composed version is a valid cache entry version and round-trips.
+    const entry = @import("ssh_cache.zig").Entry.parse("host|1|t1+si-h").?;
+    try testing.expectEqualStrings("t1+si-h", entry.terminfo_version);
+}
+
+test "integrationVersion: 16 hex chars tracking path and contents" {
+    const testing = std.testing;
+    const a = integrationVersion(&.{.{ .path = "zsh/a", .contents = "x" }});
+    for (a) |c| try testing.expect(std.ascii.isDigit(c) or (c >= 'a' and c <= 'f'));
+    const b = integrationVersion(&.{.{ .path = "zsh/b", .contents = "x" }});
+    const c = integrationVersion(&.{.{ .path = "zsh/a", .contents = "y" }});
+    try testing.expect(!std.mem.eql(u8, &a, &b));
+    try testing.expect(!std.mem.eql(u8, &a, &c));
 }
 
 test "port watch script reports both additions and removals" {
@@ -1611,6 +2164,17 @@ test "parseManuallyHook: bare destination starts ssh args" {
     try testing.expectEqual(true, opts.@"forward-env");
     try testing.expectEqual(@as(usize, 1), opts._ssh_args.items.len);
     try testing.expectEqualStrings("user@example.com", opts._ssh_args.items[0]);
+}
+
+test "parseManuallyHook: --shell-integration=false" {
+    const testing = std.testing;
+    var opts: Options = .{};
+    defer opts.deinit();
+    try testing.expectEqual(true, opts.@"shell-integration");
+    try parseTestArgs(testing.allocator, &opts, "--shell-integration=false user@example.com");
+    try testing.expectEqual(false, opts.@"shell-integration");
+    try testing.expect(opts._diagnostics.empty());
+    try testing.expectEqual(@as(usize, 1), opts._ssh_args.items.len);
 }
 
 test "parseManuallyHook: short ssh flags pass through verbatim" {

@@ -527,7 +527,7 @@ enum CommandFeatureExtractor {
     }
 
     /// `NAME=value` where NAME is a shell identifier.
-    private static func isEnvAssignment(_ word: String) -> Bool {
+    static func isEnvAssignment(_ word: String) -> Bool {
         guard let eq = word.firstIndex(of: "="), eq != word.startIndex else { return false }
         let name = word[word.startIndex..<eq]
         return name.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" }

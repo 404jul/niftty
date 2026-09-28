@@ -228,6 +228,25 @@ struct HistoryStoreTests {
         }
     }
 
+    @Test func occurrenceDirectoriesFilterByHostAndSkipEmpty() async throws {
+        try await withStore { store, url in
+            await record(store, "make", directory: "/x", host: "mac")
+            await record(store, "make", directory: "/y")
+            await record(store, "make", directory: "/z", host: "other")
+            await record(store, "ls")
+            let make = try #require(scalar(url, "SELECT id FROM command WHERE normalized = 'make'"))
+            let ls = try #require(scalar(url, "SELECT id FROM command WHERE normalized = 'ls'"))
+
+            // This host's rows plus host-less rows; other hosts and
+            // directory-less occurrences are excluded.
+            let dirs = await store.occurrenceDirectories(commandIDs: [make, ls], host: "mac")
+            #expect(Set(dirs[make] ?? []) == ["/x", "/y"])
+            #expect(dirs[ls] == nil)
+            let none = await store.occurrenceDirectories(commandIDs: [], host: "mac")
+            #expect(none.isEmpty)
+        }
+    }
+
     // MARK: Retrieval
 
     @Test func emptyStoreReturnsNoCandidates() async throws {

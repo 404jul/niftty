@@ -110,3 +110,32 @@ fi
 ```
 
 Shell integration requires Zsh 5.1+.
+
+## SSH
+
+Every integration wraps `ssh` with `niftty +ssh` when any `ssh-*` feature is
+enabled, translating each disabled feature into a `+ssh` flag:
+
+| Feature           | `+ssh` flag when disabled    |
+| ----------------- | ---------------------------- |
+| `ssh-env`         | `--forward-env=false`        |
+| `ssh-terminfo`    | `--terminfo=false`           |
+| `ssh-integration` | `--shell-integration=false`  |
+
+`ssh-integration` makes `+ssh` install the zsh and bash integration from this
+directory (`zsh/.zshenv`, `zsh/ghostty-integration`, `bash/ghostty.bash`,
+`bash/bash-preexec.sh`) on the remote host under
+`~/.local/share/niftty/shell-integration/<hash>`, where `<hash>` is derived
+from the file contents. The install shares the one-time remote setup connection
+and cache entry with `ssh-terminfo` (see `niftty +ssh-cache`). Interactive
+logins then start the remote login shell with the integration loaded the same
+way as locally (zsh through `ZDOTDIR`, bash through `--posix` and `ENV`),
+forwarding `GHOSTTY_PREDICTION` and the `cursor` and `title` features. Only zsh
+and bash 4+ login shells are supported (bash 3 ignores `ENV` in POSIX mode, so
+Apple's `/bin/bash` starts unchanged, as do other shells). Inside tmux
+on the remote host the OSC 133 prompt marks never reach Niftty, because tmux
+does not forward them.
+
+Keep the zsh and bash scripts self-contained within their directories: the
+remote install only carries the four files above, and changing any of them
+installs a new remote copy on the next connection.

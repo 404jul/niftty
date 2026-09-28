@@ -92,27 +92,96 @@ struct PredictionCascadeTests {
         #expect(!HistoryRecorder.meetsGate(count: 2, total: 10))
     }
 
-    // MARK: validatesOnLocalDisk(_:isLocalContext:)
+    // MARK: validates(_:directory:isLocalContext:recordedDirectories:)
 
-    @Test func validationRejectsMissingLocalPath() {
-        #expect(!HistoryRecorder.validatesOnLocalDisk(
-            "cat /definitely/not/a/real/path/xyz",
-            isLocalContext: true))
+    /// Run `body` with `count` fresh, empty temporary directories
+    /// (paths), removing them afterwards.
+    private func withTemporaryDirectories(
+        _ count: Int, _ body: ([String]) throws -> Void
+    ) throws {
+        let urls = (0..<count).map { _ in
+            FileManager.default.temporaryDirectory
+                .appendingPathComponent("niftty-validation-tests-\(UUID().uuidString)", isDirectory: true)
+        }
+        defer { for url in urls { try? FileManager.default.removeItem(at: url) } }
+        for url in urls {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        }
+        try body(urls.map(\.path))
     }
 
-    @Test func validationSkipsRemoteContexts() {
-        // Remote prompts have no local disk to check against.
-        #expect(HistoryRecorder.validatesOnLocalDisk(
-            "cat /definitely/not/a/real/path/xyz",
-            isLocalContext: false))
+    @Test func cdTargetMustExistInTheCurrentDirectory() throws {
+        try withTemporaryDirectories(1) { dirs in
+            let here = dirs[0]
+            // Regression: `cd folder/` from another directory's history
+            // was suggested where `folder` does not exist.
+            #expect(!HistoryRecorder.validates(
+                "cd folder/", directory: here, isLocalContext: true, recordedDirectories: []))
+
+            try FileManager.default.createDirectory(
+                atPath: here + "/folder", withIntermediateDirectories: false)
+            #expect(HistoryRecorder.validates(
+                "cd folder/", directory: here, isLocalContext: true, recordedDirectories: []))
+        }
     }
 
-    @Test func validationPassesNonPathTokensAndExistingPaths() {
+    @Test func bareFileArgumentResolvesAgainstCurrentNotRecordedDirectory() throws {
+        try withTemporaryDirectories(2) { dirs in
+            let (recordedIn, elsewhere) = (dirs[0], dirs[1])
+            FileManager.default.createFile(atPath: recordedIn + "/notes.txt", contents: nil)
+
+            // `notes.txt` is a file where the command was recorded, so
+            // it is a path and must exist where the prompt is now.
+            #expect(!HistoryRecorder.validates(
+                "vim notes.txt", directory: elsewhere, isLocalContext: true,
+                recordedDirectories: [recordedIn]))
+            #expect(HistoryRecorder.validates(
+                "vim notes.txt", directory: recordedIn, isLocalContext: true,
+                recordedDirectories: [recordedIn]))
+        }
+    }
+
+    @Test func slashedNonPathArgumentsPassLocally() throws {
+        try withTemporaryDirectories(2) { dirs in
+            let (recordedIn, here) = (dirs[0], dirs[1])
+            // Neither word is a path in any recorded directory, so a
+            // `/` alone must not reject them.
+            #expect(HistoryRecorder.validates(
+                "git checkout origin/main", directory: here, isLocalContext: true,
+                recordedDirectories: [recordedIn]))
+            #expect(HistoryRecorder.validates(
+                "git clone https://github.com/a/b", directory: here, isLocalContext: true,
+                recordedDirectories: [recordedIn]))
+        }
+    }
+
+    @Test func remoteRelativePathNeedsSameDirectoryHistory() {
+        // No disk to check remotely: history from this very directory
+        // is the only evidence `src/` exists there.
+        #expect(HistoryRecorder.validates(
+            "cd src/", directory: "/home/u/proj", isLocalContext: false,
+            recordedDirectories: ["/home/u/proj"]))
+        #expect(!HistoryRecorder.validates(
+            "cd src/", directory: "/home/u/proj", isLocalContext: false,
+            recordedDirectories: ["/home/u/other"]))
+        #expect(!HistoryRecorder.validates(
+            "cd src/", directory: nil, isLocalContext: false,
+            recordedDirectories: ["/home/u/proj"]))
+        // Absolute paths cannot be checked remotely and pass.
+        #expect(HistoryRecorder.validates(
+            "cat /definitely/not/a/real/path/xyz", directory: "/home/u/proj",
+            isLocalContext: false, recordedDirectories: []))
+    }
+
+    @Test func localAbsolutePathMustExist() {
+        #expect(!HistoryRecorder.validates(
+            "cat /definitely/not/a/real/path/xyz", directory: "/tmp", isLocalContext: true,
+            recordedDirectories: []))
+        #expect(HistoryRecorder.validates(
+            "cat /tmp", directory: "/tmp", isLocalContext: true, recordedDirectories: []))
         // No PATH/executable check: shell functions and aliases must
         // not be false rejections.
-        #expect(HistoryRecorder.validatesOnLocalDisk(
-            "zig build test", isLocalContext: true))
-        #expect(HistoryRecorder.validatesOnLocalDisk(
-            "cat /tmp", isLocalContext: true))
+        #expect(HistoryRecorder.validates(
+            "zig build test", directory: "/tmp", isLocalContext: true, recordedDirectories: []))
     }
 }

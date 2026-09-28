@@ -2884,6 +2884,139 @@ pub fn cursorAtInputOrigin(self: *const Screen) bool {
     return self.cursor.page_row == origin.row and self.cursor.x == origin.x;
 }
 
+/// Write the shell input typed before the cursor on the current
+/// logical (soft-wrapped) line to `writer`, as marked by shell
+/// integration (OSC 133 cell semantic content). Returns false when the
+/// input line cannot be determined; nothing meaningful is written then.
+///
+/// The line is only determined when all of these hold:
+///   - The cursor is in an input region (`.input` semantic content,
+///     between OSC 133 B and C).
+///   - The cursor has no pending wrap.
+///   - The cursor is at the end of the input: the cell under the cursor
+///     and the cell right after it are blank, and the cursor row does not
+///     continue onto the next row. This rejects a cursor moved left into
+///     typed text, text after the cursor, and a suggestion the shell
+///     draws itself right after the cursor (zsh-autosuggestions, fish).
+///     Text two or more cells away (e.g. a zsh RPROMPT) is fine.
+///
+/// The input starts right after the last `.prompt` cell before the
+/// cursor on the logical line. When the line has no prompt cell, the
+/// input must start on it: the OSC 133 B origin (`input_origin`) has to
+/// be on the logical line's first row, and the input starts there.
+/// Otherwise the line continues input the shell broke onto a new row
+/// with a hard newline, or it holds output printed while the shell sat
+/// at the prompt (e.g. a background job), and the typed prefix is
+/// unknown. Wide-character spacer cells are skipped.
+/// Blank cells (never written, or a plain space) before the first
+/// non-blank cell are skipped, so an empty prompt yields "". After
+/// that, a cell without text is written as a single space, since
+/// shells like zsh draw typed spaces with cursor movement, and
+/// trailing blanks before the cursor are kept ("git " stays "git ").
+///
+/// This does not allocate. `input_origin` is only compared by row
+/// pointer, never dereferenced, since its row can be freed by reflow.
+pub fn promptInput(
+    self: *const Screen,
+    writer: *std.Io.Writer,
+) std.Io.Writer.Error!bool {
+    const cursor = &self.cursor;
+    if (cursor.semantic_content != .input) return false;
+    if (cursor.pending_wrap) return false;
+
+    // The cursor must sit at the end of the input line.
+    const cursor_pin = cursor.page_pin.*;
+    const cursor_cells = cursor_pin.node.page().getCells(cursor.page_row);
+    if (cursor.page_row.wrap) return false;
+    if (cursor.page_cell.wide == .spacer_tail) return false;
+    if (!promptInputBlank(cursor.page_cell.*)) return false;
+    if (cursor.x + 1 < cursor_cells.len and
+        !promptInputBlank(cursor_cells[cursor.x + 1])) return false;
+
+    // Find the first row of the logical line.
+    var top = cursor_pin;
+    top.x = 0;
+    while (top.rowAndCell().row.wrap_continuation) {
+        top = top.up(1) orelse break;
+    }
+
+    // First pass: the input starts after the last prompt cell.
+    var start: usize = 0;
+    {
+        var idx: usize = 0;
+        var row_pin = top;
+        while (true) {
+            const row = row_pin.rowAndCell().row;
+            const cells = row_pin.node.page().getCells(row);
+            const is_cursor_row = row_pin.node == cursor_pin.node and
+                row_pin.y == cursor_pin.y;
+            const end = if (is_cursor_row) cursor_pin.x else cells.len;
+            for (cells[0..end]) |cell| {
+                idx += 1;
+                if (cell.semantic_content == .prompt) start = idx;
+            }
+            if (is_cursor_row) break;
+            row_pin = row_pin.down(1) orelse return false;
+        }
+    }
+
+    // Without a prompt cell the input must begin on this logical line.
+    if (start == 0) {
+        const origin = self.input_origin orelse return false;
+        if (origin.row != top.rowAndCell().row) return false;
+        start = origin.x;
+    }
+
+    // Second pass: write the input cells.
+    var idx: usize = 0;
+    var seen_text = false;
+    var row_pin = top;
+    while (true) {
+        const row = row_pin.rowAndCell().row;
+        const page = row_pin.node.page();
+        const cells = page.getCells(row);
+        const is_cursor_row = row_pin.node == cursor_pin.node and
+            row_pin.y == cursor_pin.y;
+        const end = if (is_cursor_row) cursor_pin.x else cells.len;
+        for (cells[0..end]) |*cell| {
+            defer idx += 1;
+            if (idx < start) continue;
+            switch (cell.wide) {
+                .spacer_tail, .spacer_head => continue,
+                .narrow, .wide => {},
+            }
+
+            if (!seen_text) {
+                if (promptInputBlank(cell.*)) continue;
+                seen_text = true;
+            }
+
+            if (!cell.hasText()) {
+                try writer.writeByte(' ');
+                continue;
+            }
+
+            try writer.printUnicodeCodepoint(cell.codepoint());
+            if (cell.hasGrapheme()) {
+                if (page.lookupGrapheme(cell)) |cps| {
+                    for (cps) |cp| try writer.printUnicodeCodepoint(cp);
+                }
+            }
+        }
+        if (is_cursor_row) break;
+        row_pin = row_pin.down(1) orelse return false;
+    }
+
+    return true;
+}
+
+/// A cell counts as blank for `promptInput` when it has no text or is a
+/// plain space (e.g. left behind by a "\b \b" erase).
+fn promptInputBlank(cell: Cell) bool {
+    if (!cell.hasText()) return true;
+    return cell.codepoint() == ' ' and !cell.hasGrapheme();
+}
+
 /// Set the selection to the given selection. If this is a tracked selection
 /// then the screen will take ownership of the selection. If this is untracked
 /// then the screen will convert it to tracked internally. This will automatically

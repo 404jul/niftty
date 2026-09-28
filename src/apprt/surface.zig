@@ -148,10 +148,10 @@ pub const Message = union(enum) {
     /// The receiver takes ownership and must call `deinit`.
     start_command: WriteReq,
 
-    /// The shell finished drawing its prompt and input can begin
-    /// (OSC 133 B). This is the boundary where a new prediction context
-    /// starts.
-    prompt_ready: void,
+    /// Terminal output was processed while the cursor is (or just stopped
+    /// being) in a shell input region; the prediction input line may have
+    /// changed.
+    prompt_input: void,
 
     /// A command has finished in the shell, stop the timer and send out
     /// notifications as appropriate. The optional u8 is the exit code

@@ -364,12 +364,13 @@ pub const Action = union(Key) {
 
     /// Move a tab to a new window.
     move_tab_to_new_window,
-    /// A shell prompt became ready for input (OSC 133 B) and a new
-    /// prediction context started, or the typed input line changed at
-    /// the prompt and a fresh candidate was requested for the new
-    /// prefix. The revision identifies the context; candidates
-    /// submitted for any other revision — or for a different input
-    /// line than the current one — are rejected as stale.
+    /// The shell input line at the prompt changed and a new prediction
+    /// context started for it. The line is read from the screen using
+    /// OSC 133 marks, so this fires for a new (empty) prompt and for any
+    /// edit the shell echoes: typing, completion, history navigation,
+    /// paste. The revision identifies the context; candidates submitted
+    /// for any other revision — or for a different input line than the
+    /// current one — are rejected as stale.
     prediction_prompt_ready: PredictionPromptReady,
 
     /// A command started in the shell (OSC 133 C) with the decoded
@@ -1054,10 +1055,9 @@ pub const CommandFinished = struct {
 pub const PredictionPromptReady = struct {
     revision: u64,
 
-    /// The current typed input line at the prompt. Empty at a fresh
-    /// prompt (OSC 133 B); non-empty when the line has been edited and
-    /// a new candidate was requested for the typed prefix. The pointer
-    /// is only valid for the duration of the action.
+    /// The screen-derived shell input line at the prompt the context
+    /// was opened for. Empty at an empty prompt. The pointer is only
+    /// valid for the duration of the action.
     input: []const u8,
 
     /// sync with ghostty_action_prediction_prompt_ready_s in ghostty.h

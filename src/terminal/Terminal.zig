@@ -2267,6 +2267,16 @@ pub fn cursorAtInputOrigin(self: *Terminal) bool {
     return self.screens.active.cursorAtInputOrigin();
 }
 
+/// Write the shell input typed before the cursor at the prompt. Always
+/// false on the alternate screen; see `Screen.promptInput`.
+pub fn promptInput(
+    self: *Terminal,
+    writer: *std.Io.Writer,
+) std.Io.Writer.Error!bool {
+    if (self.screens.active_key == .alternate) return false;
+    return self.screens.active.promptInput(writer);
+}
+
 /// Horizontal tab moves the cursor to the next tabstop, clearing
 /// the screen to the left the tabstop.
 pub fn horizontalTab(self: *Terminal) void {
@@ -15152,6 +15162,212 @@ test "Terminal: cursor at input origin tracks empty prompt" {
     // The command-start marker (OSC 133 C) clears the origin.
     try t.semanticPrompt(.init(.end_input_start_output));
     try testing.expect(!t.cursorAtInputOrigin());
+}
+
+test "Terminal: promptInput empty prompt" {
+    const alloc = testing.allocator;
+    var t = try init(testing.io, alloc, .{ .cols = 20, .rows = 5 });
+    defer t.deinit(alloc);
+
+    try t.semanticPrompt(.init(.prompt_start));
+    for ("$ ") |c| try t.print(c);
+    try t.semanticPrompt(.init(.end_prompt_start_input));
+
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try testing.expect(try t.promptInput(&w));
+    try testing.expectEqualStrings("", w.buffered());
+}
+
+test "Terminal: promptInput typed text" {
+    const alloc = testing.allocator;
+    var t = try init(testing.io, alloc, .{ .cols = 20, .rows = 5 });
+    defer t.deinit(alloc);
+
+    try t.semanticPrompt(.init(.prompt_start));
+    for ("$ ") |c| try t.print(c);
+    try t.semanticPrompt(.init(.end_prompt_start_input));
+    for ("git st") |c| try t.print(c);
+
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try testing.expect(try t.promptInput(&w));
+    try testing.expectEqualStrings("git st", w.buffered());
+}
+
+test "Terminal: promptInput keeps trailing space" {
+    const alloc = testing.allocator;
+    var t = try init(testing.io, alloc, .{ .cols = 20, .rows = 5 });
+    defer t.deinit(alloc);
+
+    try t.semanticPrompt(.init(.prompt_start));
+    for ("$ ") |c| try t.print(c);
+    try t.semanticPrompt(.init(.end_prompt_start_input));
+    for ("git") |c| try t.print(c);
+    // zsh draws a typed space by moving the cursor.
+    t.cursorRight(1);
+
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try testing.expect(try t.promptInput(&w));
+    try testing.expectEqualStrings("git ", w.buffered());
+}
+
+test "Terminal: promptInput unwritten cell between words is a space" {
+    const alloc = testing.allocator;
+    var t = try init(testing.io, alloc, .{ .cols = 20, .rows = 5 });
+    defer t.deinit(alloc);
+
+    try t.semanticPrompt(.init(.prompt_start));
+    for ("$ ") |c| try t.print(c);
+    try t.semanticPrompt(.init(.end_prompt_start_input));
+    for ("ls") |c| try t.print(c);
+    t.cursorRight(1);
+    for ("-la") |c| try t.print(c);
+
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try testing.expect(try t.promptInput(&w));
+    try testing.expectEqualStrings("ls -la", w.buffered());
+}
+
+test "Terminal: promptInput soft-wrapped input" {
+    const alloc = testing.allocator;
+    var t = try init(testing.io, alloc, .{ .cols = 10, .rows = 5 });
+    defer t.deinit(alloc);
+
+    try t.semanticPrompt(.init(.prompt_start));
+    for ("$ ") |c| try t.print(c);
+    try t.semanticPrompt(.init(.end_prompt_start_input));
+    for ("echo hello") |c| try t.print(c);
+    try testing.expectEqual(@as(usize, 1), t.screens.active.cursor.y);
+
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try testing.expect(try t.promptInput(&w));
+    try testing.expectEqualStrings("echo hello", w.buffered());
+}
+
+test "Terminal: promptInput cursor moved left into text" {
+    const alloc = testing.allocator;
+    var t = try init(testing.io, alloc, .{ .cols = 20, .rows = 5 });
+    defer t.deinit(alloc);
+
+    try t.semanticPrompt(.init(.prompt_start));
+    for ("$ ") |c| try t.print(c);
+    try t.semanticPrompt(.init(.end_prompt_start_input));
+    for ("git st") |c| try t.print(c);
+    t.cursorLeft(2);
+
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try testing.expect(!try t.promptInput(&w));
+}
+
+test "Terminal: promptInput shell suggestion after cursor" {
+    const alloc = testing.allocator;
+    var t = try init(testing.io, alloc, .{ .cols = 20, .rows = 5 });
+    defer t.deinit(alloc);
+
+    try t.semanticPrompt(.init(.prompt_start));
+    for ("$ ") |c| try t.print(c);
+    try t.semanticPrompt(.init(.end_prompt_start_input));
+    for ("git") |c| try t.print(c);
+    // An autosuggestion drawn after the cursor, then the cursor is
+    // moved back to the end of the typed text.
+    for (" status") |c| try t.print(c);
+    t.cursorLeft(7);
+
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try testing.expect(!try t.promptInput(&w));
+}
+
+test "Terminal: promptInput in output" {
+    const alloc = testing.allocator;
+    var t = try init(testing.io, alloc, .{ .cols = 20, .rows = 5 });
+    defer t.deinit(alloc);
+
+    try t.semanticPrompt(.init(.prompt_start));
+    for ("$ ") |c| try t.print(c);
+    try t.semanticPrompt(.init(.end_prompt_start_input));
+    for ("ls") |c| try t.print(c);
+    try t.semanticPrompt(.init(.end_input_start_output));
+
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try testing.expect(!try t.promptInput(&w));
+}
+
+test "Terminal: promptInput alternate screen" {
+    const alloc = testing.allocator;
+    var t = try init(testing.io, alloc, .{ .cols = 20, .rows = 5 });
+    defer t.deinit(alloc);
+
+    try t.switchScreenMode(.@"1049", true);
+    try t.semanticPrompt(.init(.prompt_start));
+    for ("$ ") |c| try t.print(c);
+    try t.semanticPrompt(.init(.end_prompt_start_input));
+    try testing.expectEqual(.input, t.screens.active.cursor.semantic_content);
+
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try testing.expect(!try t.promptInput(&w));
+}
+
+test "Terminal: promptInput pending wrap" {
+    const alloc = testing.allocator;
+    var t = try init(testing.io, alloc, .{ .cols = 10, .rows = 5 });
+    defer t.deinit(alloc);
+
+    try t.semanticPrompt(.init(.prompt_start));
+    for ("$ ") |c| try t.print(c);
+    try t.semanticPrompt(.init(.end_prompt_start_input));
+    for ("abcdefgh") |c| try t.print(c);
+    try testing.expect(t.screens.active.cursor.pending_wrap);
+
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try testing.expect(!try t.promptInput(&w));
+}
+
+test "Terminal: promptInput input on its own row after the prompt" {
+    const alloc = testing.allocator;
+    var t = try init(testing.io, alloc, .{ .cols = 20, .rows = 5 });
+    defer t.deinit(alloc);
+
+    // A prompt ending in a newline: the input row has no prompt cells.
+    try t.semanticPrompt(.init(.prompt_start));
+    for ("~/src") |c| try t.print(c);
+    t.carriageReturn();
+    try t.linefeed();
+    try t.semanticPrompt(.init(.end_prompt_start_input));
+    for ("ls") |c| try t.print(c);
+
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try testing.expect(try t.promptInput(&w));
+    try testing.expectEqualStrings("ls", w.buffered());
+}
+
+test "Terminal: promptInput hard newline inside input" {
+    const alloc = testing.allocator;
+    var t = try init(testing.io, alloc, .{ .cols = 20, .rows = 5 });
+    defer t.deinit(alloc);
+
+    // The start of the typed line is on an earlier row, so the prefix
+    // on the cursor row alone is not the input.
+    try t.semanticPrompt(.init(.prompt_start));
+    for ("$ ") |c| try t.print(c);
+    try t.semanticPrompt(.init(.end_prompt_start_input));
+    for ("echo") |c| try t.print(c);
+    t.carriageReturn();
+    try t.linefeed();
+    for ("hi") |c| try t.print(c);
+
+    var buf: [64]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try testing.expect(!try t.promptInput(&w));
 }
 
 test "Terminal: semantic prompt continuations" {

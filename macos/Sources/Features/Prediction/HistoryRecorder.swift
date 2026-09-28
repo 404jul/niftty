@@ -30,16 +30,12 @@ final class HistoryRecorder {
     private var closeObserver: (any NSObjectProtocol)?
 
     /// The most recently finished command per surface, from
-    /// observations only, with the execution context its transitions
-    /// were recorded under. A new prompt context does not clear it:
-    /// the previous command is exactly the transition source for
-    /// whatever comes next. Entries are dropped when the surface
-    /// closes.
+    /// observations only. A new prompt context does not clear it: the
+    /// previous command is exactly the transition source for whatever
+    /// comes next. Entries are dropped when the surface closes.
     private struct LastCommand {
         let text: String
         let exitCode: Int32?
-        let directory: String?
-        let host: String?
     }
 
     private var lastCommandBySurface: [UUID: LastCommand] = [:]
@@ -104,11 +100,17 @@ final class HistoryRecorder {
     ///
     /// - Empty prompt: follow-ups of the previous command through
     ///   context-matching transitions, confidence-gated
-    ///   (`meetsGate`) and validated against the local disk.
+    ///   (`meetsGate`) and directory-validated.
     /// - Typed prefix: (1) context-transition follow-ups matching the
-    ///   typed prefix, then (2) recent prefix matches, this directory
-    ///   first. The first candidate that both token-suffix-matches
-    ///   the typed text and validates wins.
+    ///   typed prefix under the current directory and host, then (2)
+    ///   recent prefix matches, this directory first. The first
+    ///   candidate that both token-suffix-matches the typed text and
+    ///   validates wins.
+    ///
+    /// Validation (`validates`) resolves the candidate's relative
+    /// paths against the shell's current directory, using the
+    /// directories each command was recorded in as evidence of which
+    /// words are paths; see there for the rules.
     ///
     /// Any miss declines: there is no completer or model fallback.
     func predict(_ context: PredictionEngine.PredictionContext) async -> PredictionEngine.Candidate? {
@@ -119,27 +121,34 @@ final class HistoryRecorder {
         // validate against.
         let isLocalContext = context.host != nil && context.remotePath == nil
 
-        // Typed prefix: two local tiers, first suffix-and-disk-valid
-        // match wins.
+        // Typed prefix: two local tiers, first suffix-matching and
+        // valid candidate wins.
         if !typed.isEmpty {
             let normalizedTyped = ShellLexer.normalize(typed)
             guard !normalizedTyped.isEmpty else { return nil }
 
-            // Tier 1: context transitions out of the previous command,
-            // matched under the context it was recorded in. An unknown
-            // exit code is recorded as 0 by `record`, so query with 0:
-            // a NULL bind would never match any row.
+            // Tier 1: context transitions out of the previous command.
+            // Transitions are stored under the follow-up command's own
+            // directory and host, so match against where the prompt is
+            // now (after a `cd`, not where the previous command ran).
+            // An unknown exit code is recorded as 0 by `record`, so
+            // query with 0: a NULL bind would never match any row.
             if let last = lastCommandBySurface[context.surfaceID] {
                 let rows = await store.contextPrefixCandidates(
                     previous: last.text,
-                    directory: last.directory,
-                    host: last.host,
+                    directory: directory,
+                    host: context.host,
                     exitCode: last.exitCode ?? 0,
                     prefix: normalizedTyped,
                     extractor: CommandFeatureExtractor.version,
                     limit: 20)
+                let recorded = await recordedDirectories(of: rows, host: context.host)
                 if let match = Self.firstValidCandidate(
-                    rows, typed: typed, isLocalContext: isLocalContext)
+                    rows,
+                    typed: typed,
+                    directory: directory,
+                    isLocalContext: isLocalContext,
+                    recordedDirectories: recorded)
                 {
                     return match
                 }
@@ -150,8 +159,13 @@ final class HistoryRecorder {
                 prefix: normalizedTyped,
                 directory: directory,
                 limit: 20)
+            let recorded = await recordedDirectories(of: rows, host: context.host)
             return Self.firstValidCandidate(
-                rows, typed: typed, isLocalContext: isLocalContext)
+                rows,
+                typed: typed,
+                directory: directory,
+                isLocalContext: isLocalContext,
+                recordedDirectories: recorded)
         }
 
         // Empty prompt: follow-up of the command that just ran, behind
@@ -168,8 +182,13 @@ final class HistoryRecorder {
         guard let top = rows.first,
               Self.meetsGate(count: top.contextCount, total: top.contextTotal)
         else { return nil }
+        let recorded = await recordedDirectories(of: rows, host: context.host)
         for row in rows {
-            guard Self.validatesOnLocalDisk(row.text, isLocalContext: isLocalContext)
+            guard Self.validates(
+                row.text,
+                directory: directory,
+                isLocalContext: isLocalContext,
+                recordedDirectories: recorded[row.id] ?? [])
             else { continue }
             return PredictionEngine.Candidate(
                 id: "\(Self.candidateIDPrefix)\(row.id)",
@@ -180,6 +199,15 @@ final class HistoryRecorder {
             )
         }
         return nil
+    }
+
+    /// The directories each candidate row was recorded in on `host`,
+    /// fetched in one store query per tier (none for an empty tier).
+    private func recordedDirectories(
+        of rows: [HistoryStore.CandidateRow], host: String?
+    ) async -> [Int64: [String]] {
+        guard !rows.isEmpty else { return [:] }
+        return await store.occurrenceDirectories(commandIDs: rows.map(\.id), host: host)
     }
 
     /// The remaining suffix of `command` after the typed `typed`
@@ -259,26 +287,142 @@ final class HistoryRecorder {
         count >= 2 && Double(count) / Double(max(total, 1)) >= 0.25
     }
 
-    /// Whether every path-like token of `text` exists on the local
-    /// disk. Remote contexts have no local disk to check, so they
-    /// always pass. Non-path tokens (command names, flags, plain
-    /// arguments) are never validated — shell functions and aliases
-    /// would be false rejections.
-    nonisolated static func validatesOnLocalDisk(_ text: String, isLocalContext: Bool) -> Bool {
-        guard isLocalContext else { return true }
-        for token in ShellLexer.tokens(text) where isPathLike(token.text) {
-            guard FileManager.default.fileExists(atPath: expandTilde(token.text)) else {
-                return false
+    /// Whether `text` can run where the prompt is: every word that
+    /// names a file must resolve from the shell's current `directory`
+    /// (the local or remote path), not from wherever the command was
+    /// recorded. `recordedDirectories` are the directories the command
+    /// ran in, used as evidence of which bare words are paths.
+    ///
+    /// Checked words are arguments (flags excluded) plus a command
+    /// word containing `/`; env-assignment prefixes and redirection
+    /// targets are skipped, as are words the shell would expand
+    /// (`$`, globs, braces, backticks, `~user`), URLs, and scp-style
+    /// `host:path` words. A word is a path when it is absolute or
+    /// home-anchored, explicitly relative (`.`, `..`, `./x`, `../x`, a
+    /// `cd`/`pushd` argument, or a command word like `bin/rails`), or —
+    /// locally — exists under some recorded directory. A word merely
+    /// containing `/` is a path only as a fallback: locally when no
+    /// recorded directory is known, remotely always.
+    ///
+    /// - Local: absolute/home paths must exist; relative paths must
+    ///   exist under `directory` and reject when it is unknown.
+    ///   Non-path words (`status`, `origin/main`) pass — shell
+    ///   functions and aliases would be false rejections.
+    /// - Remote: there is no disk to check, so absolute/home paths
+    ///   pass, and relative paths pass only when the command was
+    ///   recorded in this very directory.
+    nonisolated static func validates(
+        _ text: String,
+        directory: String?,
+        isLocalContext: Bool,
+        recordedDirectories: [String],
+        fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+    ) -> Bool {
+        let recorded = recordedDirectories.filter { !$0.isEmpty }
+        let recordedHere = directory.map { current in
+            recorded.contains(where: { trimmingTrailingSlash($0) == trimmingTrailingSlash(current) })
+        } ?? false
+
+        for word in checkedWords(text) {
+            if word.text.hasPrefix("/") || word.text == "~" || word.text.hasPrefix("~/") {
+                guard !isLocalContext || fileExists(expandTilde(word.text)) else { return false }
+                continue
+            }
+
+            let explicit = word.isExplicitPath
+                || word.text == "." || word.text == ".."
+                || word.text.hasPrefix("./") || word.text.hasPrefix("../")
+            let syntactic = word.text.contains("/")
+
+            if isLocalContext {
+                let isPath = explicit
+                    || recorded.contains(where: { fileExists(joined($0, word.text)) })
+                    || (syntactic && recorded.isEmpty)
+                guard isPath else { continue }
+                guard let directory, fileExists(joined(directory, word.text)) else { return false }
+            } else {
+                guard explicit || syntactic else { continue }
+                guard recordedHere else { return false }
             }
         }
         return true
     }
 
-    /// A token referencing a file somewhere: absolute, relative, or
-    /// home-anchored.
-    private nonisolated static func isPathLike(_ word: String) -> Bool {
-        word.hasPrefix("/") || word.hasPrefix("./") || word.hasPrefix("../")
-            || word.hasPrefix("~/") || word.contains("/")
+    /// A word `validates` checks, with whether its position alone
+    /// makes it a path: a command word containing `/`, or a
+    /// `cd`/`pushd` argument.
+    private struct CheckedWord {
+        let text: String
+        let isExplicitPath: Bool
+    }
+
+    /// The words of `text` that may name files, per simple command:
+    /// operators start a new command, redirection targets are
+    /// skipped, leading env assignments are skipped, the next word is
+    /// the command word (kept only when it contains `/`), and the
+    /// remaining non-flag words are arguments. Words the shell would
+    /// expand, URLs, and scp-style words are dropped: they cannot be
+    /// resolved as literal paths.
+    private nonisolated static func checkedWords(_ text: String) -> [CheckedWord] {
+        var words: [CheckedWord] = []
+        var commandWord: String?
+        var skipRedirectTarget = false
+        for token in ShellLexer.tokens(text) {
+            switch token.kind {
+            case .op:
+                commandWord = nil
+                skipRedirectTarget = false
+                continue
+            case .redirect:
+                // A complete fd duplication (`2>&1`) has no target word.
+                skipRedirectTarget = !(token.text.contains("&")
+                    && (token.text.last?.isNumber ?? false))
+                continue
+            case .word:
+                if skipRedirectTarget {
+                    skipRedirectTarget = false
+                    continue
+                }
+            }
+
+            let word = token.text
+            let isExplicitPath: Bool
+            if let commandWord {
+                guard !word.hasPrefix("-") else { continue }
+                isExplicitPath = commandWord == "cd" || commandWord == "pushd"
+            } else {
+                if CommandFeatureExtractor.isEnvAssignment(word) { continue }
+                commandWord = word
+                guard word.contains("/") else { continue }
+                isExplicitPath = true
+            }
+            guard isLiteralPath(word) else { continue }
+            words.append(CheckedWord(text: word, isExplicitPath: isExplicitPath))
+        }
+        return words
+    }
+
+    /// Whether `word` could be a literal path: nothing the shell
+    /// expands (`$`, globs, braces, backticks, `~user`), not a URL,
+    /// and not scp-style (a `:` before any `/`, as in `host:dir/x`).
+    private nonisolated static func isLiteralPath(_ word: String) -> Bool {
+        if word.contains(where: { "$*?[{`".contains($0) }) { return false }
+        if word.hasPrefix("~"), word != "~", !word.hasPrefix("~/") { return false }
+        if word.contains("://") { return false }
+        if let colon = word.firstIndex(of: ":") {
+            guard let slash = word.firstIndex(of: "/"), slash < colon else { return false }
+        }
+        return true
+    }
+
+    /// `word` resolved under `directory` by plain string joining.
+    private nonisolated static func joined(_ directory: String, _ word: String) -> String {
+        directory.hasSuffix("/") ? directory + word : directory + "/" + word
+    }
+
+    /// `path` without one trailing `/`, except for the root.
+    private nonisolated static func trimmingTrailingSlash(_ path: String) -> String {
+        path.count > 1 && path.hasSuffix("/") ? String(path.dropLast()) : path
     }
 
     /// Expand a leading `~` to the current user's home directory.
@@ -288,15 +432,22 @@ final class HistoryRecorder {
     }
 
     /// The first row with a remaining suffix after `typed` that also
-    /// validates on the local disk.
+    /// validates in the current directory, given each row's recorded
+    /// directories.
     private static func firstValidCandidate(
         _ rows: [HistoryStore.CandidateRow],
         typed: String,
-        isLocalContext: Bool
+        directory: String?,
+        isLocalContext: Bool,
+        recordedDirectories: [Int64: [String]]
     ) -> PredictionEngine.Candidate? {
         for row in rows {
             guard let suffix = suffix(of: row.text, afterTyped: typed),
-                  validatesOnLocalDisk(row.text, isLocalContext: isLocalContext)
+                  validates(
+                    row.text,
+                    directory: directory,
+                    isLocalContext: isLocalContext,
+                    recordedDirectories: recordedDirectories[row.id] ?? [])
             else { continue }
             return PredictionEngine.Candidate(
                 id: "\(candidateIDPrefix)\(row.id)",
@@ -323,9 +474,7 @@ final class HistoryRecorder {
             let previous = lastCommandBySurface[observation.surfaceID]
             lastCommandBySurface[observation.surfaceID] = LastCommand(
                 text: observation.command.text,
-                exitCode: observation.command.exitCode,
-                directory: observation.localPath ?? observation.remotePath,
-                host: observation.host)
+                exitCode: observation.command.exitCode)
             let store = self.store
             Task {
                 await store.record(

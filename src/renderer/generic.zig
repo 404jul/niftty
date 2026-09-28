@@ -2837,7 +2837,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
 
             // Setup our prediction ghost text. This draws faint regular
             // terminal glyphs starting at the cursor, wrapping at the
-            // right grid edge and clipping at the bottom of the viewport.
+            // right grid edge and clipping at the bottom of the viewport
+            // or at the first cell that already holds visible text (e.g.
+            // a zsh RPROMPT), so ghost text never overlaps the screen.
             // It is suppressed while an IME preedit is active, on the
             // alternate screen, while a password input is detected, when
             // the cursor is outside the viewport, or when the cursor is
@@ -2868,6 +2870,18 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                         .clipped => break :prediction,
                         .cell => |c| c,
                     };
+
+                    // Stop at existing text, whether or not this row is
+                    // rebuilt this frame. A plain space is not text worth
+                    // protecting: drawing over it looks the same.
+                    if (cell.y >= row_cells.len) break :prediction;
+                    const raws = row_cells[cell.y].items(.raw);
+                    const span: usize = if (cp.wide) 2 else 1;
+                    for (cell.x..cell.x + span) |x| {
+                        if (x >= raws.len) continue;
+                        const raw = raws[x];
+                        if (raw.hasText() and raw.codepoint() != ' ') break :prediction;
+                    }
 
                     // Only add cells on rows that were rebuilt this frame.
                     // Rows that weren't rebuilt still hold the ghost text
