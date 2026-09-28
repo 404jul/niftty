@@ -160,7 +160,7 @@ struct SettingRow: View {
             }
             editor
 
-            Text("Default: \(row.defaultDisplayValue)")
+            Text("Default: \(row.metadata.defaultDisplay)")
                 .font(.caption.monospaced())
                 .foregroundStyle(.tertiary)
                 .lineLimit(2)
@@ -186,7 +186,7 @@ struct SettingRow: View {
             HStack(spacing: 8) {
                 Picker("Value", selection: selection) {
                     if row.metadata.value.isEmpty {
-                        Text("Default: \(row.defaultDisplayValue)").tag("")
+                        Text("Default: \(row.metadata.defaultDisplay)").tag("")
                     }
                     ForEach(row.metadata.options, id: \.self) { option in
                         Text(option).tag(option)
@@ -198,7 +198,7 @@ struct SettingRow: View {
                 .frame(maxWidth: 300, alignment: .leading)
 
                 if isCustom {
-                    TextField(row.defaultDisplayValue, text: model.binding(for: row.id))
+                    TextField(row.metadata.defaultDisplay, text: model.binding(for: row.id))
                         .textFieldStyle(.roundedBorder)
                         .font(.body.monospaced())
                         .frame(maxWidth: 300)
@@ -208,7 +208,7 @@ struct SettingRow: View {
 
         case .text:
             HStack(alignment: .center, spacing: 8) {
-                TextField(row.defaultDisplayValue, text: model.binding(for: row.id), axis: .vertical)
+                TextField(row.metadata.defaultDisplay, text: model.binding(for: row.id), axis: .vertical)
                     .textFieldStyle(.roundedBorder)
                     .lineLimit(1...5)
                     .font(.body.monospaced())

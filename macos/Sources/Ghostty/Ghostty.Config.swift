@@ -11,6 +11,8 @@ extension Ghostty {
         let description: String
         let value: String
         let defaultValue: String
+        /// `defaultValue`, or what the option does when its default is unset.
+        let defaultDisplay: String
         let kind: Kind
         let options: [String]
         let repeatable: Bool

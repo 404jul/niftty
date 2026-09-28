@@ -524,6 +524,20 @@ fn configEditorData(self: *Config) !String {
         try json.write(current);
         try json.objectField("defaultValue");
         try json.write(default);
+        try json.objectField("defaultDisplay");
+        if (default.len > 0) {
+            try json.write(default);
+        } else if (comptime std.mem.eql(u8, field.name, "theme")) {
+            const background = try editorValue(alloc, @TypeOf(defaults.background), "background", defaults.background);
+            defer alloc.free(background);
+            const foreground = try editorValue(alloc, @TypeOf(defaults.foreground), "foreground", defaults.foreground);
+            defer alloc.free(foreground);
+            const display = try std.fmt.allocPrint(alloc, "Built-in ({s} / {s})", .{ background, foreground });
+            defer alloc.free(display);
+            try json.write(display);
+        } else {
+            try json.write(unset_defaults.get(field.name) orelse "Unset");
+        }
         try json.objectField("kind");
         try json.write(switch (@typeInfo(Field)) {
             .bool => "boolean",
@@ -555,6 +569,74 @@ fn configEditorData(self: *Config) !String {
 
     return .fromSlice(try output.toOwnedSlice());
 }
+
+/// What an option does when its default serializes to an empty value, shown
+/// by the graphical editor in place of a blank default. Every non-private
+/// option with an empty default must have an entry; `theme` is described
+/// from the default colors in `configEditorData` instead.
+const unset_defaults: std.StaticStringMap([]const u8) = .initComptime(.{
+    .{ "adjust-box-thickness", "No adjustment" },
+    .{ "adjust-cell-height", "No adjustment" },
+    .{ "adjust-cell-width", "No adjustment" },
+    .{ "adjust-cursor-height", "No adjustment" },
+    .{ "adjust-cursor-thickness", "No adjustment" },
+    .{ "adjust-font-baseline", "No adjustment" },
+    .{ "adjust-icon-height", "No adjustment" },
+    .{ "adjust-overline-position", "No adjustment" },
+    .{ "adjust-overline-thickness", "No adjustment" },
+    .{ "adjust-strikethrough-position", "No adjustment" },
+    .{ "adjust-strikethrough-thickness", "No adjustment" },
+    .{ "adjust-underline-position", "No adjustment" },
+    .{ "adjust-underline-thickness", "No adjustment" },
+    .{ "background-image", "None" },
+    .{ "bell-audio-path", "None" },
+    .{ "bold-color", "Same as regular text" },
+    .{ "class", "com.mitchellh.ghostty" },
+    .{ "clipboard-codepoint-map", "No mappings" },
+    .{ "command", "Login shell ($SHELL, else passwd entry)" },
+    .{ "config-file", "None" },
+    .{ "cursor-color", "Foreground color" },
+    .{ "cursor-style-blink", "Blinking (programs may toggle it)" },
+    .{ "cursor-text", "Background color" },
+    .{ "custom-shader", "None" },
+    .{ "enquiry-response", "Empty response" },
+    .{ "env", "No extra variables" },
+    .{ "font-codepoint-map", "No mappings" },
+    .{ "font-family", "JetBrains Mono (built-in)" },
+    .{ "font-family-bold", "Bold style of font-family" },
+    .{ "font-family-bold-italic", "Bold italic style of font-family" },
+    .{ "font-family-italic", "Italic style of font-family" },
+    .{ "font-feature", "Font's default features" },
+    .{ "font-variation", "Font's default axis values" },
+    .{ "font-variation-bold", "Font's default axis values" },
+    .{ "font-variation-bold-italic", "Font's default axis values" },
+    .{ "font-variation-italic", "Font's default axis values" },
+    .{ "gtk-custom-css", "None" },
+    .{ "initial-command", "Same as command" },
+    .{ "input", "None" },
+    .{ "key-remap", "No remaps" },
+    .{ "language", "System language" },
+    .{ "linux-cgroup-memory-limit", "No limit" },
+    .{ "linux-cgroup-processes-limit", "No limit" },
+    .{ "link", "Built-in URL matcher (see link-url)" },
+    .{ "macos-custom-icon", "~/.config/niftty/Niftty.icns" },
+    .{ "macos-icon-ghost-color", "None (required by custom-style icon)" },
+    .{ "macos-icon-screen-color", "None (required by custom-style icon)" },
+    .{ "macos-option-as-alt", "true on U.S. layouts, else false" },
+    .{ "quit-after-last-window-closed-delay", "Quit immediately" },
+    .{ "quick-terminal-size", "400px deep, full length (center: 800x400px)" },
+    .{ "selection-background", "Foreground color" },
+    .{ "selection-foreground", "Background color" },
+    .{ "split-divider-color", "Darkened background color" },
+    .{ "title", "Set by the running program" },
+    .{ "unfocused-split-fill", "Background color" },
+    .{ "window-position-x", "Placed by the system" },
+    .{ "window-position-y", "Placed by the system" },
+    .{ "window-title-font-family", "System font" },
+    .{ "window-titlebar-background", "Background color" },
+    .{ "window-titlebar-foreground", "Foreground color" },
+    .{ "x11-instance-name", "ghostty" },
+});
 
 fn editorValue(
     alloc: std.mem.Allocator,
@@ -697,7 +779,7 @@ test "ghostty_config_editor_data includes effective values and enum options" {
         \\{"name":"maximize","description":
     ) != null);
     try testing.expect(std.mem.indexOf(u8, json,
-        \\"value":"true","defaultValue":"false","kind":"boolean","repeatable":false
+        \\"value":"true","defaultValue":"false","defaultDisplay":"false","kind":"boolean","repeatable":false
     ) != null);
     try testing.expect(std.mem.indexOf(u8, json,
         \\"name":"window-theme"
@@ -711,6 +793,53 @@ test "ghostty_config_editor_data includes effective values and enum options" {
     try testing.expect(std.mem.indexOf(u8, json,
         \\"kind":"text","repeatable":true
     ) != null);
+}
+
+test "ghostty_config_editor_data describes every empty default" {
+    const testing = std.testing;
+    var cfg = try Config.default(testing.allocator);
+    defer cfg.deinit();
+
+    const data = ghostty_config_editor_data(&cfg);
+    defer data.deinit();
+    const Entry = struct {
+        name: []const u8,
+        defaultValue: []const u8,
+        defaultDisplay: []const u8,
+    };
+    const parsed = try std.json.parseFromSlice(
+        []const Entry,
+        testing.allocator,
+        data.ptr.?[0..data.len],
+        .{ .ignore_unknown_fields = true },
+    );
+    defer parsed.deinit();
+
+    var problems: usize = 0;
+    var described: usize = 0;
+    for (parsed.value) |entry| {
+        if (entry.defaultValue.len > 0) {
+            try testing.expectEqualStrings(entry.defaultValue, entry.defaultDisplay);
+            if (unset_defaults.get(entry.name) != null) {
+                std.debug.print("stale unset description: {s}\n", .{entry.name});
+                problems += 1;
+            }
+            continue;
+        }
+        if (std.mem.eql(u8, entry.name, "theme")) {
+            try testing.expect(std.mem.startsWith(u8, entry.defaultDisplay, "Built-in (#"));
+            continue;
+        }
+        if (unset_defaults.get(entry.name)) |description| {
+            try testing.expectEqualStrings(description, entry.defaultDisplay);
+            described += 1;
+        } else {
+            std.debug.print("missing unset description: {s}\n", .{entry.name});
+            problems += 1;
+        }
+    }
+    try testing.expectEqual(0, problems);
+    try testing.expectEqual(unset_defaults.keys().len, described);
 }
 
 test "ghostty_config_keybind_data: default config" {

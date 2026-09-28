@@ -108,7 +108,6 @@ struct SettingsFileEditor {
 final class SettingsModel: ObservableObject {
     struct Row: Identifiable {
         let metadata: Ghostty.ConfigEditorSetting
-        let defaultDisplayValue: String
         var value: String
 
         var id: String { metadata.name }
@@ -251,12 +250,7 @@ final class SettingsModel: ObservableObject {
             pendingValues.removeAll()
             restoredDefaults.removeAll()
             keybinds.reload()
-            rows = metadata.map { setting in
-                Row(
-                    metadata: setting,
-                    defaultDisplayValue: Self.defaultDisplayValue(for: setting, in: metadata),
-                    value: setting.value)
-            }
+            rows = metadata.map { Row(metadata: $0, value: $0.value) }
             if !sidebarCategories.contains(selectedCategory) {
                 selectedCategory = sidebarCategories.first ?? "Appearance"
             }
@@ -322,23 +316,6 @@ final class SettingsModel: ObservableObject {
         } catch {
             self.error = error.localizedDescription
         }
-    }
-
-    static func defaultDisplayValue(
-        for setting: Ghostty.ConfigEditorSetting,
-        in settings: [Ghostty.ConfigEditorSetting]
-    ) -> String {
-        if !setting.defaultValue.isEmpty { return setting.defaultValue }
-        if setting.name == "theme" {
-            let background = settings.first { $0.name == "background" }?.defaultValue
-            let foreground = settings.first { $0.name == "foreground" }?.defaultValue
-            if let background, !background.isEmpty,
-               let foreground, !foreground.isEmpty {
-                return "Built-in (\(background) / \(foreground))"
-            }
-            return "Built-in"
-        }
-        return "Unset"
     }
 
     static func category(for name: String) -> String {

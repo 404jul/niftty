@@ -125,35 +125,6 @@ struct SettingsFileEditorTests {
         ])
     }
 
-    @Test func emptyDefaultsDescribeTheirEffectiveBehavior() {
-        func setting(_ name: String, defaultValue: String = "") -> Ghostty.ConfigEditorSetting {
-            Ghostty.ConfigEditorSetting(
-                name: name,
-                description: "",
-                value: defaultValue,
-                defaultValue: defaultValue,
-                kind: .text,
-                options: [],
-                repeatable: false)
-        }
-
-        let theme = setting("theme")
-        let language = setting("language")
-        let fontSize = setting("font-size", defaultValue: "13")
-        let settings = [
-            theme,
-            language,
-            fontSize,
-            setting("background", defaultValue: "#282c34"),
-            setting("foreground", defaultValue: "#ffffff"),
-        ]
-
-        #expect(SettingsModel.defaultDisplayValue(for: theme, in: settings) ==
-            "Built-in (#282c34 / #ffffff)")
-        #expect(SettingsModel.defaultDisplayValue(for: language, in: settings) == "Unset")
-        #expect(SettingsModel.defaultDisplayValue(for: fontSize, in: settings) == "13")
-    }
-
     @Test func categoryFallbackIsNeverEmptyOrAll() {
         #expect(SettingsModel.category(for: "theme") == "Appearance")
         #expect(SettingsModel.category(for: "language") == "Terminal")
