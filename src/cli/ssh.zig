@@ -164,12 +164,16 @@ pub const Options = struct {
 ///      login shell with that integration loaded (zsh via `ZDOTDIR`, bash
 ///      via `--posix` and `ENV`, as local shells do), so prompt marks
 ///      (OSC 133) and command history for inline predictions work over
-///      SSH. `GHOSTTY_PREDICTION` and the `cursor` and `title` entries of
-///      `GHOSTTY_SHELL_FEATURES` are carried over from the local shell.
-///      Bash 3 (e.g. Apple's `/bin/bash`, which ignores `ENV` in POSIX
-///      mode) and other login shells start unchanged. Inside tmux on the
-///      remote host the marks never reach Niftty (tmux does not forward
-///      OSC 133).
+///      SSH. `GHOSTTY_PREDICTION` and the `cursor`, `title`, and `tmux`
+///      entries of `GHOSTTY_SHELL_FEATURES` are carried over from the
+///      local shell. Bash 3 (e.g. Apple's `/bin/bash`, which ignores `ENV`
+///      in POSIX mode) and other login shells start unchanged. When this
+///      `+ssh` itself runs inside a local tmux, the remote integration
+///      wraps its marks in tmux's passthrough (and the cwd reporter's
+///      OSC 7 is wrapped the same way) so they reach Niftty through it.
+///      With the `tmux` feature the remote zsh integration also gets its
+///      integration dir, so a tmux started on the remote host integrates
+///      its panes too.
 ///
 ///   4. **Port forwarding** (`--auto-forward`). Detects listening
 ///      unprivileged TCP ports on the remote host, including ports that
@@ -419,6 +423,7 @@ fn runInner(
     const control_opts: []const []const u8 = if (mux) |m| try controlOpts(alloc, m) else &.{};
 
     const inject_cwd = shouldInjectCwdReporter(opts._ssh_args.items);
+    const in_tmux = if (localEnv(alloc, "TMUX")) |v| v.len > 0 else false;
     const tty_opts: []const []const u8 = if (inject_cwd)
         &.{ "-o", "RequestTTY=force" }
     else
@@ -431,7 +436,9 @@ fn runInner(
             &si_version,
             localEnv(alloc, "GHOSTTY_PREDICTION"),
             localEnv(alloc, "GHOSTTY_SHELL_FEATURES") orelse "",
+            in_tmux,
         ) else null,
+        in_tmux,
     )} else &.{};
     const argv = try std.mem.concat(alloc, []const u8, &.{
         &.{opts.ssh},
@@ -1226,8 +1233,11 @@ const cwd_reporter_login =
     \\ exec "${SHELL:-/bin/sh}" -l 0<&9 1>&9 2>&9 9<&-
 ;
 
-/// The cwd reporter script after the login-shell `exec` line.
-const cwd_reporter_watch =
+/// The cwd reporter script after the login-shell `exec` line. Split
+/// around the pwd printf so `cwdReporterCommand` can swap in the tmux
+/// passthrough form when `+ssh` itself runs inside tmux: the OSC 7 the
+/// middleman writes would otherwise be dropped by the local tmux.
+const cwd_reporter_watch_pre =
     \\) &
     \\spid=$!
     \\last=
@@ -1236,7 +1246,7 @@ const cwd_reporter_watch =
     \\    state=$(sed -n "s/.*) \([^ ]\).*/\1/p" /proc/$spid/stat 2>/dev/null)
     \\    if [ -z "$state" ] || [ "$state" = Z ]; then break; fi
     \\  else
-    \\    st=$(ps -o stat= -p "$spid" 2>/dev/null | tr -d " ")
+    \\    st=$(ps -o stat= -p $spid 2>/dev/null | tr -d " ")
     \\    case "$st" in ""|Z*) break ;; esac
     \\  fi
     \\  cwd=$(readlink /proc/$spid/cwd 2>/dev/null)
@@ -1251,7 +1261,21 @@ const cwd_reporter_watch =
     \\    /proc/[0-9]*/cwd*|*"(readlink:"*) cwd= ;;
     \\  esac
     \\  if [ "$cwd" != "$last" ]; then
+;
+
+/// The pwd report printf, plain form.
+const cwd_reporter_pwd_printf =
     \\    printf "\033]7;kitty-shell-cwd://niftty-ssh%s\007" "$cwd"
+;
+
+/// The pwd report printf wrapped in tmux's DCS passthrough (every ESC
+/// in the payload doubled). The local tmux forwards it and Niftty
+/// decodes it.
+const cwd_reporter_pwd_printf_tmux =
+    \\    printf "\033Ptmux;\033\033]7;kitty-shell-cwd://niftty-ssh%s\007\033\\" "$cwd"
+;
+
+const cwd_reporter_watch_post =
     \\    last=$cwd
     \\  fi
     \\  sleep 1
@@ -1259,6 +1283,9 @@ const cwd_reporter_watch =
     \\wait $spid
     \\exit $?'
 ;
+
+const cwd_reporter_watch =
+    cwd_reporter_watch_pre ++ cwd_reporter_pwd_printf ++ cwd_reporter_watch_post;
 
 /// Composed cwd reporter. See `cwdReporterCommand` for the `--cwd` and
 /// shell integration variants.
@@ -1271,16 +1298,23 @@ const cwd_reporter_command = cwd_reporter_head ++ cwd_reporter_login ++ cwd_repo
 /// script since it survives two shell parse levels (the remote shell,
 /// then the inner `/bin/sh -c`). A non-null `launcher` (see
 /// `integrationLauncher`) replaces the plain login-shell `exec`.
+/// `in_tmux` selects the tmux passthrough form of the pwd report for
+/// when this `+ssh` itself runs inside a local tmux.
 fn cwdReporterCommand(
     alloc: Allocator,
     cwd: ?[]const u8,
     launcher: ?[]const u8,
+    in_tmux: bool,
 ) Allocator.Error![]const u8 {
     const login = launcher orelse cwd_reporter_login;
     const dir = cwd orelse "";
+    const watch = if (in_tmux)
+        cwd_reporter_watch_pre ++ cwd_reporter_pwd_printf_tmux ++ cwd_reporter_watch_post
+    else
+        cwd_reporter_watch;
     if (!std.mem.startsWith(u8, dir, "/")) {
-        if (launcher == null) return cwd_reporter_command;
-        return std.mem.concat(alloc, u8, &.{ cwd_reporter_head, login, cwd_reporter_watch });
+        if (launcher == null and !in_tmux) return cwd_reporter_command;
+        return std.mem.concat(alloc, u8, &.{ cwd_reporter_head, login, watch });
     }
 
     var escaped: std.ArrayList(u8) = .empty;
@@ -1297,13 +1331,13 @@ fn cwdReporterCommand(
         "cd -- '{s}' 2>/dev/null;",
         .{escaped.items},
     );
-    return std.mem.concat(alloc, u8, &.{ cwd_reporter_head, cd, login, cwd_reporter_watch });
+    return std.mem.concat(alloc, u8, &.{ cwd_reporter_head, cd, login, watch });
 }
 
 /// Local `GHOSTTY_SHELL_FEATURES` entries forwarded to the remote shell
 /// integration. The others need local binaries or `TERMINFO` (`path`,
 /// `sudo`) or would wrap the remote `ssh` with a missing `niftty`.
-const remote_shell_features = [_][]const u8{ "cursor", "cursor:blink", "cursor:steady", "title" };
+const remote_shell_features = [_][]const u8{ "cursor", "cursor:blink", "cursor:steady", "title", "tmux" };
 
 /// Append `value` keeping only characters that are inert inside the
 /// cwd reporter's single-quoted script and its double-quoted launcher.
@@ -1327,11 +1361,18 @@ fn appendLauncherSafe(
 /// single-quoted script, so it uses no single quotes and only inserts
 /// `appendLauncherSafe` values. `prediction` and `features` are the
 /// local `GHOSTTY_PREDICTION` and `GHOSTTY_SHELL_FEATURES` values.
+/// `in_tmux` is set when this `+ssh` runs inside a local tmux: the
+/// remote shell integration then wraps its marks in tmux's passthrough
+/// (GHOSTTY_TMUX_PASSTHROUGH) so they survive the trip through the
+/// local tmux. When the `tmux` feature is forwarded, the remote zsh
+/// integration also gets its integration dir (GHOSTTY_SHELL_INTEGRATION_DIR)
+/// so a `tmux` started on the remote host integrates its panes too.
 fn integrationLauncher(
     alloc: Allocator,
     version: []const u8,
     prediction: ?[]const u8,
     features: []const u8,
+    in_tmux: bool,
 ) Allocator.Error![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     try out.appendSlice(alloc, " s=\"${SHELL:-/bin/sh}\"; d=\"" ++ integration_remote_root ++ "/");
@@ -1341,14 +1382,22 @@ fn integrationLauncher(
     try out.append(alloc, if (enabled) '1' else '0');
 
     var forwarded: std.ArrayList(u8) = .empty;
+    var tmux_feature = false;
     var it = std.mem.splitScalar(u8, features, ',');
     while (it.next()) |feature| {
         for (remote_shell_features) |allowed| {
             if (!std.mem.eql(u8, feature, allowed)) continue;
+            if (std.mem.eql(u8, feature, "tmux")) tmux_feature = true;
             if (forwarded.items.len > 0) try forwarded.append(alloc, ',');
             try appendLauncherSafe(alloc, &forwarded, feature);
             break;
         }
+    }
+    if (in_tmux) {
+        try out.appendSlice(alloc, " GHOSTTY_TMUX_PASSTHROUGH=1");
+    }
+    if (tmux_feature) {
+        try out.appendSlice(alloc, " GHOSTTY_SHELL_INTEGRATION_DIR=\"$d/zsh\"");
     }
     if (forwarded.items.len > 0) {
         try out.appendSlice(alloc, " GHOSTTY_SHELL_FEATURES=");
@@ -1501,7 +1550,7 @@ test "cwdReporterCommand: --cwd inserts escaped cd before login shell" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
-    const cmd = try cwdReporterCommand(arena.allocator(), "/srv/o'brien app", null);
+    const cmd = try cwdReporterCommand(arena.allocator(), "/srv/o'brien app", null, false);
     try testing.expect(std.mem.indexOf(
         u8,
         cmd,
@@ -1511,11 +1560,11 @@ test "cwdReporterCommand: --cwd inserts escaped cd before login shell" {
     // Non-absolute or absent cwd leaves the plain reporter untouched.
     try testing.expectEqualStrings(
         cwd_reporter_command,
-        try cwdReporterCommand(arena.allocator(), "relative", null),
+        try cwdReporterCommand(arena.allocator(), "relative", null, false),
     );
     try testing.expectEqualStrings(
         cwd_reporter_command,
-        try cwdReporterCommand(arena.allocator(), null, null),
+        try cwdReporterCommand(arena.allocator(), null, null, false),
     );
 }
 
@@ -1524,7 +1573,7 @@ test "cwdReporterCommand: plain login exec without shell integration" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
-    const cmd = try cwdReporterCommand(arena.allocator(), null, null);
+    const cmd = try cwdReporterCommand(arena.allocator(), null, null, false);
     try testing.expect(std.mem.indexOf(
         u8,
         cmd,
@@ -1539,8 +1588,8 @@ test "cwdReporterCommand: launcher replaces login exec after cd" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const launcher = try integrationLauncher(alloc, "0123456789abcdef", "1", "title");
-    const cmd = try cwdReporterCommand(alloc, "/srv", launcher);
+    const launcher = try integrationLauncher(alloc, "0123456789abcdef", "1", "title", false);
+    const cmd = try cwdReporterCommand(alloc, "/srv", launcher, false);
     const cd = "cd -- '/srv' 2>/dev/null; s=\"${SHELL:-/bin/sh}\"";
     try testing.expect(std.mem.indexOf(u8, cmd, cd) != null);
     try testing.expect(std.mem.indexOf(u8, cmd, "exec \"${SHELL:-/bin/sh}\" -l") == null);
@@ -1549,7 +1598,7 @@ test "cwdReporterCommand: launcher replaces login exec after cd" {
     // contribute quotes, and the launcher itself has none.
     try testing.expect(std.mem.indexOfScalar(u8, launcher, '\'') == null);
 
-    const no_cwd = try cwdReporterCommand(alloc, null, launcher);
+    const no_cwd = try cwdReporterCommand(alloc, null, launcher, false);
     try testing.expect(std.mem.indexOf(u8, no_cwd, "(trap - INT TTOU TTIN; s=") != null);
 }
 
@@ -1558,7 +1607,7 @@ test "integrationLauncher: zsh ZDOTDIR, bash --posix ENV, plain fallback" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
 
-    const l = try integrationLauncher(arena.allocator(), "0123456789abcdef", "1", "cursor:blink,title");
+    const l = try integrationLauncher(arena.allocator(), "0123456789abcdef", "1", "cursor:blink,title", false);
     const dir = "d=\"$HOME/.local/share/niftty/shell-integration/0123456789abcdef\"";
     try testing.expect(std.mem.indexOf(u8, l, dir) != null);
     try testing.expect(std.mem.indexOf(u8, l, "if [ -r \"$d/ok\" ]; then\n") != null);
@@ -1606,6 +1655,7 @@ test "integrationLauncher: only safe values and remote-capable features" {
         "v",
         null,
         "cursor:blink,path,ssh-env,ssh-integration,ssh-terminfo,sudo,title",
+        false,
     );
     try testing.expect(std.mem.indexOf(
         u8,
@@ -1619,11 +1669,67 @@ test "integrationLauncher: only safe values and remote-capable features" {
         "ab'c$(x)d",
         "1'; rm -rf /",
         "title'$(x),ti tle,`id`,sudo",
+        false,
     );
     try testing.expect(std.mem.indexOf(u8, unsafe, "shell-integration/abcxd\"") != null);
     try testing.expect(std.mem.indexOf(u8, unsafe, "export GHOSTTY_PREDICTION=0\n") != null);
     try testing.expect(std.mem.indexOf(u8, unsafe, "GHOSTTY_SHELL_FEATURES") == null);
     try testing.expect(std.mem.indexOfAny(u8, unsafe, "'`") == null);
+}
+
+test "integrationLauncher: tmux passthrough exports" {
+    const testing = std.testing;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Both: +ssh inside a local tmux with the tmux feature forwarded.
+    const both = try integrationLauncher(alloc, "0123456789abcdef", "1", "cursor,tmux", true);
+    try testing.expect(std.mem.indexOf(
+        u8,
+        both,
+        " GHOSTTY_TMUX_PASSTHROUGH=1 GHOSTTY_SHELL_INTEGRATION_DIR=\"$d/zsh\"",
+    ) != null);
+    try testing.expect(std.mem.indexOf(u8, both, "export GHOSTTY_PREDICTION=1") != null);
+
+    // Feature alone: no local tmux, but a tmux on the remote host still
+    // gets pane integration through the exported integration dir.
+    const feature_only = try integrationLauncher(alloc, "0123456789abcdef", "1", "cursor,tmux", false);
+    try testing.expect(std.mem.indexOf(
+        u8,
+        feature_only,
+        "GHOSTTY_SHELL_INTEGRATION_DIR=\"$d/zsh\"",
+    ) != null);
+    try testing.expect(std.mem.indexOf(u8, feature_only, "GHOSTTY_TMUX_PASSTHROUGH") == null);
+
+    // Local tmux alone: feature off, so nothing the integration would use.
+    const tmux_only = try integrationLauncher(alloc, "0123456789abcdef", "1", "cursor", true);
+    try testing.expect(std.mem.indexOf(u8, tmux_only, "GHOSTTY_TMUX_PASSTHROUGH=1") != null);
+    try testing.expect(std.mem.indexOf(u8, tmux_only, "GHOSTTY_SHELL_INTEGRATION_DIR") == null);
+
+    // Neither: the remote env is unchanged.
+    const plain = try integrationLauncher(alloc, "0123456789abcdef", "1", "cursor", false);
+    try testing.expect(std.mem.indexOf(u8, plain, "GHOSTTY_TMUX_PASSTHROUGH") == null);
+    try testing.expect(std.mem.indexOf(u8, plain, "GHOSTTY_SHELL_INTEGRATION_DIR") == null);
+}
+
+test "cwdReporterCommand: tmux passthrough pwd printf" {
+    const testing = std.testing;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const cmd = try cwdReporterCommand(alloc, null, null, true);
+    try testing.expect(std.mem.indexOf(
+        u8,
+        cmd,
+        "printf \"\\033Ptmux;\\033\\033]7;kitty-shell-cwd://niftty-ssh%s\\007\\033\\\\\" \"$cwd\"",
+    ) != null);
+    try testing.expect(std.mem.indexOf(
+        u8,
+        cmd,
+        "printf \"\\033]7;kitty-shell-cwd://niftty-ssh%s\\007\" \"$cwd\"",
+    ) == null);
 }
 
 test "remoteSetupScript: installs every payload file and ends with exit $rc" {

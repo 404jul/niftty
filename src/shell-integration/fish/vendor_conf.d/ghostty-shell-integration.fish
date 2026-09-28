@@ -40,6 +40,12 @@ end
 # We always try to restore the XDG data dir
 ghostty_restore_xdg_data_dir
 
+# Remember our integration dir before it was removed from XDG_DATA_DIRS
+# above, so the tmux wrapper below can re-export it for pane shells.
+if set -q GHOSTTY_SHELL_INTEGRATION_XDG_DIR
+    set -g __ghostty_xdg_integ_dir $GHOSTTY_SHELL_INTEGRATION_XDG_DIR
+end
+
 # If we aren't interactive or we've already run, don't run.
 status --is-interactive || ghostty_exit
 
@@ -70,6 +76,38 @@ function __ghostty_setup --on-event fish_prompt -d "Setup ghostty integration"
     set -g __ghostty_prompt_start_mark "\e]133;A\a"
     if test "$fish_major" -gt 4; or test "$fish_major" -eq 4 -a "$fish_minor" -ge 1
         set -g __ghostty_prompt_start_mark "\e]133;A;click_events=1\a"
+    end
+
+    # DCS passthrough wrapping for tmux. tmux does not forward unknown
+    # OSC sequences (prompt marks, pwd reports) to the outer terminal,
+    # so inside tmux every mark we emit is wrapped in tmux's passthrough
+    # escape sequence instead: ESC P tmux ; <payload with each ESC
+    # doubled> ESC \. Niftty decodes the payload and tmux 3.2+ forwards
+    # it; tmux 3.3+ additionally requires the allow-passthrough option,
+    # which we enable for our own pane. GHOSTTY_TMUX_PASSTHROUGH covers
+    # remote shells reached through `niftty +ssh` from inside a local
+    # tmux. Marks degrade to today's behavior (dropped by tmux) when
+    # passthrough is unavailable or we're not under a Niftty-attached
+    # server. The begin value already contains the doubled ESC for the
+    # payload's own leading ESC. The bytes are backslash escapes here
+    # (echo -en processes them at emission), matching every other
+    # marked string above. Title and cursor shape stay unwrapped: tmux
+    # manages those itself.
+    set -g __ghostty_pt_begin ""
+    set -g __ghostty_pt_end ""
+    if contains tmux $features
+        and test "$TERM_PROGRAM" = ghostty
+        and test -n "$TMUX" -o "$GHOSTTY_TMUX_PASSTHROUGH" = 1
+        if test -n "$TMUX"
+            # Pane-scoped, runtime only: never persisted to the user's
+            # tmux config. Fails quietly on tmux without the option
+            # (3.2, where passthrough is always allowed) or with it
+            # disabled by policy.
+            command tmux set-option -p allow-passthrough on 2>/dev/null
+        end
+        set -g __ghostty_pt_begin "\ePtmux;\e"
+        set -g __ghostty_pt_end "\e\\"
+        set -g __ghostty_prompt_start_mark "$__ghostty_pt_begin"$__ghostty_prompt_start_mark"$__ghostty_pt_end"
     end
 
     if string match -q 'cursor*' -- $features
@@ -135,11 +173,36 @@ function __ghostty_setup --on-event fish_prompt -d "Setup ghostty integration"
         end
     end
 
+    # Tmux Integration
+    #
+    # Wrap `tmux` so shells in panes it creates load Niftty shell
+    # integration: pane shells autoload it from XDG_DATA_DIRS, which we
+    # removed from our own environment after loading (see
+    # ghostty_restore_xdg_data_dir). A server started by this invocation
+    # inherits the re-exported value; a server that is already running
+    # gets it in its global environment so windows created later
+    # integrate too. `set-environment` fails quietly when no server is
+    # running, which is fine: the prefixed invocation that follows
+    # starts one with the right environment.
+    if contains tmux $features; and test -n "$__ghostty_xdg_integ_dir"
+        function tmux --wraps=tmux --description "tmux wrapper with Niftty integration"
+            set -l xdg
+            if set -q XDG_DATA_DIRS[1]
+                set xdg $XDG_DATA_DIRS
+            else
+                set xdg /usr/local/share /usr/share
+            end
+            set -l xdg_with_niftty "$__ghostty_xdg_integ_dir:"(string join : $xdg)
+            command tmux set-environment -g XDG_DATA_DIRS "$xdg_with_niftty" 2>/dev/null
+            XDG_DATA_DIRS="$xdg_with_niftty" command tmux $argv
+        end
+    end
+
     # Setup prompt marking
     function __ghostty_mark_prompt_start --on-event fish_prompt --on-event fish_posterror
         # If we never got the output end event, then we need to send it now.
         if test "$__ghostty_prompt_state" != prompt-start
-            echo -en "\e]133;D\a"
+            echo -en "$__ghostty_pt_begin\e]133;D\a$__ghostty_pt_end"
         end
 
         set --global __ghostty_prompt_state prompt-start
@@ -148,12 +211,12 @@ function __ghostty_setup --on-event fish_prompt -d "Setup ghostty integration"
 
     function __ghostty_mark_output_start --on-event fish_preexec
         set --global __ghostty_prompt_state pre-exec
-        echo -en "\e]133;C\a"
+        echo -en "$__ghostty_pt_begin\e]133;C\a$__ghostty_pt_end"
     end
 
     function __ghostty_mark_output_end --on-event fish_postexec
         set --global __ghostty_prompt_state post-exec
-        echo -en "\e]133;D;$status\a"
+        echo -en "$__ghostty_pt_begin\e]133;D;$status\a$__ghostty_pt_end"
     end
 
     # Report pwd. This is actually built-in to fish but only for terminals
@@ -162,7 +225,7 @@ function __ghostty_setup --on-event fish_prompt -d "Setup ghostty integration"
         if status --is-command-substitution || set -q INSIDE_EMACS
             return
         end
-        printf \e\]7\;file://%s%s\a $hostname (string escape --style=url $PWD)
+        printf "$__ghostty_pt_begin"\e\]7\;file://%s%s\a"$__ghostty_pt_end" $hostname (string escape --style=url $PWD)
     end
 
     # Enable fish to handle reflow because Ghostty clears the prompt on resize.

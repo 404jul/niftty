@@ -3004,7 +3004,7 @@ keybind: Keybinds = .{},
 /// its default value is used, so you must explicitly disable features you don't
 /// want. You can also use `true` or `false` to turn all features on or off.
 ///
-/// Example: `cursor`, `no-cursor`, `sudo`, `no-sudo`, `title`, `no-title`
+/// Example: `cursor`, `no-cursor`, `sudo`, `no-sudo`, `title`, `no-title`, `tmux`, `no-tmux`
 ///
 /// Available features:
 ///
@@ -3038,13 +3038,31 @@ keybind: Keybinds = .{},
 ///     remote working directory, and command history for inline predictions
 ///     work over SSH. The remote login shell must be zsh or bash 4+ (Apple's
 ///     `/bin/bash` 3.2 is not supported); other shells start unchanged.
-///     Inside tmux on the remote host the prompt marks cannot
-///     reach Niftty, because tmux does not forward them.
+///     With the `tmux` feature, marks also survive both a local tmux between
+///     Niftty and the `ssh` wrapper and a tmux running on the remote host.
 ///
 ///   * `path` - Add Niftty's binary directory to PATH. This ensures the `niftty`
 ///     command is available in the shell even if shell init scripts reset PATH.
 ///     This is particularly useful on macOS where PATH is often overridden by
 ///     system scripts. The directory is only added if not already present.
+///
+///   * `tmux` - Make shell integration work inside tmux. The `tmux` command
+///     is wrapped so shells in panes it creates load Niftty's shell
+///     integration (zsh and fish), and the integration wraps its prompt
+///     marks and working-directory reports in tmux's passthrough escape
+///     sequence so they reach Niftty, enabling prompt navigation, directory
+///     reporting, and inline predictions in tmux panes. tmux 3.3+ requires
+///     its `allow-passthrough` option, which the integration enables for
+///     its own pane (a runtime option change, never written to a tmux
+///     config); tmux 3.2 and older either always forward the sequence
+///     (3.2) or drop the marks (3.1 and older), degrading to integration
+///     simply not working there. Marks are also lost after a tmux full
+///     redraw (e.g. a resize) until the next prompt. Pane shells that
+///     cannot load integration from the environment alone (bash, elvish,
+///     nushell) are not integrated inside tmux, and a remote tmux nested
+///     inside a local one is a passthrough hop too far: its panes' marks
+///     are dropped by the local tmux.
+///     (Available since: 1.4.0)
 ///
 /// SSH features work independently and can be combined for optimal experience:
 /// when both `ssh-env` and `ssh-terminfo` are enabled, Niftty will install its
@@ -9056,6 +9074,7 @@ pub const ShellIntegrationFeatures = packed struct {
     @"ssh-terminfo": bool = false,
     @"ssh-integration": bool = false,
     path: bool = true,
+    tmux: bool = true,
 };
 
 pub const SplitPreserveZoom = packed struct {

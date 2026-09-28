@@ -74,6 +74,16 @@ pub const Handler = struct {
                     };
                 },
 
+                // Tmux passthrough (`ESC P tmux ; <escaped payload> ESC \`),
+                // emitted by programs inside tmux when its allow-passthrough
+                // option is on. We don't decode the payload here: the state
+                // machine leaves dcs_passthrough at the payload's first ESC,
+                // so the payload's own escape sequence is processed as
+                // ordinary input and the leftover "mux;" prefix bytes are
+                // dropped by this state. Ignore quietly to keep tmux usage
+                // out of the logs.
+                't' => .{ .state = .ignore },
+
                 else => null,
             },
 

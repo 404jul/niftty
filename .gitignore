@@ -54,3 +54,6 @@ vgcore.*
 .claude/
 skills-lock.json
 .agents/skills/i-have-adhd/
+
+# graphify knowledge graph (regenerable with /graphify; caches, viz, machine-local state)
+graphify-out/

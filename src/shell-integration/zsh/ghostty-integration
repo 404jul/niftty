@@ -90,8 +90,47 @@ _entrypoint() {
     precmd_functions+=(_ghostty_deferred_init)
 }
 
+# DCS passthrough wrapping for tmux. tmux does not forward unknown OSC
+# sequences (prompt marks, pwd reports) to the outer terminal, so inside
+# tmux every mark we emit is wrapped in tmux's passthrough escape
+# sequence instead: ESC P tmux ; <payload with each ESC doubled> ESC \.
+# Niftty decodes the payload and tmux 3.2+ forwards it; tmux 3.3+
+# additionally requires the allow-passthrough option, which we enable
+# for our own pane. Marks degrade to today's behavior (dropped by tmux)
+# when passthrough is unavailable or we're not under a Niftty-attached
+# server.
+#
+# _ghostty_pt_begin already contains the doubled ESC for the payload's
+# own leading ESC, so it is prepended directly to each raw sequence.
+# Sequences left unwrapped on purpose: terminal title and cursor shape,
+# which tmux manages itself.
+builtin typeset -g _ghostty_pt_begin='' _ghostty_pt_end=''
+_ghostty_setup_tmux_passthrough() {
+    builtin emulate -L zsh -o no_warn_create_global -o no_aliases
+    [[ "$GHOSTTY_SHELL_FEATURES" == *"tmux"* ]] || builtin return 0
+    builtin local -i in_tmux=0
+    [[ -n $TMUX ]] && in_tmux=1
+
+    # GHOSTTY_TMUX_PASSTHROUGH is exported by `niftty +ssh` to remote
+    # shells reached from inside a local tmux: there is no tmux on the
+    # remote, but our marks must still be wrapped for the one back home.
+    if (( ! in_tmux && $GHOSTTY_TMUX_PASSTHROUGH != 1 )) builtin return 0
+    [[ $TERM_PROGRAM == ghostty ]] || builtin return 0
+
+    if (( in_tmux )); then
+        # Pane-scoped, runtime only: never persisted to the user's tmux
+        # config. Fails quietly on tmux without the option (3.2, where
+        # passthrough is always allowed) or with it disabled by policy.
+        command tmux set-option -p allow-passthrough on 2>/dev/null
+    fi
+
+    _ghostty_pt_begin=$'\ePtmux;\e'
+    _ghostty_pt_end=$'\e\\'
+}
+
 _ghostty_deferred_init() {
     builtin emulate -L zsh -o no_warn_create_global -o no_aliases
+    _ghostty_setup_tmux_passthrough
 
     # Enable semantic markup with OSC 133.
     _ghostty_precmd() {
@@ -113,15 +152,17 @@ _ghostty_deferred_init() {
             if (( _ghostty_state == 1 )); then
                 # The last written OSC 133 C has not been closed with D yet.
                 # Close it and supply status.
-                builtin print -nu $_ghostty_fd '\e]133;D;'$cmd_status'\a'
+                builtin print -nu $_ghostty_fd ${_ghostty_pt_begin}'\e]133;D;'$cmd_status'\a'${_ghostty_pt_end}
                 (( _ghostty_state = 2 ))
             elif (( _ghostty_state == 2 )); then
                 # There might be an unclosed OSC 133 C. Close that.
-                builtin print -nu $_ghostty_fd '\e]133;D\a'
+                builtin print -nu $_ghostty_fd ${_ghostty_pt_begin}'\e]133;D\a'${_ghostty_pt_end}
             fi
         fi
 
-        builtin local mark1=$'%{\e]133;A;cl=line\a%}'
+        # The passthrough wrapper bytes are zero-width, so they live
+        # inside the same %{...%} as the mark they wrap.
+        builtin local mark1=$'%{'"$_ghostty_pt_begin"$'\e]133;A;cl=line\a'"$_ghostty_pt_end"$'%}'
         if [[ -o prompt_percent ]]; then
             builtin typeset -g precmd_functions
             if [[ ${precmd_functions[-1]} == _ghostty_precmd ]]; then
@@ -155,8 +196,8 @@ _ghostty_deferred_init() {
                 # Add our marks. Since we always start from a clean PS1
                 # (either restored above or freshly set by a theme), we can
                 # unconditionally add mark1 and markB.
-                builtin local mark2=$'%{\e]133;P;k=s\a%}'
-                builtin local markB=$'%{\e]133;B\a%}'
+                builtin local mark2=$'%{'"$_ghostty_pt_begin"$'\e]133;P;k=s\a'"$_ghostty_pt_end"$'%}'
+                builtin local markB=$'%{'"$_ghostty_pt_begin"$'\e]133;B\a'"$_ghostty_pt_end"$'%}'
                 # If PS1 ends with a bare '%', it combines with the '{'
                 # in markB to form a '%{' prompt escape, swallowing the
                 # marker and producing a visible '{'. Fix by doubling the
@@ -233,9 +274,9 @@ _ghostty_deferred_init() {
         # mark. Percent-encoding guarantees the argument contains no
         # backslashes, so print's escape processing only sees our own.
         if [[ "$GHOSTTY_PREDICTION" == "1" ]]; then
-            builtin print -nu $_ghostty_fd '\e]133;C;cmdline_url='"$(_ghostty_urlencode "$1")"$'\a'
+            builtin print -nu $_ghostty_fd ${_ghostty_pt_begin}'\e]133;C;cmdline_url='"$(_ghostty_urlencode "$1")"$'\a'${_ghostty_pt_end}
         else
-            builtin print -nu $_ghostty_fd '\e]133;C\a'
+            builtin print -nu $_ghostty_fd ${_ghostty_pt_begin}'\e]133;C\a'${_ghostty_pt_end}
         fi
         (( _ghostty_state = 1 ))
     }
@@ -262,7 +303,7 @@ _ghostty_deferred_init() {
 
     # Enable reporting current working dir to terminal. Ghostty supports
     # the kitty-shell-cwd format.
-    _ghostty_report_pwd() { builtin print -nu $_ghostty_fd '\e]7;kitty-shell-cwd://'"$HOST""$PWD"'\a'; }
+    _ghostty_report_pwd() { builtin print -nu $_ghostty_fd ${_ghostty_pt_begin}'\e]7;kitty-shell-cwd://'"$HOST""$PWD"'\a'${_ghostty_pt_end}; }
     chpwd_functions=(${chpwd_functions[@]} "_ghostty_report_pwd")
     # An executed program could change cwd and report the changed cwd, so also report cwd at each new prompt
     # as in this case chpwd_functions is insufficient. chpwd_functions is still needed for things like: cd x && something
@@ -302,10 +343,12 @@ _ghostty_deferred_init() {
     # We use 133;P instead of 133;A to avoid fresh-line behavior which would
     # disrupt the display since the prompt has already been drawn. We also
     # emit 133;B to mark the input area, which is needed for click-to-move.
+    # The pattern matches past any tmux passthrough wrapper inside the %{}
+    # so a wrapped mark counts as present.
     (( $+functions[_ghostty_zle_line_init] )) || _ghostty_zle_line_init() { builtin true; }
     functions[_ghostty_zle_line_init]="
-        if [[ \$PS1 != *$'%{\\e]133;A'* ]]; then
-            builtin print -nu \$_ghostty_fd '\\e]133;P;k=i\\a\\e]133;B\\a'
+        if [[ \$PS1 != *$'\\e]133;A'* ]]; then
+            builtin print -nu \$_ghostty_fd '${_ghostty_pt_begin}\\e]133;P;k=i\\a${_ghostty_pt_end}${_ghostty_pt_begin}\\e]133;B\\a${_ghostty_pt_end}'
         fi
     "${functions[_ghostty_zle_line_init]}
 
@@ -351,6 +394,38 @@ _ghostty_deferred_init() {
         [[ "$GHOSTTY_SHELL_FEATURES" != *ssh-terminfo* ]] && flags+=(--terminfo=false)
         [[ "$GHOSTTY_SHELL_FEATURES" != *ssh-integration* ]] && flags+=(--shell-integration=false)
         "$GHOSTTY_BIN_DIR/niftty" +ssh $flags -- "$@"
+      }
+    fi
+
+    # Tmux Integration
+    #
+    # Wrap `tmux` so shells in panes it creates load Niftty shell
+    # integration. Pane shells are fresh non-Niftty spawns that would
+    # otherwise skip it, and without integration there are no marks for
+    # the passthrough wrapping (see _ghostty_setup_tmux_passthrough) to
+    # carry. A server started by this invocation inherits the
+    # integration environment; a server that is already running gets
+    # the same value in its global environment so windows created later
+    # integrate too. `set-environment` fails quietly when no server is
+    # running, which is fine: the prefixed invocation that follows
+    # starts one with the right environment. The user's own ZDOTDIR
+    # travels along as GHOSTTY_ZSH_ZDOTDIR for our .zshenv shim to
+    # restore, mirroring direct Niftty injection, so pane shells with a
+    # relocated zdotdir still load the user's rc files.
+    if [[ "$GHOSTTY_SHELL_FEATURES" == *"tmux"* ]] && [[ -n "$GHOSTTY_RESOURCES_DIR$GHOSTTY_SHELL_INTEGRATION_DIR" ]]; then
+      function tmux() {
+        # GHOSTTY_SHELL_INTEGRATION_DIR points at a zsh integration dir
+        # directly (`niftty +ssh` sets it on remote hosts); locally the
+        # dir lives under the resources dir.
+        builtin local zdotdir="${GHOSTTY_SHELL_INTEGRATION_DIR:-$GHOSTTY_RESOURCES_DIR/shell-integration/zsh}"
+        if [[ -d "$zdotdir" ]]; then
+          builtin local user_zdotdir="${ZDOTDIR:-$HOME}"
+          command tmux set-environment -g ZDOTDIR "$zdotdir" 2>/dev/null
+          command tmux set-environment -g GHOSTTY_ZSH_ZDOTDIR "$user_zdotdir" 2>/dev/null
+          ZDOTDIR="$zdotdir" GHOSTTY_ZSH_ZDOTDIR="$user_zdotdir" command tmux "$@"
+        else
+          command tmux "$@"
+        fi
       }
     fi
 

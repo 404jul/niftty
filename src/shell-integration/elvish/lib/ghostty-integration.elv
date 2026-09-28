@@ -11,21 +11,53 @@
   # List of enabled shell integration features
   var features = [(str:split ',' $E:GHOSTTY_SHELL_FEATURES)]
 
+  # DCS passthrough wrapping for tmux. tmux does not forward unknown
+  # OSC sequences (prompt marks, pwd reports) to the outer terminal, so
+  # inside tmux every mark we emit is wrapped in tmux's passthrough
+  # escape sequence instead: ESC P tmux ; <payload with each ESC
+  # doubled> ESC \. Niftty decodes the payload and tmux 3.2+ forwards
+  # it; tmux 3.3+ additionally requires the allow-passthrough option,
+  # which we enable for our own pane. GHOSTTY_TMUX_PASSTHROUGH covers
+  # remote shells reached through `niftty +ssh` from inside a local
+  # tmux. Marks degrade to today's behavior (dropped by tmux) when
+  # passthrough is unavailable or we're not under a Niftty-attached
+  # server. The begin value already contains the doubled ESC for the
+  # payload's own leading ESC. Title and cursor shape stay unwrapped:
+  # tmux manages those itself.
+  var pt-begin = ""
+  var pt-end = ""
+  {
+    var term-program = ""
+    if (has-env TERM_PROGRAM) { set term-program = $E:TERM_PROGRAM }
+    var in-tmux = (and (has-env TMUX) (not-eq $E:TMUX ""))
+    var remote-hint = (and (has-env GHOSTTY_TMUX_PASSTHROUGH) (eq $E:GHOSTTY_TMUX_PASSTHROUGH "1"))
+    if (and (has-value $features tmux) (eq $term-program ghostty) (or $in-tmux $remote-hint)) {
+      # Pane-scoped, runtime only: never persisted to the user's tmux
+      # config. Fails quietly on tmux without the option (3.2, where
+      # passthrough is always allowed) or with it disabled by policy.
+      if $in-tmux {
+        try { e:tmux set-option -p allow-passthrough on >/dev/null 2>/dev/null } catch _ { }
+      }
+      set pt-begin = "\ePtmux;\e"
+      set pt-end = "\e\\"
+    }
+  }
+
   # State tracking for semantic prompt sequences
   # Values: 'prompt-start', 'pre-exec', 'post-exec'
   fn set-prompt-state {|new| set-env __ghostty_prompt_state $new }
 
   fn mark-prompt-start {
     if (not-eq $E:__ghostty_prompt_state 'prompt-start') {
-      printf "\e]133;D;aid="$pid"\a"
+      printf $pt-begin"\e]133;D;aid="$pid"\a"$pt-end
     }
     set-prompt-state 'prompt-start'
-    printf "\e]133;A;aid="$pid"\a"
+    printf $pt-begin"\e]133;A;aid="$pid"\a"$pt-end
   }
 
   fn mark-output-start {|_|
     set-prompt-state 'pre-exec'
-    printf "\e]133;C\a"
+    printf $pt-begin"\e]133;C\a"$pt-end
   }
 
   fn mark-output-end {|cmd-info|
@@ -45,7 +77,7 @@
       }
     }
 
-    printf "\e]133;D;"$exit-status";aid="$pid"\a"
+    printf $pt-begin"\e]133;D;"$exit-status";aid="$pid"\a"$pt-end
   }
 
   # NOTE: OSC 133;B (end of prompt, start of input) cannot be reliably
@@ -127,7 +159,7 @@
   }
 
   # Report changes to the current directory.
-  fn report-pwd { printf "\e]7;kitty-shell-cwd://%s%s\a" (platform:hostname) $pwd }
+  fn report-pwd { printf $pt-begin"\e]7;kitty-shell-cwd://%s%s\a"$pt-end (platform:hostname) $pwd }
   set after-chdir = (conj $after-chdir {|_| report-pwd })
   report-pwd
 }

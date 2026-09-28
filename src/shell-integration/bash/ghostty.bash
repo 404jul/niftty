@@ -129,6 +129,36 @@ if [[ "$GHOSTTY_SHELL_FEATURES" == *ssh-* ]]; then
   }
 fi
 
+# DCS passthrough wrapping for tmux. tmux does not forward unknown OSC
+# sequences (prompt marks, pwd reports) to the outer terminal, so inside
+# tmux every mark we emit is wrapped in tmux's passthrough escape
+# sequence instead: ESC P tmux ; <payload with each ESC doubled> ESC \.
+# Niftty decodes the payload and tmux 3.2+ forwards it; tmux 3.3+
+# additionally requires the allow-passthrough option, which we enable
+# for our own pane. GHOSTTY_TMUX_PASSTHROUGH covers remote shells
+# reached through `niftty +ssh` from inside a local tmux. Marks degrade
+# to today's behavior (dropped by tmux) when passthrough is unavailable
+# or we're not under a Niftty-attached server.
+#
+# _GHOSTTY_PT_BEGIN already contains the doubled ESC for the payload's
+# own leading ESC, so it is prepended directly to each raw sequence.
+# Sequences left unwrapped on purpose: terminal title and cursor shape,
+# which tmux manages itself. Bash pane shells inside tmux never load
+# this integration (bash has no environment-only injection), so in
+# practice this serves remote bash sessions traversing a local tmux.
+_GHOSTTY_PT_BEGIN=""
+_GHOSTTY_PT_END=""
+if [[ "$GHOSTTY_SHELL_FEATURES" == *"tmux"* ]] && [[ "${TERM_PROGRAM-}" == "ghostty" ]] && [[ -n "${TMUX-}" || "${GHOSTTY_TMUX_PASSTHROUGH-}" == "1" ]]; then
+  if [[ -n "${TMUX-}" ]]; then
+    # Pane-scoped, runtime only: never persisted to the user's tmux
+    # config. Fails quietly on tmux without the option (3.2, where
+    # passthrough is always allowed) or with it disabled by policy.
+    builtin command tmux set-option -p allow-passthrough on 2>/dev/null
+  fi
+  _GHOSTTY_PT_BEGIN=$'\ePtmux;\e'
+  _GHOSTTY_PT_END=$'\e\\'
+fi
+
 # This is set to 1 when we're executing a command so that we don't
 # send prompt marks multiple times.
 _ghostty_executing=""
@@ -165,8 +195,8 @@ function __ghostty_precmd() {
     # Use 133;P (not 133;A) inside PS1 to avoid fresh-line behavior on
     # readline redraws (e.g., vi mode switches, Ctrl-L). The initial
     # 133;A with fresh-line is emitted once via printf below.
-    PS1='\[\e]133;P;k=i\a\]'$PS1'\[\e]133;B\a\]'
-    PS2='\[\e]133;P;k=s\a\]'$PS2'\[\e]133;B\a\]'
+    PS1="\[${_GHOSTTY_PT_BEGIN}\e]133;P;k=i\a${_GHOSTTY_PT_END}\]"$PS1"\[${_GHOSTTY_PT_BEGIN}\e]133;B\a${_GHOSTTY_PT_END}\]"
+    PS2="\[${_GHOSTTY_PT_BEGIN}\e]133;P;k=s\a${_GHOSTTY_PT_END}\]"$PS2"\[${_GHOSTTY_PT_BEGIN}\e]133;B\a${_GHOSTTY_PT_END}\]"
 
     # Bash doesn't redraw the leading lines in a multiline prompt so we mark
     # the start of each line (after each newline) as a secondary prompt. This
@@ -177,7 +207,7 @@ function __ghostty_precmd() {
     # because literal newlines may appear inside $(...) command substitutions
     # where inserting escape sequences would break shell syntax.
     if [[ "$PS1" == *"\n"* ]]; then
-      PS1="${PS1//\\n/\\n$'\\[\\e]133;P;k=s\\a\\]'}"
+      PS1="${PS1//\\n/\\n\\[${_GHOSTTY_PT_BEGIN}\\e]133;P;k=s\\a${_GHOSTTY_PT_END}\\]}"
     fi
 
     # Cursor
@@ -197,7 +227,7 @@ function __ghostty_precmd() {
 
   if test "$_ghostty_executing" != ""; then
     # End of current command. Report its status.
-    builtin printf "\e]133;D;%s;aid=%s\a" "$ret" "$BASHPID"
+    builtin printf "${_GHOSTTY_PT_BEGIN}\e]133;D;%s;aid=%s\a${_GHOSTTY_PT_END}" "$ret" "$BASHPID"
   fi
 
   # Fresh line and start of prompt. When ble.sh is active, emit 133;P instead
@@ -206,9 +236,9 @@ function __ghostty_precmd() {
   # desyncs its position state, causing display artifacts like duplicate
   # prompts. See: https://github.com/akinomyoga/ble.sh/issues/684
   if [[ -n "${BLE_VERSION-}" ]]; then
-    builtin printf "\e]133;P;k=i\a"
+    builtin printf "${_GHOSTTY_PT_BEGIN}\e]133;P;k=i\a${_GHOSTTY_PT_END}"
   else
-    builtin printf "\e]133;A;redraw=last;cl=line;aid=%s\a" "$BASHPID"
+    builtin printf "${_GHOSTTY_PT_BEGIN}\e]133;A;redraw=last;cl=line;aid=%s\a${_GHOSTTY_PT_END}" "$BASHPID"
   fi
 
   # unfortunately bash provides no hooks to detect cwd changes
@@ -216,7 +246,7 @@ function __ghostty_precmd() {
   # command like cd /test && cat. PS0 is evaluated before cd is run.
   if [[ "$_ghostty_last_reported_cwd" != "$PWD" ]]; then
     _ghostty_last_reported_cwd="$PWD"
-    builtin printf "\e]7;kitty-shell-cwd://%s%s\a" "$HOSTNAME" "$PWD"
+    builtin printf "${_GHOSTTY_PT_BEGIN}\e]7;kitty-shell-cwd://%s%s\a${_GHOSTTY_PT_END}" "$HOSTNAME" "$PWD"
   fi
 
   _ghostty_executing=0
@@ -237,9 +267,9 @@ function __ghostty_preexec() {
   # report the command line to the terminal as a percent-encoded
   # `cmdline_url` option on the same OSC 133 C mark.
   if [[ "$GHOSTTY_PREDICTION" == "1" ]]; then
-    builtin printf "\e]133;C;cmdline_url=%s\a" "$(__ghostty_urlencode "$cmd")"
+    builtin printf "${_GHOSTTY_PT_BEGIN}\e]133;C;cmdline_url=%s\a${_GHOSTTY_PT_END}" "$(__ghostty_urlencode "$cmd")"
   else
-    builtin printf "\e]133;C;\a"
+    builtin printf "${_GHOSTTY_PT_BEGIN}\e]133;C;\a${_GHOSTTY_PT_END}"
   fi
   _ghostty_executing=1
 }

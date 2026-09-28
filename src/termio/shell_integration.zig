@@ -248,8 +248,8 @@ test "setup features" {
         var env = EnvMap.init(alloc);
         defer env.deinit();
 
-        try setupFeatures(&env, .{ .cursor = true, .sudo = true, .title = true, .@"ssh-env" = true, .@"ssh-terminfo" = true, .@"ssh-integration" = true, .path = true }, true);
-        try testing.expectEqualStrings("cursor:blink,path,ssh-env,ssh-integration,ssh-terminfo,sudo,title", env.get("GHOSTTY_SHELL_FEATURES").?);
+        try setupFeatures(&env, .{ .cursor = true, .sudo = true, .title = true, .@"ssh-env" = true, .@"ssh-terminfo" = true, .@"ssh-integration" = true, .path = true, .tmux = true }, true);
+        try testing.expectEqualStrings("cursor:blink,path,ssh-env,ssh-integration,ssh-terminfo,sudo,title,tmux", env.get("GHOSTTY_SHELL_FEATURES").?);
     }
 
     // Test: all features disabled
@@ -267,14 +267,14 @@ test "setup features" {
         defer env.deinit();
 
         try setupFeatures(&env, .{ .cursor = false, .sudo = true, .title = false, .@"ssh-env" = true, .@"ssh-terminfo" = false, .path = false }, true);
-        try testing.expectEqualStrings("ssh-env,sudo", env.get("GHOSTTY_SHELL_FEATURES").?);
+        try testing.expectEqualStrings("ssh-env,sudo,tmux", env.get("GHOSTTY_SHELL_FEATURES").?);
     }
 
     // Test: blinking cursor
     {
         var env = EnvMap.init(alloc);
         defer env.deinit();
-        try setupFeatures(&env, .{ .cursor = true, .sudo = false, .title = false, .@"ssh-env" = false, .@"ssh-terminfo" = false, .path = false }, true);
+        try setupFeatures(&env, .{ .cursor = true, .sudo = false, .title = false, .@"ssh-env" = false, .@"ssh-terminfo" = false, .path = false, .tmux = false }, true);
         try testing.expectEqualStrings("cursor:blink", env.get("GHOSTTY_SHELL_FEATURES").?);
     }
 
@@ -282,7 +282,7 @@ test "setup features" {
     {
         var env = EnvMap.init(alloc);
         defer env.deinit();
-        try setupFeatures(&env, .{ .cursor = true, .sudo = false, .title = false, .@"ssh-env" = false, .@"ssh-terminfo" = false, .path = false }, false);
+        try setupFeatures(&env, .{ .cursor = true, .sudo = false, .title = false, .@"ssh-env" = false, .@"ssh-terminfo" = false, .path = false, .tmux = false }, false);
         try testing.expectEqualStrings("cursor:steady", env.get("GHOSTTY_SHELL_FEATURES").?);
     }
 }

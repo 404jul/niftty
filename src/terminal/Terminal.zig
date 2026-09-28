@@ -4668,6 +4668,51 @@ pub fn getPwd(self: *const Terminal) ?[:0]const u8 {
     return self.pwd.items[0 .. self.pwd.items.len - 1 :0];
 }
 
+// The exact byte form our shell integration writes for a prompt mark
+// (OSC 133 B) when it detects it is running inside tmux: the sequence
+// is wrapped in tmux's DCS passthrough (`ESC P tmux ; ... ESC \`)
+// with every ESC in the payload doubled. tmux only forwards this to
+// the outer terminal when its allow-passthrough option is on.
+test "Terminal: tmux passthrough decodes OSC 133 and OSC 7 payloads" {
+    const alloc = testing.allocator;
+    const io_impl = testing.io;
+    var t = try init(io_impl, alloc, .{ .cols = 20, .rows = 5 });
+    defer t.deinit(alloc);
+
+    {
+        var s = t.vtStream();
+        defer s.deinit();
+
+        // Wrapped OSC 133 B (input start), BEL-terminated.
+        s.nextSlice("\x1bPtmux;\x1b\x1b]133;B\x07\x1b\\");
+    }
+
+    try testing.expectEqual(
+        .input,
+        t.screens.active.cursor.semantic_content,
+    );
+
+    {
+        var s = t.vtStream();
+        defer s.deinit();
+
+        // Wrapped OSC 7 (pwd report) with an ST-terminated payload.
+        s.nextSlice("\x1bPtmux;\x1b\x1b]7;kitty-shell-cwd://host/tmp\x1b\x1b\\\x1b\\");
+        // Wrapped OSC 133 D (end command), then plain text: the wrapper
+        // must not leak the DCS prefix as printable text.
+        s.nextSlice("\x1bPtmux;\x1b\x1b]133;D\x07\x1b\\A");
+    }
+
+    try testing.expectEqualStrings("kitty-shell-cwd://host/tmp", t.getPwd().?);
+    try testing.expectEqual(
+        .output,
+        t.screens.active.cursor.semantic_content,
+    );
+    try testing.expectEqual(@as(u21, 'A'), t.screens.active.pages.getCell(
+        .{ .active = .{} },
+    ).?.cell.codepoint());
+}
+
 test "Terminal: setPwd preserves a sentinel on allocation failure" {
     var failing = testing.FailingAllocator.init(testing.allocator, .{});
     const alloc = failing.allocator();

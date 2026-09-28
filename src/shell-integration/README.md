@@ -130,12 +130,50 @@ from the file contents. The install shares the one-time remote setup connection
 and cache entry with `ssh-terminfo` (see `niftty +ssh-cache`). Interactive
 logins then start the remote login shell with the integration loaded the same
 way as locally (zsh through `ZDOTDIR`, bash through `--posix` and `ENV`),
-forwarding `GHOSTTY_PREDICTION` and the `cursor` and `title` features. Only zsh
-and bash 4+ login shells are supported (bash 3 ignores `ENV` in POSIX mode, so
-Apple's `/bin/bash` starts unchanged, as do other shells). Inside tmux
-on the remote host the OSC 133 prompt marks never reach Niftty, because tmux
-does not forward them.
+forwarding `GHOSTTY_PREDICTION` and the `cursor`, `title`, and `tmux`
+features. Only zsh and bash 4+ login shells are supported (bash 3 ignores
+`ENV` in POSIX mode, so Apple's `/bin/bash` starts unchanged, as do other
+shells).
 
 Keep the zsh and bash scripts self-contained within their directories: the
 remote install only carries the four files above, and changing any of them
 installs a new remote copy on the next connection.
+
+## tmux
+
+tmux runs its own terminal emulator between the shell and Niftty and does
+not forward the OSC sequences our integration relies on (OSC 133 prompt
+marks, OSC 7 working-directory reports), which is why shell integration
+and inline predictions historically stop working inside tmux. The `tmux`
+shell-integration feature (on by default) closes that gap:
+
+- **Mark passthrough.** When the integration detects `$TMUX` (or
+  `GHOSTTY_TMUX_PASSTHROUGH=1`, set by `niftty +ssh` on remote shells
+  reached from inside a local tmux), it wraps every mark it emits in
+  tmux's DCS passthrough (`ESC P tmux ; <payload, ESCs doubled> ESC \`)
+  and enables tmux's pane-scoped `allow-passthrough` option (tmux 3.3+;
+  runtime only, never written to a tmux config). Niftty's parser decodes
+  the wrapped payload — the doubled ESC that ends the DCS prefix is
+  followed by the payload's own `ESC ]`, which parses as the plain
+  sequence. Marks degrade to today's behavior when passthrough is
+  unavailable (tmux 3.1 or older, or the option disabled by policy).
+- **Pane shell integration.** Fresh shells in tmux panes never load our
+  integration on their own, so the zsh and fish integrations also wrap
+  the `tmux` command itself: a tmux server it starts inherits the
+  injection environment (`ZDOTDIR` plus `GHOSTTY_ZSH_ZDOTDIR` for the
+  user's own zdotdir, `XDG_DATA_DIRS` for fish), and an already-running
+  server gets the same values via `set-environment -g`, so windows
+  created later integrate too. `niftty +ssh` sets
+  `GHOSTTY_SHELL_INTEGRATION_DIR` on remote hosts (whenever the `tmux`
+  feature is on) so the remote zsh integration can do the same for a
+  remote tmux.
+
+Limitations: pane shells that cannot load integration from the
+environment alone (bash, elvish, nushell) are not integrated inside
+tmux; marks are lost after a tmux full redraw (e.g. a resize) until the
+next prompt; in side-by-side splits an input line reaching the right
+edge of its pane can fail the "cursor at end of input" heuristics that
+inline predictions use; and passthrough is a single hop — a remote tmux
+reached from inside a local tmux forwards its panes' unwrapped marks
+straight into the local tmux, which drops them, so nested tmux (one
+local, one remote) degrades to the inner panes having no marks.
