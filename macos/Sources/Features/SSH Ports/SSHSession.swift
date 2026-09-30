@@ -43,6 +43,17 @@ enum SSHSessionStore {
         var id: String { "\(localHost):\(localPort)->\(remoteHost):\(remotePort)" }
         var host: String { "\(localHost):\(localPort)" }
         var remote: String { "\(remoteHost):\(remotePort)" }
+
+        /// Browser-openable URL for the local side of the tunnel. Wildcard,
+        /// IPv6, and empty loopback binds are canonicalized to 127.0.0.1,
+        /// matching the address `+ssh` reports for forwarded ports.
+        var url: URL? {
+            let host = switch localHost {
+            case "", "*", "localhost", "0.0.0.0", "::", "::1": "127.0.0.1"
+            default: localHost
+            }
+            return URL(string: "http://\(host):\(localPort)")
+        }
     }
 
     struct List: Equatable {

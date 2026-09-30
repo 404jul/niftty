@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Titlebar accessory: a Ports button that opens a popover for the focused SSH surface.
@@ -125,7 +126,7 @@ struct SSHPortsPanel: View {
             GridRow {
                 Text("Host")
                 Text("Remote")
-                Color.clear.frame(width: 18)
+                Color.clear.frame(width: 40)
             }
             .font(.caption.weight(.semibold))
             .foregroundStyle(.secondary)
@@ -146,15 +147,28 @@ struct SSHPortsPanel: View {
                         Text(tunnel.remote)
                             .font(.body.monospaced())
                             .textSelection(.enabled)
-                        Button {
-                            cancel(pid: pid, tunnel: tunnel)
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
+                        HStack(spacing: 4) {
+                            Button {
+                                if let url = tunnel.url { NSWorkspace.shared.open(url) }
+                            } label: {
+                                Image(systemName: "arrow.up.forward.square")
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.secondary)
+                            .help("Open \(tunnel.host) in default browser")
+                            .accessibilityLabel("Open \(tunnel.host) in default browser")
+
+                            Button {
+                                cancel(pid: pid, tunnel: tunnel)
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.secondary)
+                            .disabled(busy)
+                            .accessibilityLabel("Close \(tunnel.host) to \(tunnel.remote)")
                         }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.secondary)
-                        .disabled(busy)
-                        .accessibilityLabel("Close \(tunnel.host) to \(tunnel.remote)")
+                        .frame(width: 40, alignment: .leading)
                     }
                 }
             }

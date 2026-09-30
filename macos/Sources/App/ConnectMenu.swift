@@ -218,8 +218,7 @@ final class ConnectMenuController: NSObject, NSMenuDelegate {
             let item = NSMenuItem(title: session.destination, action: nil, keyEquivalent: "")
             let submenu = NSMenu(title: session.destination)
             for tunnel in session.tunnels {
-                guard let url = URL(string: "http://\(tunnel.localHost):\(tunnel.localPort)")
-                else { continue }
+                guard let url = tunnel.url else { continue }
                 let tunnelItem = NSMenuItem(
                     title: "\(tunnel.host) → \(tunnel.remote)",
                     action: #selector(openPort(_:)),
