@@ -2774,7 +2774,8 @@ pub fn predictionSubmit(self: *Surface, sub: PredictionSubmission) !bool {
             return false;
         },
     };
-    errdefer candidate.deinit(self.alloc);
+    var candidate_stored = false;
+    defer if (!candidate_stored) candidate.deinit(self.alloc);
 
     self.renderer_state.mutex.lockUncancelable(global.io());
     defer self.renderer_state.mutex.unlock(global.io());
@@ -2810,12 +2811,24 @@ pub fn predictionSubmit(self: *Surface, sub: PredictionSubmission) !bool {
         return false;
     }
 
+    // The GUI context may lag behind PTY output. Validate the live
+    // prefix under the same lock as the candidate's cursor anchor.
+    var input_buf: [rendererpkg.State.Prediction.max_text_len]u8 = undefined;
+    var input_writer: std.Io.Writer = .fixed(&input_buf);
+    if (!(t.promptInput(&input_writer) catch return false)) return false;
+    if (!std.mem.eql(u8, sub.input, input_writer.buffered())) return false;
+    candidate.origin = .{
+        .row = t.screens.active.cursor.page_row,
+        .x = t.screens.active.cursor.x,
+    };
+
     log.info("prediction candidate accepted for display id={s} revision={} len={}", .{ sub.id, sub.revision, sub.text.len });
 
     // Store the candidate, replacing (and freeing) any prior one. The
     // context revision is intentionally unchanged.
     if (self.renderer_state.prediction) |old| old.deinit(self.alloc);
     self.renderer_state.prediction = candidate;
+    candidate_stored = true;
 
     // Mark the frame fully dirty: the overlay can span rows.
     t.flags.dirty.prediction = true;
@@ -2868,6 +2881,16 @@ fn predictionAccept(self: *Surface) !bool {
         if (self.renderer_state.preedit != null) break :accepted null;
         if (!t.cursorIsAtPrompt()) break :accepted null;
         if (t.screens.active_key != .primary) break :accepted null;
+        const origin = candidate.origin orelse break :accepted null;
+        if (t.screens.active.cursor.page_row != origin.row or
+            t.screens.active.cursor.x != origin.x) break :accepted null;
+
+        var input_buf: [rendererpkg.State.Prediction.max_text_len]u8 = undefined;
+        var input_writer: std.Io.Writer = .fixed(&input_buf);
+        if (!(t.promptInput(&input_writer) catch break :accepted null))
+            break :accepted null;
+        if (!std.mem.eql(u8, self.prediction_input.items, input_writer.buffered()))
+            break :accepted null;
 
         // Atomically copy the text and clear the candidate. An
         // allocation failure leaves the candidate intact; the mutex is

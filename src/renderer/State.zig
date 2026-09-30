@@ -221,6 +221,13 @@ pub const Prediction = struct {
     /// stale: it can no longer be accepted.
     revision: u64,
 
+    /// Submission cursor. Compare only; the row can be freed by reflow.
+    /// Ghost text must not follow intermediate shell redraw positions.
+    origin: ?struct {
+        row: *terminalpkg.page.Row,
+        x: terminalpkg.size.CellCountInt,
+    } = null,
+
     /// The candidate ID copied from the submission. Used to key terminal
     /// outcomes reported back to the embedding application.
     id: []const u8 = &.{},

@@ -26,7 +26,7 @@ fiddling with tooling and more time getting work done.
 | **Drag-and-drop upload** | Drag files from your desktop straight into the terminal to upload them to the remote host, or use the built-in upload button. |
 | **Zen mode** | A distraction-free fullscreen stage that turns your tabs into numbered workspaces on a shelf with live snapshot previews — leave zen mode and your tabs come right back. |
 | **Command palette** | Launch any action with Cmd+Shift+P, add your own palette entries, and chain commands with Cmd+K command chords. |
-| **Inline predictions** | Ghost-text command suggestions at the prompt, ranked from your own command history and checked against the current directory. Accept with Shift+Tab or →. Works over SSH with the `ssh-integration` shell feature (zsh and bash 4+; not inside remote tmux). |
+| **Inline predictions** | Ghost-text command suggestions at the prompt, ranked from your own command history and checked against the current directory. Accept with Shift+Tab or →. Suggestions stay anchored to the input they were requested for; typing or backspacing dismisses them until the shell updates the line. Works over SSH with the `ssh-integration` shell feature (zsh and bash 4+; not inside remote tmux). |
 | **Status bar** | Optional bar showing the working directory (including the remote directory over SSH), surface title, bell indicator, and terminal size. |
 | **Smart clipboard** | Copy/paste with copy-on-select, paste protection against unsafe commands, and confirmation prompts whenever remote apps read or write your clipboard (OSC 52 / Kitty protocol). |
 | **Keybind editor** | Rebind any action graphically in Settings — no config file editing required. |

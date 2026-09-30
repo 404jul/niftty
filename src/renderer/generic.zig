@@ -157,6 +157,9 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
         /// cells for the draw call.
         cells_rebuilt: bool = false,
 
+        /// Whether the last frame included an anchored prediction.
+        prediction_visible: bool = false,
+
         /// The current GPU uniform values.
         uniforms: shaderpkg.Uniforms,
 
@@ -1348,6 +1351,21 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                     state.terminal.scrollViewport(.bottom);
                 }
 
+                const prediction_visible = if (state.prediction) |p| visible: {
+                    const origin = p.origin orelse break :visible false;
+                    const t = state.terminal;
+                    const cursor = &t.screens.active.cursor;
+                    break :visible t.screens.active_key == .primary and
+                        !t.flags.password_input and state.preedit == null and
+                        t.cursorIsAtPrompt() and !cursor.pending_wrap and
+                        cursor.page_row == origin.row and cursor.x == origin.x;
+                } else false;
+                // Remove old overlay cells even for cursor-only redraws.
+                if (prediction_visible != self.prediction_visible) {
+                    state.terminal.flags.dirty.prediction = true;
+                    self.prediction_visible = prediction_visible;
+                }
+
                 // Begin the update of our terminal state. Work that
                 // doesn't require terminal access (e.g. style
                 // denormalization) is deferred to the endUpdate call
@@ -1381,6 +1399,7 @@ pub fn Renderer(comptime GraphicsAPI: type) type {
                 // view is cloned into the frame arena; the rest of the
                 // candidate stays render-owned.
                 const prediction: ?[]const renderer.State.Prediction.Codepoint = prediction: {
+                    if (!prediction_visible) break :prediction null;
                     const p = state.prediction orelse break :prediction null;
                     break :prediction try p.cloneView(arena_alloc);
                 };
