@@ -229,7 +229,13 @@ private struct BrowserWebView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> WKWebView {
-        let webView = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
+        let config = WKWebViewConfiguration()
+        // Style the overlay scrollbars: WebKit's default dark thumb is invisible
+        // on dark pages and its track paints solid black bars along the bottom
+        // and right edges. Inject a transparent track and a thumb that contrasts
+        // with the theme background.
+        config.userContentController.addUserScript(scrollbarScript())
+        let webView = WKWebView(frame: .zero, configuration: config)
         // Pages draw their own background; behind content, use the theme so
         // there is no white flash during loads.
         webView.underPageBackgroundColor = NSColor(ghostty.config.backgroundColor)
@@ -281,5 +287,40 @@ private struct BrowserWebView: NSViewRepresentable {
             document.url = webView.url
             document.addressText = webView.url?.absoluteString ?? ""
         }
+    }
+
+    /// Injected CSS: keep the scrollbar track transparent (no dark bars at the
+    /// page edges) and give the thumb enough contrast against the theme
+    /// background to stay visible.
+    private func scrollbarScript() -> WKUserScript {
+        let background = NSColor(ghostty.config.backgroundColor)
+        // luminance throws on color spaces that don't support it; convert first.
+        let isDark = (background.usingColorSpace(.sRGB)?.luminance ?? 0.5) < 0.5
+        // Thumb shade opposite to the background: light thumb on dark themes,
+        // dark thumb on light themes, always translucent.
+        let thumb = isDark ? "rgba(255, 255, 255, 0.40)" : "rgba(0, 0, 0, 0.35)"
+        let thumbHover = isDark ? "rgba(255, 255, 255, 0.60)" : "rgba(0, 0, 0, 0.55)"
+        let css = """
+        ::-webkit-scrollbar { width: 12px; height: 12px; background: transparent; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-corner { background: transparent; }
+        ::-webkit-scrollbar-thumb {
+            background: \(thumb);
+            border-radius: 7px;
+            border: 3px solid transparent;
+            background-clip: padding-box;
+        }
+        ::-webkit-scrollbar-thumb:hover { background-color: \(thumbHover); }
+        """
+        return WKUserScript(
+            source: "(function(){ var s = document.createElement('style'); s.textContent = \(json(css)); (document.head || document.documentElement).appendChild(s); })();",
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: false)
+    }
+
+    private func json(_ string: String) -> String {
+        guard let data = try? JSONEncoder().encode(string),
+              let encoded = String(data: data, encoding: .utf8) else { return "''" }
+        return encoded
     }
 }
