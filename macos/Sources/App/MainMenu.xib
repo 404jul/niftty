@@ -180,6 +180,12 @@
                                     <action selector="openEditor:" target="bbz-4X-AYv" id="Edi-aC-t01"/>
                                 </connections>
                             </menuItem>
+                            <menuItem title="New Browser Pane" keyEquivalent="B" id="Brw-t0-r01">
+                                <modifierMask key="keyEquivalentModifierMask" shift="YES" command="YES"/>
+                                <connections>
+                                    <action selector="openBrowser:" target="bbz-4X-AYv" id="Brw-aC-t01"/>
+                                </connections>
+                            </menuItem>
                             <menuItem isSeparatorItem="YES" id="m54-Is-iLE"/>
                             <menuItem title="Split Right" id="VUR-Ld-nLx">
                                 <modifierMask key="keyEquivalentModifierMask"/>

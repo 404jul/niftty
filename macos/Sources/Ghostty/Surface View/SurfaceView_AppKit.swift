@@ -1966,6 +1966,7 @@ extension Ghostty {
             case title
             case isUserSetTitle
             case editorPath
+            case browserURL
         }
 
         required convenience init(from decoder: Decoder) throws {
@@ -1980,9 +1981,12 @@ extension Ghostty {
             let uuid = UUID(uuidString: try container.decode(String.self, forKey: .uuid))
             let editorDocument = try container.decodeIfPresent(String.self, forKey: .editorPath)
                 .flatMap { try? EditorDocument(url: URL(fileURLWithPath: $0)) }
+            let browserDocument = try container.decodeIfPresent(String.self, forKey: .browserURL)
+                .flatMap { URL(string: $0) }
+                .map { BrowserDocument(url: $0) }
             var config = Ghostty.SurfaceConfiguration()
             config.workingDirectory = try container.decode(String?.self, forKey: .pwd)
-            if editorDocument != nil {
+            if editorDocument != nil || browserDocument != nil {
                 config.command = "/usr/bin/true"
                 config.waitAfterCommand = true
             }
@@ -1992,6 +1996,9 @@ extension Ghostty {
             self.init(app, baseConfig: config, uuid: uuid)
             if let editorDocument {
                 EditorPaneStore.shared.attach(editorDocument, to: self)
+            }
+            if let browserDocument {
+                BrowserPaneStore.shared.attach(browserDocument, to: self)
             }
 
             // Restore the saved title after initialization
@@ -2011,6 +2018,7 @@ extension Ghostty {
             try container.encode(title, forKey: .title)
             try container.encode(titleFromTerminal != nil, forKey: .isUserSetTitle)
             try container.encodeIfPresent(editorDocument?.url.path, forKey: .editorPath)
+            try container.encodeIfPresent(browserDocument?.url?.absoluteString, forKey: .browserURL)
         }
     }
 }

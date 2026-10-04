@@ -349,6 +349,31 @@ class BaseTerminalController: NSWindowController,
         direction: SplitTree<Ghostty.SurfaceView>.NewDirection,
         document: EditorDocument
     ) -> Ghostty.SurfaceView? {
+        newCustomPaneSplit(at: oldView, direction: direction, undoAction: "Open Editor") {
+            EditorPaneStore.shared.attach(document, to: $0)
+        }
+    }
+
+    @discardableResult
+    func newBrowserSplit(
+        at oldView: Ghostty.SurfaceView,
+        direction: SplitTree<Ghostty.SurfaceView>.NewDirection
+    ) -> Ghostty.SurfaceView? {
+        newCustomPaneSplit(at: oldView, direction: direction, undoAction: "Open Browser") {
+            BrowserPaneStore.shared.attach(BrowserDocument(), to: $0)
+        }
+    }
+
+    /// Create a split whose surface hosts a custom pane (editor, browser)
+    /// instead of a shell: a surface running `/usr/bin/true` with
+    /// waitAfterCommand so it never exits, then attach the pane to it.
+    @discardableResult
+    private func newCustomPaneSplit(
+        at oldView: Ghostty.SurfaceView,
+        direction: SplitTree<Ghostty.SurfaceView>.NewDirection,
+        undoAction: String,
+        attach: (Ghostty.SurfaceView) -> Void
+    ) -> Ghostty.SurfaceView? {
         guard let ghosttyApp = ghostty.app else { return nil }
 
         var config = Ghostty.SurfaceConfiguration()
@@ -356,12 +381,12 @@ class BaseTerminalController: NSWindowController,
         config.waitAfterCommand = true
 
         let newView = Ghostty.SurfaceView(ghosttyApp, baseConfig: config)
-        EditorPaneStore.shared.attach(document, to: newView)
+        attach(newView)
         return insertSplit(
             newView,
             at: oldView,
             direction: direction,
-            undoAction: "Open Editor"
+            undoAction: undoAction
         )
     }
 
@@ -410,7 +435,7 @@ class BaseTerminalController: NSWindowController,
         from oldView: Ghostty.SurfaceView? = nil,
         delay: TimeInterval? = nil
     ) {
-        guard view.editorDocument != nil else {
+        guard view.editorDocument != nil || view.browserDocument != nil else {
             Ghostty.moveFocus(to: view, from: oldView, delay: delay)
             return
         }
@@ -418,7 +443,11 @@ class BaseTerminalController: NSWindowController,
         let work = { [weak self, weak view] in
             guard let self, let view else { return }
             self.focusedSurfaceDidChange(to: view)
-            NotificationCenter.default.post(name: .editorPaneFocusRequested, object: view)
+            if view.editorDocument != nil {
+                NotificationCenter.default.post(name: .editorPaneFocusRequested, object: view)
+            } else if view.browserDocument != nil {
+                NotificationCenter.default.post(name: .browserPaneFocusRequested, object: view)
+            }
         }
 
         if let delay {
@@ -991,7 +1020,15 @@ class BaseTerminalController: NSWindowController,
            surfaceTree.contains(titleSurface) {
             // If we have a surface, we want to listen for title changes.
             let editorTitle = titleSurface.editorDocument?.url.lastPathComponent
-            titleSurface.$title
+            let titlePublisher: AnyPublisher<String, Never>
+            if let browser = titleSurface.browserDocument {
+                titlePublisher = browser.$pageTitle
+                    .map { $0.isEmpty ? "Browser" : $0 }
+                    .eraseToAnyPublisher()
+            } else {
+                titlePublisher = titleSurface.$title.eraseToAnyPublisher()
+            }
+            titlePublisher
                 .combineLatest(titleSurface.$bell)
                 .map { [weak self] in self?.computeTitle(title: editorTitle ?? $0, bell: $1) ?? "" }
                 .sink { [weak self] in self?.titleDidChange(to: $0) }
@@ -1477,7 +1514,7 @@ class BaseTerminalController: NSWindowController,
         ghosttyDirection: ghostty_action_split_direction_e
     ) {
         guard let focusedSurface else { return }
-        if focusedSurface.editorDocument != nil {
+        if focusedSurface.editorDocument != nil || focusedSurface.browserDocument != nil {
             newSplit(at: focusedSurface, direction: direction)
         } else if let surface = focusedSurface.surface {
             ghostty.split(surface: surface, direction: ghosttyDirection)

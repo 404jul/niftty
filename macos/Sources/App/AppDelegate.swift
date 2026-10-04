@@ -984,6 +984,12 @@ class AppDelegate: NSObject,
         }
     }
 
+    @IBAction func openBrowser(_ sender: Any?) {
+        let controller = TerminalController.preferredParent ?? TerminalController.newWindow(ghostty)
+        guard let focusedSurface = controller.focusedSurface ?? controller.surfaceTree.first else { return }
+        controller.newBrowserSplit(at: focusedSurface, direction: .right)
+    }
+
     @IBAction func reloadConfig(_ sender: Any?) {
         ghostty.reloadConfig()
     }
