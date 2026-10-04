@@ -10,7 +10,7 @@ struct SSHUploadAccessoryView: View {
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     var body: some View {
-        VStack(spacing: 0) {
+        Group {
             if hasSession, let surface = viewModel.focusedSurface {
                 Button {
                     showPopover.toggle()
@@ -26,11 +26,12 @@ struct SSHUploadAccessoryView: View {
                 .popover(isPresented: $showPopover, arrowEdge: .bottom) {
                     SSHUploadPanel(surfaceView: surface)
                 }
-                .padding(.top, viewModel.accessoryTopPadding)
-                .padding(.trailing, 10)
             }
-            Spacer()
         }
+        // Size to the full titlebar so the button is vertically centered
+        // on the same axis as the traffic lights.
+        .frame(height: viewModel.titlebarHeight)
+        .padding(.trailing, 10)
         .onAppear { refresh() }
         .onReceive(timer) { _ in refresh() }
         .onChange(of: viewModel.focusedSurface?.id) { _ in

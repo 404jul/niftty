@@ -78,10 +78,18 @@ class TerminalWindow: NSWindow {
 
     override var toolbar: NSToolbar? {
         didSet {
-            DispatchQueue.main.async {
-                // When we have a toolbar, our SwiftUI view needs to know for layout
-                self.viewModel.hasToolbar = self.toolbar != nil
-            }
+            // When we have a toolbar, our SwiftUI views need to know for layout
+            syncTitlebarMetrics()
+        }
+    }
+
+    /// Pushes current titlebar metrics to the SwiftUI view model. Async because
+    /// the toolbar and its layout are not applied synchronously.
+    func syncTitlebarMetrics() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, styleMask.contains(.titled) else { return }
+            self.viewModel.hasToolbar = self.toolbar != nil
+            self.viewModel.titlebarHeight = self.frame.height - self.contentLayoutRect.height
         }
     }
 
@@ -173,6 +181,8 @@ class TerminalWindow: NSWindow {
             ))
             addTitlebarAccessoryViewController(sshUploadAccessory)
             sshUploadAccessory.view.translatesAutoresizingMaskIntoConstraints = false
+
+            syncTitlebarMetrics()
         }
 
         // Setup the accessory view for tabs that shows our keyboard shortcuts,
@@ -652,14 +662,11 @@ extension TerminalWindow {
         @Published var isMainWindow: Bool = true
         @Published var focusedSurface: Ghostty.SurfaceView?
 
-        /// Calculates the top padding based on toolbar visibility and macOS version
-        var accessoryTopPadding: CGFloat {
-            if #available(macOS 26.0, *) {
-                return hasToolbar ? 10 : 5
-            } else {
-                return hasToolbar ? 9 : 4
-            }
-        }
+        /// Height of the window's titlebar region. Titlebar accessory content is
+        /// vertically centered within this height, which keeps it on the same axis
+        /// as the traffic-light buttons regardless of toolbar visibility or
+        /// macOS version. Synced by the window in `syncTitlebarMetrics`.
+        @Published var titlebarHeight: CGFloat = 32
     }
 
     func syncFocusedSurface(_ surface: Ghostty.SurfaceView?) {
@@ -672,19 +679,16 @@ extension TerminalWindow {
 
         var body: some View {
             if viewModel.isSurfaceZoomed {
-                VStack {
-                    Button(action: action) {
-                        Image("ResetZoom")
-                            .foregroundColor(viewModel.isMainWindow ? .accentColor : .secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Reset Split Zoom")
-                    .frame(width: 20, height: 20)
-                    Spacer()
+                Button(action: action) {
+                    Image("ResetZoom")
+                        .foregroundColor(viewModel.isMainWindow ? .accentColor : .secondary)
                 }
-                // With a toolbar, the window title is taller, so we need more padding
-                // to properly align.
-                .padding(.top, viewModel.accessoryTopPadding)
+                .buttonStyle(.plain)
+                .help("Reset Split Zoom")
+                .frame(width: 20, height: 20)
+                // Size to the full titlebar so the button is vertically centered
+                // on the same axis as the traffic lights.
+                .frame(height: viewModel.titlebarHeight)
                 // We always need space at the end of the titlebar
                 .padding(.trailing, 10)
             }
@@ -697,10 +701,11 @@ extension TerminalWindow {
         @ObservedObject var model: UpdateViewModel
 
         var body: some View {
-            // We use the same top/trailing padding so that it hugs the same.
+            // Size to the full titlebar so the pill is vertically centered on the
+            // same axis as the traffic lights.
             UpdatePill(model: model)
-                .padding(.top, viewModel.accessoryTopPadding)
-                .padding(.trailing, viewModel.accessoryTopPadding)
+                .frame(height: viewModel.titlebarHeight)
+                .padding(.trailing, 10)
         }
     }
 
