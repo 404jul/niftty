@@ -16,6 +16,7 @@ const ssh_cache = @import("ssh_cache.zig");
 const ssh_upload = @import("ssh_upload.zig");
 const ssh_forward = @import("ssh_forward.zig");
 const ssh_files = @import("ssh_files.zig");
+const mosh = @import("mosh.zig");
 
 const edit_config = @import("edit_config.zig");
 const show_config = @import("show_config.zig");
@@ -56,6 +57,9 @@ pub const Action = enum {
 
     /// Wrap `ssh` to configure Ghostty terminal integration on remote hosts
     ssh,
+
+    /// Connect to a host using the installed Mosh client
+    mosh,
 
     /// Manage SSH terminfo cache for automatic remote host setup
     @"ssh-cache",
@@ -108,7 +112,10 @@ pub const Action = enum {
         if (std.mem.eql(u8, arg, "-e")) return .abort_if_no_action;
 
         // Special case, --version always outputs the version no
-        // matter what, no matter what other args exist.
+        // matter what, no matter what other args exist. This only
+        // applies while detection is still scanning: a passthrough
+        // action selected earlier (e.g. `+mosh`) ends detection
+        // before later arguments such as `--version` are seen.
         if (std.mem.eql(u8, arg, "--version")) {
             return .{ .action = .version };
         }
@@ -120,6 +127,14 @@ pub const Action = enum {
         }
 
         return null;
+    }
+
+    /// Returns true for actions whose remaining CLI arguments belong to
+    /// an external command. `action.detectIter` stops scanning as soon
+    /// as such an action is selected, so those arguments are neither
+    /// parsed as actions nor matched against special cases.
+    pub fn isPassthrough(self: Action) bool {
+        return self == .mosh;
     }
 
     /// This should be returned by actions that want to print the help text.
@@ -174,6 +189,7 @@ pub const Action = enum {
             .@"list-actions" => try list_actions.run(alloc),
             .@"ssh-cache" => try ssh_cache.run(alloc),
             .ssh => try ssh.run(alloc),
+            .mosh => try mosh.run(alloc),
             .@"ssh-upload" => try ssh_upload.run(alloc),
             .@"ssh-forward" => try ssh_forward.run(alloc),
             .@"ssh-files" => try ssh_files.run(alloc),
@@ -221,6 +237,7 @@ pub const Action = enum {
                 .@"list-actions" => list_actions.Options,
                 .@"ssh-cache" => ssh_cache.Options,
                 .ssh => ssh.Options,
+                .mosh => mosh.Options,
                 .@"ssh-upload" => ssh_upload.Options,
                 .@"ssh-forward" => ssh_forward.Options,
                 .@"ssh-files" => ssh_files.Options,

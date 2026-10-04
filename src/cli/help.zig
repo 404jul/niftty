@@ -20,6 +20,7 @@ pub const Options = struct {
 /// sync with the `Action` enum; the comptime block below enforces it.
 const commands = [_]struct { name: []const u8, desc: []const u8 }{
     .{ .name = "ssh", .desc = "Wrap ssh to set up Niftty integration on remote hosts" },
+    .{ .name = "mosh", .desc = "Connect using the installed Mosh client" },
     .{ .name = "ssh-cache", .desc = "Manage the terminfo install cache for ssh hosts" },
     .{ .name = "ssh-upload", .desc = "Upload files over an active ssh session" },
     .{ .name = "ssh-forward", .desc = "List, add, or cancel port forwards for an active session" },

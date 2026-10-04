@@ -1,0 +1,7 @@
+{
+  "servers": {
+    "sourcekit-lsp": {
+      "rootMarkers": [".git", "Package.swift", "*.xcodeproj", "*.xcworkspace"]
+    }
+  }
+}

@@ -28,6 +28,14 @@ pub fn detectArgs(comptime E: type, alloc: Allocator, args: std.process.Args) !?
 ///
 ///   fn detectSpecialCase(arg: []const u8) ?SpecialCase(E)
 ///
+/// If the type E has a decl `isPassthrough`, then it will be consulted
+/// as soon as a `+<action>` argument selects an action. If it returns
+/// true for that action, the action is returned immediately and the
+/// remaining arguments are not scanned at all. The function signature
+/// for `isPassthrough` should be:
+///
+///   fn isPassthrough(self: E) bool
+///
 pub fn detectIter(
     comptime E: type,
     iter: anytype,
@@ -48,8 +56,17 @@ pub fn detectIter(
         // Commands must start with "+"
         if (arg.len == 0 or arg[0] != '+') continue;
         if (pending != null) return DetectError.MultipleActions;
-        pending = std.meta.stringToEnum(E, arg[1..]) orelse
+        const action = std.meta.stringToEnum(E, arg[1..]) orelse
             return DetectError.InvalidAction;
+        pending = action;
+
+        // A passthrough action owns every argument after it, so
+        // detection stops here. Those arguments may contain the wrapped
+        // command's own flags (e.g. `--version`) or `+`-prefixed words
+        // that must not be intercepted or rejected as actions.
+        if (@hasDecl(E, "isPassthrough")) {
+            if (action.isPassthrough()) return action;
+        }
     }
 
     // If we have an action, we always return that action, even if we've
