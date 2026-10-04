@@ -99,6 +99,8 @@ private struct TerminalSplitLeaf: View {
             Group {
                 if let document = surfaceView.editorDocument {
                     EditorPane(document: document, surfaceView: surfaceView, isSplit: isSplit)
+                } else if let browserDocument = surfaceView.browserDocument {
+                    BrowserPane(document: browserDocument, surfaceView: surfaceView, isSplit: isSplit)
                 } else {
                     Ghostty.InspectableSurface(
                         surfaceView: surfaceView,
@@ -132,8 +134,14 @@ private struct TerminalSplitLeaf: View {
                 }
             }
             .accessibilityElement(children: .contain)
-            .accessibilityLabel(surfaceView.editorDocument == nil ? "Terminal pane" : "Text editor pane")
+            .accessibilityLabel(paneAccessibilityLabel)
         }
+    }
+
+    private var paneAccessibilityLabel: String {
+        if surfaceView.editorDocument != nil { return "Text editor pane" }
+        if surfaceView.browserDocument != nil { return "Browser pane" }
+        return "Terminal pane"
     }
 
     private enum DropState: Equatable {
